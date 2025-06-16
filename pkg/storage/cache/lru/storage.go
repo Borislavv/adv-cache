@@ -72,24 +72,7 @@ func NewStorage(
 		storage.runLogger()
 	}
 
-	storage.runContextSwitcher()
-
 	return storage
-}
-
-func (c *Storage) runContextSwitcher() {
-	if c.cfg.IsProdEnv() {
-		go func() {
-			for {
-				select {
-				case <-c.ctx.Done():
-					return
-				default:
-					runtime.Gosched()
-				}
-			}
-		}()
-	}
 }
 
 // Get retrieves a response by request and bumps its Storage position.
@@ -151,6 +134,7 @@ func (c *Storage) runLogger() {
 			case stat := <-evictionStatCh:
 				evictsNumPer5Sec += stat.items
 				evictsMemPer5Sec += stat.freedMem
+				runtime.Gosched()
 			case <-ticker:
 				var m runtime.MemStats
 				runtime.ReadMemStats(&m)
@@ -181,6 +165,7 @@ func (c *Storage) runLogger() {
 
 				evictsNumPer5Sec = 0
 				evictsMemPer5Sec = 0
+				runtime.Gosched()
 			}
 		}
 	}()

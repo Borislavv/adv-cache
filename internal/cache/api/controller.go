@@ -120,16 +120,9 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 	}
 
 	// Record the duration in debug mode for metrics.
-	if c.cfg.IsDebugOn() {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			count.Add(1)
-			duration.Add(time.Since(from).Nanoseconds())
-			runtime.Gosched()
-		}
-	}
+	count.Add(1)
+	duration.Add(time.Since(from).Nanoseconds())
+	runtime.Gosched()
 }
 
 // respondThatServiceIsTemporaryUnavailable returns 503 and logs the error.

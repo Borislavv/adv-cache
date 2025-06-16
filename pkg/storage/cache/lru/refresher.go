@@ -128,8 +128,10 @@ func (r *Refresh) runLogger() {
 				return
 			case <-refreshSuccessNumCh:
 				refreshesNumPer5Sec++
+				runtime.Gosched()
 			case <-refreshErroredNumCh:
 				erroredNumPer5Sec++
+				runtime.Gosched()
 			case <-ticker:
 				var (
 					errorsNum  = strconv.Itoa(erroredNumPer5Sec)
@@ -145,6 +147,7 @@ func (r *Refresh) runLogger() {
 
 				refreshesNumPer5Sec = 0
 				erroredNumPer5Sec = 0
+				runtime.Gosched()
 			}
 		}
 	}()
