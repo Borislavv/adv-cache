@@ -23,11 +23,11 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 
 	cfg := &config.Cache{
 		AppEnv:                    "dev",
-		AppDebug:                  true,
+		AppDebug:                  false,
 		BackendUrl:                "https://seo-master.lux.kube.xbet.lan/api/v2/pagedata",
 		RevalidateBeta:            0.3,
 		RevalidateInterval:        time.Hour,
-		InitStorageLengthPerShard: 256,
+		InitStorageLengthPerShard: 768,
 		EvictionAlgo:              string(cache.LRU),
 		MemoryFillThreshold:       0.95,
 		MemoryLimit:               1024 * 1024 * 1024, // 3GB
@@ -36,8 +36,7 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 	shardedMap := sharded.NewMap[*model.Response](cfg.InitStorageLengthPerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
 	refresher := lru.NewRefresher(ctx, cfg, balancer)
-	respReader := synced.NewPooledResponseReader(synced.PreallocateBatchSize)
-	backend := repository.NewBackend(cfg, respReader)
+	backend := repository.NewBackend(cfg, synced.NewPooledResponseReader(2048))
 	db := New(ctx, cfg, balancer, refresher, backend, shardedMap)
 
 	responses := mock.GenerateRandomResponses(cfg, b.N+1)
@@ -50,11 +49,10 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
-			for j := 0; j < 100; j++ {
-				_, release, _ := db.Get(responses[(i*j)%length].Request())
-				release.Release()
+			for j := 0; j < 10000; j++ {
+				db.Get(responses[(i*j)%length].Request())
 			}
-			i += 100
+			i += 10000
 		}
 	})
 	b.StopTimer()
@@ -68,11 +66,11 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 
 	cfg := &config.Cache{
 		AppEnv:                    "dev",
-		AppDebug:                  true,
+		AppDebug:                  false,
 		BackendUrl:                "https://seo-master.lux.kube.xbet.lan/api/v2/pagedata",
 		RevalidateBeta:            0.3,
 		RevalidateInterval:        time.Hour,
-		InitStorageLengthPerShard: 256,
+		InitStorageLengthPerShard: 768,
 		EvictionAlgo:              string(cache.LRU),
 		MemoryFillThreshold:       0.95,
 		MemoryLimit:               1024 * 1024 * 1024, // 3GB
@@ -81,8 +79,7 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 	shardedMap := sharded.NewMap[*model.Response](cfg.InitStorageLengthPerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
 	refresher := lru.NewRefresher(ctx, cfg, balancer)
-	respReader := synced.NewPooledResponseReader(synced.PreallocateBatchSize)
-	backend := repository.NewBackend(cfg, respReader)
+	backend := repository.NewBackend(cfg, synced.NewPooledResponseReader(2048))
 	db := New(ctx, cfg, balancer, refresher, backend, shardedMap)
 
 	responses := mock.GenerateRandomResponses(cfg, b.N+1)
@@ -92,10 +89,10 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
-			for j := 0; j < 100; j++ {
+			for j := 0; j < 10000; j++ {
 				db.Set(responses[(i*j)%length])
 			}
-			i += 100
+			i += 10000
 		}
 	})
 	b.StopTimer()
@@ -113,14 +110,13 @@ func BenchmarkGetAllocs(b *testing.B) {
 		InitStorageLengthPerShard: 256,
 		EvictionAlgo:              string(cache.LRU),
 		MemoryFillThreshold:       0.95,
-		MemoryLimit:               1024 * 1024 * 1024, // 1MB
+		MemoryLimit:               1024 * 1024 * 256, // 1MB
 	}
 
 	shardedMap := sharded.NewMap[*model.Response](cfg.InitStorageLengthPerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
 	refresher := lru.NewRefresher(ctx, cfg, balancer)
-	respReader := synced.NewPooledResponseReader(synced.PreallocateBatchSize)
-	backend := repository.NewBackend(cfg, respReader)
+	backend := repository.NewBackend(cfg, synced.NewPooledResponseReader(2048))
 	db := New(ctx, cfg, balancer, refresher, backend, shardedMap)
 
 	resp := mock.GenerateRandomResponses(cfg, 1)[0]
@@ -145,14 +141,13 @@ func BenchmarkSetAllocs(b *testing.B) {
 		InitStorageLengthPerShard: 256,
 		EvictionAlgo:              string(cache.LRU),
 		MemoryFillThreshold:       0.95,
-		MemoryLimit:               1024 * 1024 * 1024, // 1MB
+		MemoryLimit:               1024 * 1024 * 256, // 1MB
 	}
 
 	shardedMap := sharded.NewMap[*model.Response](cfg.InitStorageLengthPerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
 	refresher := lru.NewRefresher(ctx, cfg, balancer)
-	respReader := synced.NewPooledResponseReader(synced.PreallocateBatchSize)
-	backend := repository.NewBackend(cfg, respReader)
+	backend := repository.NewBackend(cfg, synced.NewPooledResponseReader(2048))
 	db := New(ctx, cfg, balancer, refresher, backend, shardedMap)
 
 	resp := mock.GenerateRandomResponses(cfg, 1)[0]
