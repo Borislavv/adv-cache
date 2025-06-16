@@ -21,7 +21,7 @@ func (c *Storage) runEvictor() {
 // evictor is the main background eviction loop for one worker.
 // Each worker tries to bring Weight usage under the threshold by evicting from most loaded shards.
 func (c *Storage) evictor() {
-	t := utils.NewTicker(c.ctx, time.Millisecond*100)
+	t := utils.NewTicker(c.ctx, time.Millisecond*250)
 	for {
 		select {
 		case <-c.ctx.Done():
@@ -29,11 +29,14 @@ func (c *Storage) evictor() {
 		case <-t:
 			items, freedMem := c.evictUntilWithinLimit()
 			if c.cfg.IsDebugOn() && (items > 0 || freedMem > 0) {
-				evictionStatCh <- evictionStat{items: items, freedMem: freedMem}
+				select {
+				case <-c.ctx.Done():
+					return
+				case evictionStatCh <- evictionStat{items: items, freedMem: freedMem}:
+				default:
+					runtime.Gosched()
+				}
 			}
-		default:
-			// very important +15K RPS on benches
-			runtime.Gosched()
 		}
 	}
 }

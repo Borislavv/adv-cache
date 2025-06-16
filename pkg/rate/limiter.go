@@ -25,6 +25,7 @@ func NewLimiter(ctx context.Context, limit, burst int) *Limiter {
 				if err := l.Wait(ctx); err != nil {
 					return
 				}
+
 				select {
 				case <-ctx.Done():
 					return

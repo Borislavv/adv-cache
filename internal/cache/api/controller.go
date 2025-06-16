@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"runtime"
 	"strconv"
+	"sync/atomic"
 	"time"
 )
 
@@ -40,7 +41,8 @@ var (
 
 // Buffered channel for request durations (used only if debug enabled)
 var (
-	durCh chan time.Duration
+	count    = &atomic.Int64{} // Num
+	duration = &atomic.Int64{} // UnixNano
 )
 
 // CacheController handles cache API requests (read/write-through, error reporting, metrics).
@@ -73,9 +75,9 @@ func NewCacheController(
 
 // Index is the main HTTP handler for /api/v1/cache.
 func (c *CacheController) Index(r *fasthttp.RequestCtx) {
-	var f time.Time
+	var from time.Time
 	if c.cfg.IsDebugOn() {
-		f = time.Now()
+		from = time.Now()
 	}
 
 	// Extract application context from request, fallback to base context.
@@ -120,10 +122,12 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 	// Record the duration in debug mode for metrics.
 	if c.cfg.IsDebugOn() {
 		select {
-		case <-c.ctx.Done():
+		case <-ctx.Done():
 			return
-		case durCh <- time.Since(f):
 		default:
+			count.Add(1)
+			duration.Add(time.Since(from).Nanoseconds())
+			runtime.Gosched()
 		}
 	}
 }
@@ -170,54 +174,47 @@ type stat struct {
 
 // runLogger runs a goroutine to periodically log RPS and avg duration per window, if debug enabled.
 func (c *CacheController) runLogger(ctx context.Context) {
-	durCh = make(chan time.Duration, runtime.GOMAXPROCS(0))
-
 	go func() {
-		stats := []*stat{
-			{label: "5s", divider: 5, tickerCh: utils.NewTicker(ctx, 5*time.Second)},
-			{label: "1m", divider: 60, tickerCh: utils.NewTicker(ctx, time.Minute)},
-			{label: "5m", divider: 300, tickerCh: utils.NewTicker(ctx, 5*time.Minute)},
-			{label: "1h", divider: 3600, tickerCh: utils.NewTicker(ctx, time.Hour)},
-		}
-
+		t := utils.NewTicker(ctx, time.Second*5)
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case dur := <-durCh:
-				for _, s := range stats {
-					s.count++
-					s.total += dur
-				}
-			case <-stats[0].tickerCh:
-				c.logAndReset(stats[0])
-			case <-stats[1].tickerCh:
-				c.logAndReset(stats[1])
-			case <-stats[2].tickerCh:
-				c.logAndReset(stats[2])
-			case <-stats[3].tickerCh:
-				c.logAndReset(stats[3])
+			case <-t:
+				c.logAndReset()
+			default:
+				runtime.Gosched()
+				time.Sleep(time.Millisecond)
 			}
 		}
 	}()
 }
 
 // logAndReset prints and resets stat counters for a given window (5s, 1m, etc).
-func (c *CacheController) logAndReset(s *stat) {
-	var avg string
-	if s.count > 0 {
-		avg = (s.total / time.Duration(s.count)).String()
+func (c *CacheController) logAndReset() {
+	const secs int64 = 5
+
+	var (
+		avg string
+		cnt = count.Load()
+		dur = time.Duration(duration.Load())
+		rps = strconv.Itoa(int(cnt / secs))
+	)
+
+	if cnt > 0 {
+		avg = (dur / time.Duration(cnt)).String()
 	} else {
 		avg = zeroLiteral
 	}
-	rps := strconv.Itoa(s.count / s.divider)
+
 	log.
 		Info().
 		//Str("target", "cache-controller").
 		//Str("period", s.label).
 		//Str("rps", rps).
 		//Str("avgDuration", avg).
-		Msgf("[cache-controller][%s] served %d requests (rps: %s, avgDuration: %s)", s.label, s.count, rps, avg)
-	s.count = 0
-	s.total = 0
+		Msgf("[cache-controller][5s] served %d requests (rps: %s, avgDuration: %s)", cnt, rps, avg)
+
+	count.Store(0)
+	duration.Store(0)
 }

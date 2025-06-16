@@ -9,7 +9,6 @@ require (
 	github.com/rs/zerolog v1.34.0
 	github.com/savsgio/gotils v0.0.0-20250408102913-196191ec6287
 	github.com/spf13/viper v1.20.1
-	github.com/stretchr/testify v1.10.0
 	github.com/valyala/fasthttp v1.62.0
 	github.com/zeebo/xxh3 v1.0.2
 	go.uber.org/automaxprocs v1.6.0

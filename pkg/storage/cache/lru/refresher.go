@@ -68,8 +68,6 @@ func (r *Refresh) RunRefresher() {
 				return
 			case <-r.shardRateLimiter.Chan(): // Throttling (64 per second)
 				r.refreshNode(r.balancer.RandShardNode())
-			default:
-				runtime.Gosched()
 			}
 		}
 	}()
@@ -93,8 +91,6 @@ func (r *Refresh) refreshNode(node *ShardNode) {
 			case <-r.refreshRateLimiter.Chan(): // Throttling (1024 per second)
 				go r.refreshItem(resp)
 				samples++
-			default:
-				runtime.Gosched()
 			}
 		}
 		return true
@@ -105,13 +101,17 @@ func (r *Refresh) refreshNode(node *ShardNode) {
 // If successful, increments the refreshItem metric (in debug mode); otherwise increments the error metric.
 func (r *Refresh) refreshItem(resp *model.Response) {
 	if err := resp.Revalidate(r.ctx); err != nil {
-		if r.cfg.IsDebugOn() {
-			refreshErroredNumCh <- struct{}{}
+		select {
+		case refreshErroredNumCh <- struct{}{}:
+		default:
+			runtime.Gosched()
 		}
 		return
 	}
-	if r.cfg.IsDebugOn() {
-		refreshSuccessNumCh <- struct{}{}
+	select {
+	case refreshSuccessNumCh <- struct{}{}:
+	default:
+		runtime.Gosched()
 	}
 }
 
@@ -119,21 +119,21 @@ func (r *Refresh) refreshItem(resp *model.Response) {
 // This runs only if debugging is enabled in the config.
 func (r *Refresh) runLogger() {
 	go func() {
-		erroredNumPer3Sec := 0
-		refreshesNumPer3Sec := 0
-		ticker := utils.NewTicker(r.ctx, 3*time.Second)
+		erroredNumPer5Sec := 0
+		refreshesNumPer5Sec := 0
+		ticker := utils.NewTicker(r.ctx, 5*time.Second)
 		for {
 			select {
 			case <-r.ctx.Done():
 				return
 			case <-refreshSuccessNumCh:
-				refreshesNumPer3Sec++
+				refreshesNumPer5Sec++
 			case <-refreshErroredNumCh:
-				erroredNumPer3Sec++
+				erroredNumPer5Sec++
 			case <-ticker:
 				var (
-					errorsNum  = strconv.Itoa(erroredNumPer3Sec)
-					successNum = strconv.Itoa(refreshesNumPer3Sec)
+					errorsNum  = strconv.Itoa(erroredNumPer5Sec)
+					successNum = strconv.Itoa(refreshesNumPer5Sec)
 				)
 
 				log.
@@ -141,13 +141,10 @@ func (r *Refresh) runLogger() {
 					//Str("target", "refresher").
 					//Str("processed", successNum).
 					//Str("errored", errorsNum).
-					Msgf("[refresher][3s] success %s, errors: %s", successNum, errorsNum)
+					Msgf("[refresher][5s] success %s, errors: %s", successNum, errorsNum)
 
-				refreshesNumPer3Sec = 0
-				erroredNumPer3Sec = 0
-			default:
-				// very important +15K RPS on benches
-				runtime.Gosched()
+				refreshesNumPer5Sec = 0
+				erroredNumPer5Sec = 0
 			}
 		}
 	}()
