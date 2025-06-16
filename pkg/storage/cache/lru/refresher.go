@@ -2,6 +2,8 @@ package lru
 
 import (
 	"context"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/rate"
+	"runtime"
 	"strconv"
 	"time"
 
@@ -9,7 +11,6 @@ import (
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/utils"
 	"github.com/rs/zerolog/log"
-	"golang.org/x/time/rate"
 )
 
 const (
@@ -47,8 +48,8 @@ func NewRefresher(ctx context.Context, cfg *config.Cache, balancer Balancer) *Re
 		ctx:                ctx,
 		cfg:                cfg,
 		balancer:           balancer,
-		shardRateLimiter:   rate.NewLimiter(shardRateLimit, shardRateLimitBurst),
-		refreshRateLimiter: rate.NewLimiter(refreshRateLimit, refreshRateLimitBurst),
+		shardRateLimiter:   rate.NewLimiter(ctx, shardRateLimit, shardRateLimitBurst),
+		refreshRateLimiter: rate.NewLimiter(ctx, refreshRateLimit, refreshRateLimitBurst),
 	}
 }
 
@@ -61,11 +62,15 @@ func (r *Refresh) RunRefresher() {
 			r.runLogger()
 		}
 
-		for { // Throttling (16 per second)
-			if err := r.shardRateLimiter.Wait(r.ctx); err != nil {
+		for {
+			select {
+			case <-r.ctx.Done():
 				return
+			case <-r.shardRateLimiter.Chan(): // Throttling (64 per second)
+				r.refreshNode(r.balancer.RandShardNode())
+			default:
+				runtime.Gosched()
 			}
-			r.refreshNode(r.balancer.RandShardNode())
 		}
 	}()
 }
@@ -73,7 +78,7 @@ func (r *Refresh) RunRefresher() {
 // refreshNode selects up to refreshSamples entries from the end of the given shard's Storage list.
 // For each candidate, if ShouldBeRefreshed() returns true and shardRateLimiter limiting allows, triggers an asynchronous refreshItem.
 func (r *Refresh) refreshNode(node *ShardNode) {
-	ctx, cancel := context.WithTimeout(r.ctx, time.Millisecond*900)
+	ctx, cancel := context.WithTimeout(r.ctx, time.Second)
 	defer cancel()
 
 	samples := 0
@@ -85,12 +90,11 @@ func (r *Refresh) refreshNode(node *ShardNode) {
 			select {
 			case <-ctx.Done():
 				return false
-			default: // Throttling (1024 per second)
-				if err := r.refreshRateLimiter.Wait(ctx); err != nil {
-					return false
-				}
+			case <-r.refreshRateLimiter.Chan(): // Throttling (1024 per second)
 				go r.refreshItem(resp)
 				samples++
+			default:
+				runtime.Gosched()
 			}
 		}
 		return true
@@ -115,21 +119,21 @@ func (r *Refresh) refreshItem(resp *model.Response) {
 // This runs only if debugging is enabled in the config.
 func (r *Refresh) runLogger() {
 	go func() {
-		refreshesNumPer5Sec := 0
-		erroredNumPer5Sec := 0
-		ticker := utils.NewTicker(r.ctx, 5*time.Second)
+		erroredNumPer3Sec := 0
+		refreshesNumPer3Sec := 0
+		ticker := utils.NewTicker(r.ctx, 3*time.Second)
 		for {
 			select {
 			case <-r.ctx.Done():
 				return
 			case <-refreshSuccessNumCh:
-				refreshesNumPer5Sec++
+				refreshesNumPer3Sec++
 			case <-refreshErroredNumCh:
-				erroredNumPer5Sec++
+				erroredNumPer3Sec++
 			case <-ticker:
 				var (
-					errorsNum  = strconv.Itoa(erroredNumPer5Sec)
-					successNum = strconv.Itoa(refreshesNumPer5Sec)
+					errorsNum  = strconv.Itoa(erroredNumPer3Sec)
+					successNum = strconv.Itoa(refreshesNumPer3Sec)
 				)
 
 				log.
@@ -137,10 +141,13 @@ func (r *Refresh) runLogger() {
 					//Str("target", "refresher").
 					//Str("processed", successNum).
 					//Str("errored", errorsNum).
-					Msgf("[refresher][5s] success %s, errors: %s", successNum, errorsNum)
+					Msgf("[refresher][3s] success %s, errors: %s", successNum, errorsNum)
 
-				refreshesNumPer5Sec = 0
-				erroredNumPer5Sec = 0
+				refreshesNumPer3Sec = 0
+				erroredNumPer3Sec = 0
+			default:
+				// very important +15K RPS on benches
+				runtime.Gosched()
 			}
 		}
 	}()

@@ -120,18 +120,18 @@ func (c *Storage) set(new *model.Response) {
 // runLogger emits detailed stats about evictions, Weight, and GC activity every 5 seconds if debugging is enabled.
 func (c *Storage) runLogger() {
 	go func() {
-		ticker := utils.NewTicker(c.ctx, 5*time.Second)
+		ticker := utils.NewTicker(c.ctx, 3*time.Second)
 		var (
-			evictsNumPer5Sec int
-			evictsMemPer5Sec int64
+			evictsNumPer3Sec int
+			evictsMemPer3Sec int64
 		)
 		for {
 			select {
 			case <-c.ctx.Done():
 				return
 			case stat := <-evictionStatCh:
-				evictsNumPer5Sec += stat.items
-				evictsMemPer5Sec += stat.freedMem
+				evictsNumPer3Sec += stat.items
+				evictsMemPer3Sec += stat.freedMem
 			case <-ticker:
 				var m runtime.MemStats
 				runtime.ReadMemStats(&m)
@@ -143,7 +143,7 @@ func (c *Storage) runLogger() {
 					limit      = utils.FmtMem(int64(c.cfg.MemoryLimit))
 					goroutines = strconv.Itoa(runtime.NumGoroutine())
 					alloc      = utils.FmtMem(int64(m.Alloc))
-					freedMem   = utils.FmtMem(evictsMemPer5Sec)
+					freedMem   = utils.FmtMem(evictsMemPer3Sec)
 				)
 
 				log.
@@ -155,13 +155,16 @@ func (c *Storage) runLogger() {
 					//Str("memLimit", limit).
 					//Str("goroutines", goroutines).
 					Msgf(
-						"[lru][5s] evicted (items: %d, freedMem: %s), "+
+						"[lru][3s] evicted (items: %d, freedMem: %s), "+
 							"storage (usage: %s, len: %s, limit: %s), sys (alloc: %s, goroutines: %s, GC: %s)",
-						evictsNumPer5Sec, freedMem, mem, length, limit, alloc, goroutines, gc,
+						evictsNumPer3Sec, freedMem, mem, length, limit, alloc, goroutines, gc,
 					)
 
-				evictsNumPer5Sec = 0
-				evictsMemPer5Sec = 0
+				evictsNumPer3Sec = 0
+				evictsMemPer3Sec = 0
+			default:
+				// very important +15K RPS on benches
+				runtime.Gosched()
 			}
 		}
 	}()

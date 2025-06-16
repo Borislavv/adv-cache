@@ -1,6 +1,7 @@
 package lru
 
 import (
+	"runtime"
 	"time"
 
 	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
@@ -20,17 +21,19 @@ func (c *Storage) runEvictor() {
 // evictor is the main background eviction loop for one worker.
 // Each worker tries to bring Weight usage under the threshold by evicting from most loaded shards.
 func (c *Storage) evictor() {
-	t := utils.NewTicker(c.ctx, time.Millisecond*250)
+	t := utils.NewTicker(c.ctx, time.Millisecond*100)
 	for {
 		select {
 		case <-c.ctx.Done():
 			return
 		case <-t:
-			c.balancer.Rebalance()
 			items, freedMem := c.evictUntilWithinLimit()
 			if c.cfg.IsDebugOn() && (items > 0 || freedMem > 0) {
 				evictionStatCh <- evictionStat{items: items, freedMem: freedMem}
 			}
+		default:
+			// very important +15K RPS on benches
+			runtime.Gosched()
 		}
 	}
 }
