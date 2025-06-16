@@ -8,12 +8,11 @@ import (
 	"errors"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/list"
-	synced "github.com/Borislavv/traefik-http-cache-plugin/pkg/sync"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/types"
 	"io"
 	"math"
 	"math/rand/v2"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -24,27 +23,14 @@ const gzipThreshold = 1024 // Minimum body size to apply gzip compression
 // -- Internal pools for efficient memory management --
 
 var (
-	GzipBufferPool = synced.NewBatchPool[*types.SizedBox[*bytes.Buffer]](synced.PreallocateBatchSize, func() *types.SizedBox[*bytes.Buffer] {
-		return &types.SizedBox[*bytes.Buffer]{
-			Value: new(bytes.Buffer),
-			CalcWeightFn: func(s *types.SizedBox[*bytes.Buffer]) int64 {
-				return int64(unsafe.Sizeof(*s)) + int64(s.Value.Len())
-			},
-		}
-	})
-	GzipWriterPool = synced.NewBatchPool[*types.SizedBox[*gzip.Writer]](synced.PreallocateBatchSize, func() *types.SizedBox[*gzip.Writer] {
+	GzipBufferPool = &sync.Pool{New: func() any { return new(bytes.Buffer) }}
+	GzipWriterPool = &sync.Pool{New: func() any {
 		w, err := gzip.NewWriterLevel(nil, gzip.BestSpeed)
 		if err != nil {
 			panic("failed to Init. gzip writer: " + err.Error())
 		}
-		return &types.SizedBox[*gzip.Writer]{
-			Value: w,
-			CalcWeightFn: func(s *types.SizedBox[*gzip.Writer]) int64 {
-				const approxGzipWriterWeight = 16 * 1024 // на инстанс
-				return int64(unsafe.Sizeof(*s)) + approxGzipWriterWeight
-			},
-		}
-	})
+		return w
+	}}
 )
 
 // Data is the actual payload (status, headers, body) stored in the cache.
@@ -64,15 +50,17 @@ func NewData(statusCode int, headers http.Header, body []byte) *Data {
 
 	// Compress body if it's large enough for gzip to help
 	if len(body) > gzipThreshold {
-		gzipper := GzipWriterPool.Get()
+		gzipper := GzipWriterPool.Get().(*gzip.Writer)
 		defer GzipWriterPool.Put(gzipper)
 
-		buf := new(bytes.Buffer)
-		gzipper.Value.Reset(buf)
+		buf := GzipBufferPool.Get().(*bytes.Buffer)
+		defer GzipBufferPool.Put(buf)
+
+		gzipper.Reset(buf)
 		buf.Reset()
 
-		_, err := gzipper.Value.Write(body)
-		if err == nil && gzipper.Value.Close() == nil {
+		_, err := gzipper.Write(body)
+		if err == nil && gzipper.Close() == nil {
 			headers.Set("Content-Encoding", "gzip")
 			data.body = append([]byte{}, buf.Bytes()...)
 		} else {

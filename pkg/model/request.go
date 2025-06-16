@@ -4,10 +4,9 @@ import (
 	"bytes"
 	"errors"
 	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
-	synced "github.com/Borislavv/traefik-http-cache-plugin/pkg/sync"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/types"
 	"github.com/valyala/fasthttp"
 	"github.com/zeebo/xxh3"
+	"sync"
 	"sync/atomic"
 	"unsafe"
 )
@@ -20,14 +19,7 @@ const (
 
 var (
 	// Pools for reusable objects and buffers.
-	HasherPool = synced.NewBatchPool[*types.SizedBox[*xxh3.Hasher]](synced.PreallocateBatchSize, func() *types.SizedBox[*xxh3.Hasher] {
-		return &types.SizedBox[*xxh3.Hasher]{
-			Value: xxh3.New(),
-			CalcWeightFn: func(box *types.SizedBox[*xxh3.Hasher]) int64 {
-				return int64(unsafe.Sizeof(*box.Value)) + 1024 + 64 + 8 // digged inside struct and calculated
-			},
-		}
-	})
+	HasherPool = &sync.Pool{New: func() any { return xxh3.New() }}
 )
 
 // Request holds normalized, deduplicated, hashed and uniquely queryable representation of a cache request.
@@ -133,7 +125,12 @@ func (r *Request) GetTags() [][]byte   { return r.tags }
 
 // setUpKey computes a unique hash key (xxh3) for this request.
 func (r *Request) setUpKey() uint64 {
-	buf := make([]byte, 0, preallocatedBufferCapacity+(tagBufferCapacity*maxTagsLen))
+	length := len(r.project) + len(r.domain) + len(r.language)
+	for _, tag := range r.tags {
+		length += len(tag)
+	}
+
+	buf := make([]byte, 0, length)
 	buf = append(buf, r.project...)
 	buf = append(buf, r.domain...)
 	buf = append(buf, r.language...)
@@ -144,14 +141,15 @@ func (r *Request) setUpKey() uint64 {
 		buf = append(buf, tag...)
 	}
 
-	hasher := HasherPool.Get()
+	hasher := HasherPool.Get().(*xxh3.Hasher)
 	defer HasherPool.Put(hasher)
-	hasher.Value.Reset()
-	if _, err := hasher.Value.Write(buf); err != nil {
+
+	hasher.Reset()
+	if _, err := hasher.Write(buf); err != nil {
 		panic(err)
 	}
 
-	r.key = hasher.Value.Sum64()
+	r.key = hasher.Sum64()
 	return r.key
 }
 

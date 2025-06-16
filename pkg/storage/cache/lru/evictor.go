@@ -1,7 +1,6 @@
 package lru
 
 import (
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
 	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/utils"
 	"time"
@@ -30,11 +29,7 @@ func (c *Storage) evictor() {
 }
 
 func (c *Storage) usedMem() int64 {
-	used := c.shardedMap.Mem()
-	used += model.GzipBufferPool.Mem()
-	used += model.GzipWriterPool.Mem()
-	used += model.HasherPool.Mem()
-	return used
+	return c.shardedMap.Mem()
 }
 
 // shouldEvict checks if current Weight usage has reached or exceeded the threshold.

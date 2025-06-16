@@ -6,7 +6,6 @@ import (
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/repository"
 	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
-	synced "github.com/Borislavv/traefik-http-cache-plugin/pkg/sync"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/utils"
 	"github.com/rs/zerolog/log"
 	"runtime"
@@ -17,7 +16,7 @@ import (
 const dumpDir = "public/dump"
 
 var (
-	evictionStatCh = make(chan evictionStat, synced.PreallocateBatchSize)
+	evictionStatCh = make(chan evictionStat, 32)
 )
 
 // evictionStat carries statistics for each eviction batch.

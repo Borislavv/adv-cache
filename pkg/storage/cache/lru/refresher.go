@@ -4,7 +4,6 @@ import (
 	"context"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
-	synced "github.com/Borislavv/traefik-http-cache-plugin/pkg/sync"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/utils"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/time/rate"
@@ -22,8 +21,8 @@ const (
 )
 
 var (
-	refreshSuccessNumCh = make(chan struct{}, synced.PreallocateBatchSize) // Successful refreshes counter channel
-	refreshErroredNumCh = make(chan struct{}, synced.PreallocateBatchSize) // Failed refreshes counter channel
+	refreshSuccessNumCh = make(chan struct{}) // Successful refreshes counter channel
+	refreshErroredNumCh = make(chan struct{}) // Failed refreshes counter channel
 )
 
 type Refresher interface {
