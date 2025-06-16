@@ -26,7 +26,7 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 		BackendUrl:                "https://seo-master.lux.kube.xbet.lan/api/v2/pagedata",
 		RevalidateBeta:            0.3,
 		RevalidateInterval:        time.Hour,
-		InitStorageLengthPerShard: 256,
+		InitStorageLengthPerShard: 768,
 		EvictionAlgo:              string(cache.LRU),
 		MemoryFillThreshold:       0.95,
 		MemoryLimit:               1024 * 1024 * 1024, // 3GB
@@ -48,10 +48,10 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
-			for j := 0; j < 100; j++ {
+			for j := 0; j < 10000; j++ {
 				_, _ = db.Get(responses[(i*j)%length].Request())
 			}
-			i += 100
+			i += 10000
 		}
 	})
 	b.StopTimer()
@@ -69,7 +69,7 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 		BackendUrl:                "https://seo-master.lux.kube.xbet.lan/api/v2/pagedata",
 		RevalidateBeta:            0.3,
 		RevalidateInterval:        time.Hour,
-		InitStorageLengthPerShard: 256,
+		InitStorageLengthPerShard: 768,
 		EvictionAlgo:              string(cache.LRU),
 		MemoryFillThreshold:       0.95,
 		MemoryLimit:               1024 * 1024 * 1024, // 3GB
@@ -88,10 +88,10 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
-			for j := 0; j < 100; j++ {
+			for j := 0; j < 10000; j++ {
 				db.Set(responses[(i*j)%length])
 			}
-			i += 100
+			i += 10000
 		}
 	})
 	b.StopTimer()
