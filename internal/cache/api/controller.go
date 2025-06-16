@@ -122,7 +122,12 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 
 	// Record the duration in debug mode for metrics.
 	if c.cfg.IsDebugOn() {
-		durCh <- time.Since(f)
+		select {
+		case <-c.ctx.Done():
+			return
+		case durCh <- time.Since(f):
+		default:
+		}
 	}
 }
 

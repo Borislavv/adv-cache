@@ -188,9 +188,12 @@ func (l *List[T]) Unlock() {
 	l.mu.Unlock()
 }
 
-// NextUnlocked returns the element at the given offset from the front (0-based).
+// Next returns the element at the given offset from the front (0-based).
 // Returns (nil, false) if offset is out of bounds.
-func (l *List[T]) NextUnlocked(offset int) (*Element[T], bool) {
+func (l *List[T]) Next(offset int) (*Element[T], bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
 	if offset < 0 || offset >= l.len {
 		return nil, false
 	}

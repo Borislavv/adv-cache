@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 )
 
-const ShardCount uint64 = 4096 // Total number of shards (power of 2 for fast hashing)
+const ShardCount uint64 = 2048 // Total number of shards (power of 2 for fast hashing)
 
 // Value must implement all cache entry interfaces: keying, sizing, and releasability.
 type Value interface {
@@ -52,7 +52,7 @@ func (smap *Map[V]) Get(key uint64, shardKey uint64) (value V, releaser *Release
 }
 
 func (smap *Map[V]) Update(old, new V) {
-	//atomic.AddInt64(&smap.mem, new.Weight()-old.Weight())
+	atomic.AddInt64(&smap.mem, new.Weight()-old.Weight())
 }
 
 // Release deletes a value by key, returning how much memory was freed and a pointer to its LRU/list element.

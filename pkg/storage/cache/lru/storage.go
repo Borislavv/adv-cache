@@ -143,7 +143,7 @@ func (c *Storage) runLogger() {
 				runtime.ReadMemStats(&m)
 
 				var (
-					mem        = utils.FmtMem(c.usedMem())
+					mem        = utils.FmtMem(c.shardedMap.Mem())
 					length     = strconv.Itoa(int(c.shardedMap.Len()))
 					gc         = strconv.Itoa(int(m.NumGC))
 					limit      = utils.FmtMem(int64(c.cfg.MemoryLimit))

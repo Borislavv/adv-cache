@@ -4,6 +4,7 @@ import (
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/consts"
 	synced "github.com/Borislavv/traefik-http-cache-plugin/pkg/sync"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -14,7 +15,6 @@ type Shard[V Value] struct {
 	items         map[uint64]V                    // Actual storage: key -> Value
 	releaserPool  *synced.BatchPool[*Releaser[V]] // Pool for recycling Releaser objects (to minimize allocations)
 	id            uint64                          // Shard ID (index)
-	len           int64                           // Number of elements (atomic)
 	mem           int64                           // Weight usage in bytes (atomic)
 }
 
@@ -56,21 +56,22 @@ func (r *Releaser[V]) Release() bool {
 		return true
 	}
 	ok := r.relFn(r.val)
-	r.pool.Put(r)
-	return ok
+	if ok {
+		r.pool.Put(r)
+		return true
+	}
+	return false
 }
 
 // NewShard creates a new shard with its own lock, value map, and releaser pool.
 func NewShard[V Value](id uint64, defaultLen int) *Shard[V] {
 	return &Shard[V]{
+		id:      id,
 		RWMutex: &sync.RWMutex{},
 		items:   make(map[uint64]V, defaultLen),
 		releaserPool: synced.NewBatchPool[*Releaser[V]](synced.PreallocateBatchSize, func() *Releaser[V] {
 			return new(Releaser[V])
 		}),
-		id:  id,
-		len: 0,
-		mem: 0,
 	}
 }
 
@@ -81,31 +82,21 @@ func (shard *Shard[V]) ID() uint64 {
 
 // Weight returns an approximate total memory usage for this shard (including overhead).
 func (shard *Shard[V]) Weight() int64 {
-	shard.RLock()
-	defer shard.RUnlock()
-	return int64(unsafe.Sizeof(*shard)) + shard.mem
-}
-
-// Len returns the number of entries in the shard (non-atomic, for stats only).
-func (shard *Shard[V]) Len() int64 {
-	shard.RLock()
-	defer shard.RUnlock()
-	return shard.len
+	return atomic.LoadInt64(&shard.mem)
 }
 
 // Set inserts or updates a value by key, resets refCount, and updates counters.
 // Returns a releaser for the inserted value.
 func (shard *Shard[V]) Set(key uint64, value V) (takenMem int64, releaser *Releaser[V]) {
-	shard.Lock()
-	defer shard.Unlock()
-
 	value.StoreRefCount(1)
 
+	shard.Lock()
 	shard.items[key] = value
+	shard.Unlock()
+
 	takenMem = value.Weight()
 
-	shard.len += 1
-	shard.mem += takenMem
+	atomic.AddInt64(&shard.mem, takenMem)
 
 	// Return a releaser for this value (for the user to release later).
 	return takenMem, NewReleaser(value, shard.releaserPool)
@@ -115,8 +106,8 @@ func (shard *Shard[V]) Set(key uint64, value V) (takenMem int64, releaser *Relea
 // Returns (value, releaser, true) if found; otherwise (zero, nil, false).
 func (shard *Shard[V]) Get(key uint64) (val V, releaser *Releaser[V], isHit bool) {
 	shard.RLock()
-	defer shard.RUnlock()
 	value, ok := shard.items[key]
+	shard.RUnlock()
 	if ok {
 		value.IncRefCount()
 		return value, NewReleaser(value, shard.releaserPool), true
@@ -128,15 +119,13 @@ func (shard *Shard[V]) Get(key uint64) (val V, releaser *Releaser[V], isHit bool
 // Returns (memory_freed, pointer_to_list_element, was_found).
 func (shard *Shard[V]) Release(key uint64) (freed int64, isHit bool) {
 	shard.Lock()
-	defer shard.Unlock()
-
 	v, ok := shard.items[key]
 	if ok {
 		delete(shard.items, key)
+		shard.Unlock()
 
 		weight := v.Weight()
-		shard.len -= 1
-		shard.mem -= weight
+		atomic.AddInt64(&shard.mem, -weight)
 
 		// If all references are gone, call Release; otherwise mark as doomed for future cleanup.
 		if v.MarkAsDoomed() && v.RefCount() == 0 {
@@ -145,6 +134,7 @@ func (shard *Shard[V]) Release(key uint64) (freed int64, isHit bool) {
 
 		return weight, true
 	}
+	shard.Unlock()
 
 	return 0, false
 }

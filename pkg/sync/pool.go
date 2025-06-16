@@ -3,12 +3,14 @@ package synced
 import (
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/types"
 	"sync"
-	"sync/atomic"
 )
 
 // PreallocateBatchSize is a sensible default for how many objects are preallocated in a single batch.
 // It's used for both initial and on-demand pool growth.
-const PreallocateBatchSize = 1024
+const (
+	InitPreallocateCoefficient = 10
+	PreallocateBatchSize       = 64
+)
 
 // BatchPool is a high-throughput generic object pool with batch preallocation.
 //
@@ -17,8 +19,6 @@ const PreallocateBatchSize = 1024
 // - Reduce allocation spikes by preallocating objects in large batches.
 // - Provide simple Get/Put API similar to sync.Pool but with better bulk allocation behavior.
 type BatchPool[T types.Sized] struct {
-	mem       int64      // bytes
-	len       int64      // Current number of objects ever preallocated (approximate)
 	pool      *sync.Pool // Underlying sync.Pool for thread-safe pooling
 	allocFunc func() T   // Function to create new T
 }
@@ -32,15 +32,12 @@ func NewBatchPool[T types.Sized](preallocateBatchSize int, allocFunc func() T) *
 		New: func() any {
 			// When sync.Pool is empty, preallocate a new batch.
 			bp.preallocate(preallocateBatchSize)
-			atomic.AddInt64(&bp.len, int64(preallocateBatchSize))
 			// Return one object from the freshly preallocated batch.
-			v := bp.pool.Get().(T)
-			atomic.AddInt64(&bp.len, v.Weight())
-			return v
+			return bp.pool.Get().(T)
 		},
 	}
 	// Initial larger preallocation for "warm start".
-	bp.preallocate(preallocateBatchSize * 10)
+	bp.preallocate(preallocateBatchSize * InitPreallocateCoefficient)
 	return bp
 }
 
@@ -54,19 +51,10 @@ func (bp *BatchPool[T]) preallocate(n int) {
 // Get retrieves an object from the pool, allocating if necessary.
 // Never returns nil (unless allocFunc does).
 func (bp *BatchPool[T]) Get() T {
-	v := bp.pool.Get().(T)
-	atomic.AddInt64(&bp.len, -1)
-	atomic.AddInt64(&bp.mem, -v.Weight())
-	return v
+	return bp.pool.Get().(T)
 }
 
 // Put returns an object to the pool for future reuse.
 func (bp *BatchPool[T]) Put(v T) {
-	atomic.AddInt64(&bp.len, 1)
-	atomic.AddInt64(&bp.mem, v.Weight())
 	bp.pool.Put(v)
-}
-
-func (bp *BatchPool[T]) Mem() int64 {
-	return atomic.LoadInt64(&bp.mem)
 }

@@ -13,11 +13,11 @@ import (
 )
 
 const (
-	shardRateLimit        = 16   // Global limiter: maximum concurrent refreshes across all shards
-	shardRateLimitBurst   = 8    // Global limiter: maximum parallel requests.
-	refreshRateLimit      = 1000 // Global limiter: maximum concurrent refreshes across all shards
+	shardRateLimit        = 32   // Global limiter: maximum concurrent refreshes across all shards
+	shardRateLimitBurst   = 16   // Global limiter: maximum parallel requests.
+	refreshRateLimit      = 1024 // Global limiter: maximum concurrent refreshes across all shards
 	refreshRateLimitBurst = 100  // Global limiter: maximum parallel requests.
-	refreshSamples        = 16   // Number of items to sample per shard per refreshItem tick
+	refreshSamples        = 32   // Number of items to sample per shard per refreshItem tick
 	// Max refreshes per second = shardRateLimit(32) * refreshSamples(32) = 1024.
 )
 
@@ -85,13 +85,13 @@ func (r *Refresh) refreshNode(node *ShardNode) {
 			select {
 			case <-ctx.Done():
 				return false
-			default: // Throttling (1000 per second)
+			default: // Throttling (1024 per second)
 				if err := r.refreshRateLimiter.Wait(ctx); err != nil {
 					return false
 				}
 				go r.refreshItem(resp)
+				samples++
 			}
-			samples++
 		}
 		return true
 	}, false)
