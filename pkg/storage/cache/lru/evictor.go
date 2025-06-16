@@ -9,7 +9,7 @@ import (
 const evictionsPerSample = 8
 
 var (
-	_maxShards          = float64(sharded.ShardCount)
+	_maxShards          = float64(sharded.NumOfShards)
 	fatShardsPercentage = int(_maxShards * 0.25)
 )
 

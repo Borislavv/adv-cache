@@ -8,8 +8,8 @@ import (
 // PreallocateBatchSize is a sensible default for how many objects are preallocated in a single batch.
 // It's used for both initial and on-demand pool growth.
 const (
-	InitPreallocateCoefficient = 10
-	PreallocateBatchSize       = 64
+	InitPreallocateCoefficient = 8
+	PreallocateBatchSize       = 32
 )
 
 // BatchPool is a high-throughput generic object pool with batch preallocation.

@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 )
 
-const ShardCount uint64 = 2048 // Total number of shards (power of 2 for fast hashing)
+const NumOfShards uint64 = 4096 // Total number of shards (power of 2 for fast hashing)
 
 // Value must implement all cache entry interfaces: keying, sizing, and releasability.
 type Value interface {
@@ -20,13 +20,13 @@ type Value interface {
 type Map[V Value] struct {
 	len    int64
 	mem    int64
-	shards [ShardCount]*Shard[V]
+	shards [NumOfShards]*Shard[V]
 }
 
 // NewMap creates a new sharded map with preallocated shards and a default per-shard map capacity.
 func NewMap[V Value](defaultLen int) *Map[V] {
 	m := &Map[V]{}
-	for id := uint64(0); id < ShardCount; id++ {
+	for id := uint64(0); id < NumOfShards; id++ {
 		m.shards[id] = NewShard[V](id, defaultLen)
 	}
 	return m
@@ -34,7 +34,7 @@ func NewMap[V Value](defaultLen int) *Map[V] {
 
 // MapShardKey calculates the shard index for a given key.
 func MapShardKey(key uint64) uint64 {
-	return key % ShardCount
+	return key % NumOfShards
 }
 
 // Set inserts or updates a value in the correct shard. Returns a releaser for ref counting.
@@ -102,7 +102,7 @@ func (smap *Map[V]) Shard(key uint64) *Shard[V] {
 // The callback runs in a separate goroutine for each shard; fn should be goroutine-safe.
 func (smap *Map[V]) WalkShards(fn func(key uint64, shard *Shard[V])) {
 	var wg sync.WaitGroup
-	wg.Add(int(ShardCount))
+	wg.Add(int(NumOfShards))
 	defer wg.Wait()
 	for k, s := range smap.shards {
 		go func(key uint64, shard *Shard[V]) {
@@ -116,7 +116,7 @@ func (smap *Map[V]) WalkShards(fn func(key uint64, shard *Shard[V])) {
 	}
 }
 
-// Len returns the total number of elements in all shards (O(ShardCount)).
+// Len returns the total number of elements in all shards (O(NumOfShards)).
 func (smap *Map[V]) Len() int64 {
 	return atomic.LoadInt64(&smap.len)
 }

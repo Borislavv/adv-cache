@@ -29,7 +29,7 @@ func (s *ShardNode) Weight() int64 {
 
 type Balancer interface {
 	rebalance()
-	Shards() [sharded.ShardCount]*ShardNode
+	Shards() [sharded.NumOfShards]*ShardNode
 	RandShardNode() *ShardNode
 	Register(shard *sharded.Shard[*model.Response])
 	Set(resp *model.Response) *ShardNode
@@ -46,9 +46,9 @@ type Balancer interface {
 // - shardedMap is the underlying data storage (map of all entries).
 type Balance struct {
 	ctx        context.Context
-	shards     [sharded.ShardCount]*ShardNode // Shard index → *ShardNode
-	memList    *list.List[*ShardNode]         // Doubly-linked list of shards, ordered by Memory usage (most loaded at front)
-	shardedMap *sharded.Map[*model.Response]  // Actual underlying storage of entries
+	shards     [sharded.NumOfShards]*ShardNode // Shard index → *ShardNode
+	memList    *list.List[*ShardNode]          // Doubly-linked list of shards, ordered by Memory usage (most loaded at front)
+	shardedMap *sharded.Map[*model.Response]   // Actual underlying storage of entries
 }
 
 // NewBalancer creates a new Balance instance and initializes memList.
@@ -80,13 +80,13 @@ func (b *Balance) rebalance() {
 	b.memList.Sort(list.DESC)
 }
 
-func (b *Balance) Shards() [sharded.ShardCount]*ShardNode {
+func (b *Balance) Shards() [sharded.NumOfShards]*ShardNode {
 	return b.shards
 }
 
 // RandShardNode returns a random ShardNode for sampling (e.g., for background refreshers).
 func (b *Balance) RandShardNode() *ShardNode {
-	return b.shards[rand.Uint64N(sharded.ShardCount)]
+	return b.shards[rand.Uint64N(sharded.NumOfShards)]
 }
 
 // Register inserts a new ShardNode for a given shard, creates its Storage, and adds it to memList and shards array.
@@ -138,7 +138,7 @@ func (b *Balance) MostLoadedSampled(offset int) (*ShardNode, bool) {
 
 // Weight returns an approximate total Memory usage of all shards and the balancer itself.
 func (b *Balance) Weight() int64 {
-	mem := int64(unsafe.Sizeof(*b)) + (int64(sharded.ShardCount) * consts.PtrBytesWeight)
+	mem := int64(unsafe.Sizeof(*b)) + (int64(sharded.NumOfShards) * consts.PtrBytesWeight)
 	for _, shard := range b.shards {
 		mem += shard.Weight()
 	}
