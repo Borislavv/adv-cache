@@ -1,9 +1,10 @@
 package lru
 
 import (
+	"time"
+
 	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/utils"
-	"time"
 )
 
 const evictionsPerSample = 8
@@ -35,6 +36,10 @@ func (c *Storage) evictor() {
 	}
 }
 
+func (c *Storage) usedMem() int64 {
+	return c.shardedMap.Mem()
+}
+
 // shouldEvict checks if current Weight usage has reached or exceeded the threshold.
 func (c *Storage) shouldEvict() bool {
 	return c.shardedMap.Mem() >= c.memoryThreshold
@@ -50,6 +55,7 @@ func (c *Storage) evictUntilWithinLimit() (items int, mem int64) {
 			shardOffset = 0
 		}
 
+		c.balancer.rebalance()
 		shard, found := c.balancer.MostLoadedSampled(shardOffset)
 		if !found {
 			continue
@@ -66,11 +72,6 @@ func (c *Storage) evictUntilWithinLimit() (items int, mem int64) {
 			el, ok := lru.Next(offset)
 			if !ok {
 				break
-			}
-
-			if el.Value().IsDoomed() {
-				offset++
-				continue
 			}
 
 			key := el.Value().Key()

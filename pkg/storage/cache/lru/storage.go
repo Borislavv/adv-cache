@@ -6,7 +6,6 @@ import (
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/repository"
 	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
-	synced "github.com/Borislavv/traefik-http-cache-plugin/pkg/sync"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/utils"
 	"github.com/rs/zerolog/log"
 	"runtime"
@@ -17,7 +16,7 @@ import (
 const dumpDir = "public/dump"
 
 var (
-	evictionStatCh = make(chan evictionStat, synced.PreallocateBatchSize)
+	evictionStatCh = make(chan evictionStat, 32)
 )
 
 // evictionStat carries statistics for each eviction batch.
@@ -77,28 +76,28 @@ func NewStorage(
 
 // Get retrieves a response by request and bumps its Storage position.
 // Returns: (response, releaser, found).
-func (c *Storage) Get(req *model.Request) (*model.Response, *sharded.Releaser[*model.Response], bool) {
-	resp, releaser, found := c.shardedMap.Get(req.Key(), req.ShardKey())
+func (c *Storage) Get(req *model.Request) (*model.Response, bool) {
+	resp, found := c.shardedMap.Get(req.Key(), req.ShardKey())
 	if found {
 		c.touch(resp)
-		return resp, releaser, true
+		return resp, true
 	}
-	return nil, nil, false
+	return nil, false
 }
 
 // Set inserts or updates a response in the cache, updating Weight usage and Storage position.
-func (c *Storage) Set(new *model.Response) *sharded.Releaser[*model.Response] {
-	existing, releaser, found := c.shardedMap.Get(new.Request().Key(), new.Request().ShardKey())
+func (c *Storage) Set(new *model.Response) {
+	existing, found := c.shardedMap.Get(new.Request().Key(), new.Request().ShardKey())
 	if found {
 		c.update(existing, new)
-		return releaser
+		return
 	}
-	return c.set(new)
+	c.set(new)
 }
 
 // Del does not guarantee that the item will be deleted at this time because other users may exist.
 func (c *Storage) del(key uint64, shardKey uint64) (freed int64, isHit bool) {
-	freed, isHit = c.shardedMap.Release(key)
+	freed, isHit = c.shardedMap.Remove(key)
 	if isHit {
 		c.balancer.Remove(shardKey)
 	}
@@ -117,10 +116,9 @@ func (c *Storage) update(existing, new *model.Response) {
 }
 
 // set inserts a new response, updates Weight usage and registers in balancer.
-func (c *Storage) set(new *model.Response) *sharded.Releaser[*model.Response] {
-	releaser := c.shardedMap.Set(new)
+func (c *Storage) set(new *model.Response) {
+	c.shardedMap.Set(new)
 	c.balancer.Set(new)
-	return releaser
 }
 
 // runLogger emits detailed stats about evictions, Weight, and GC activity every 5 seconds if debugging is enabled.

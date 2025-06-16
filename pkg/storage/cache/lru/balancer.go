@@ -2,15 +2,16 @@ package lru
 
 import (
 	"context"
+	"math/rand/v2"
+	"sync/atomic"
+	"time"
+	"unsafe"
+
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/consts"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/list"
 	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/utils"
-	"math/rand/v2"
-	"sync/atomic"
-	"time"
-	"unsafe"
 )
 
 // ShardNode represents a single shard's Storage and accounting info.
@@ -29,7 +30,7 @@ func (s *ShardNode) Weight() int64 {
 
 type Balancer interface {
 	rebalance()
-	Shards() [sharded.NumOfShards]*ShardNode
+	Shards() [sharded.ShardCount]*ShardNode
 	RandShardNode() *ShardNode
 	Register(shard *sharded.Shard[*model.Response])
 	Set(resp *model.Response) *ShardNode
@@ -37,7 +38,6 @@ type Balancer interface {
 	Move(shardKey uint64, el *list.Element[*model.Response])
 	Remove(shardKey uint64)
 	MostLoadedSampled(offset int) (*ShardNode, bool)
-	Weight() int64
 }
 
 // Balance maintains per-shard Storage lists and provides efficient selection of loaded shards for eviction.
@@ -134,13 +134,4 @@ func (b *Balance) MostLoadedSampled(offset int) (*ShardNode, bool) {
 		return nil, false
 	}
 	return el.Value(), ok
-}
-
-// Weight returns an approximate total Memory usage of all shards and the balancer itself.
-func (b *Balance) Weight() int64 {
-	mem := int64(unsafe.Sizeof(*b)) + (int64(sharded.NumOfShards) * consts.PtrBytesWeight)
-	for _, shard := range b.shards {
-		mem += shard.Weight()
-	}
-	return mem
 }

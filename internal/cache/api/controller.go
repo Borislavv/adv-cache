@@ -9,7 +9,6 @@ import (
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/repository"
 	serverutils "github.com/Borislavv/traefik-http-cache-plugin/pkg/server/utils"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage"
-	synced "github.com/Borislavv/traefik-http-cache-plugin/pkg/sync"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/utils"
 	"github.com/fasthttp/router"
 	"github.com/rs/zerolog/log"
@@ -50,7 +49,6 @@ type CacheController struct {
 	ctx     context.Context
 	cache   storage.Storage
 	backend repository.Backender
-	reader  synced.PooledReader
 }
 
 // NewCacheController builds a cache API controller with all dependencies.
@@ -60,14 +58,12 @@ func NewCacheController(
 	cfg *config.Config,
 	cache storage.Storage,
 	backend repository.Backender,
-	reader synced.PooledReader,
 ) *CacheController {
 	c := &CacheController{
 		cfg:     cfg,
 		ctx:     ctx,
 		cache:   cache,
 		backend: backend,
-		reader:  reader,
 	}
 	if c.cfg.IsDebugOn() {
 		c.runLogger(ctx)
@@ -91,8 +87,7 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 	}
 
 	// Try to get response from cache.
-	resp, rel, found := c.cache.Get(req)
-	defer rel.Release()
+	resp, found := c.cache.Get(req)
 	if !found {
 		// On cache miss, get data from upstream backend and save in cache.
 		resp, err = c.backend.Fetch(ctx, req)
@@ -100,8 +95,7 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 			c.respondThatServiceIsTemporaryUnavailable(err, r)
 			return
 		}
-		rel = c.cache.Set(resp)
-		defer rel.Release()
+		c.cache.Set(resp)
 	}
 
 	// Write status, headers, and body from the cached (or fetched) response.

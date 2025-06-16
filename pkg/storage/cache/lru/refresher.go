@@ -2,28 +2,28 @@ package lru
 
 import (
 	"context"
+	"strconv"
+	"time"
+
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
-	synced "github.com/Borislavv/traefik-http-cache-plugin/pkg/sync"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/utils"
 	"github.com/rs/zerolog/log"
 	"golang.org/x/time/rate"
-	"strconv"
-	"time"
 )
 
 const (
-	shardRateLimit        = 32   // Global limiter: maximum concurrent refreshes across all shards
+	shardRateLimit        = 64   // Global limiter: maximum concurrent refreshes across all shards
 	shardRateLimitBurst   = 16   // Global limiter: maximum parallel requests.
 	refreshRateLimit      = 1024 // Global limiter: maximum concurrent refreshes across all shards
-	refreshRateLimitBurst = 100  // Global limiter: maximum parallel requests.
-	refreshSamples        = 32   // Number of items to sample per shard per refreshItem tick
+	refreshRateLimitBurst = 128  // Global limiter: maximum parallel requests.
+	refreshSamples        = 16   // Number of items to sample per shard per refreshItem tick
 	// Max refreshes per second = shardRateLimit(32) * refreshSamples(32) = 1024.
 )
 
 var (
-	refreshSuccessNumCh = make(chan struct{}, synced.PreallocateBatchSize) // Successful refreshes counter channel
-	refreshErroredNumCh = make(chan struct{}, synced.PreallocateBatchSize) // Failed refreshes counter channel
+	refreshSuccessNumCh = make(chan struct{}, 64) // Successful refreshes counter channel
+	refreshErroredNumCh = make(chan struct{}, 64) // Failed refreshes counter channel
 )
 
 type Refresher interface {

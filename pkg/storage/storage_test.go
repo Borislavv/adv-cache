@@ -2,11 +2,11 @@ package storage
 
 import (
 	"context"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/repository"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/cache/lru"
-	synced "github.com/Borislavv/traefik-http-cache-plugin/pkg/sync"
 	"testing"
 	"time"
+
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/repository"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/cache/lru"
 
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/mock"
@@ -36,7 +36,7 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 	shardedMap := sharded.NewMap[*model.Response](cfg.InitStorageLengthPerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
 	refresher := lru.NewRefresher(ctx, cfg, balancer)
-	backend := repository.NewBackend(cfg, synced.NewPooledResponseReader(2048))
+	backend := repository.NewBackend(cfg)
 	db := New(ctx, cfg, balancer, refresher, backend, shardedMap)
 
 	responses := mock.GenerateRandomResponses(cfg, b.N+1)
@@ -50,7 +50,7 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 		i := 0
 		for pb.Next() {
 			for j := 0; j < 10000; j++ {
-				db.Get(responses[(i*j)%length].Request())
+				_, _ = db.Get(responses[(i*j)%length].Request())
 			}
 			i += 10000
 		}
@@ -79,7 +79,7 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 	shardedMap := sharded.NewMap[*model.Response](cfg.InitStorageLengthPerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
 	refresher := lru.NewRefresher(ctx, cfg, balancer)
-	backend := repository.NewBackend(cfg, synced.NewPooledResponseReader(2048))
+	backend := repository.NewBackend(cfg)
 	db := New(ctx, cfg, balancer, refresher, backend, shardedMap)
 
 	responses := mock.GenerateRandomResponses(cfg, b.N+1)
@@ -116,7 +116,7 @@ func BenchmarkGetAllocs(b *testing.B) {
 	shardedMap := sharded.NewMap[*model.Response](cfg.InitStorageLengthPerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
 	refresher := lru.NewRefresher(ctx, cfg, balancer)
-	backend := repository.NewBackend(cfg, synced.NewPooledResponseReader(2048))
+	backend := repository.NewBackend(cfg)
 	db := New(ctx, cfg, balancer, refresher, backend, shardedMap)
 
 	resp := mock.GenerateRandomResponses(cfg, 1)[0]
@@ -147,7 +147,7 @@ func BenchmarkSetAllocs(b *testing.B) {
 	shardedMap := sharded.NewMap[*model.Response](cfg.InitStorageLengthPerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
 	refresher := lru.NewRefresher(ctx, cfg, balancer)
-	backend := repository.NewBackend(cfg, synced.NewPooledResponseReader(2048))
+	backend := repository.NewBackend(cfg)
 	db := New(ctx, cfg, balancer, refresher, backend, shardedMap)
 
 	resp := mock.GenerateRandomResponses(cfg, 1)[0]

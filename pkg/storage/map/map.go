@@ -2,18 +2,18 @@ package sharded
 
 import (
 	"context"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/types"
 	"sync"
 	"sync/atomic"
+
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/types"
 )
 
-const NumOfShards uint64 = 2048 // Total number of shards (power of 2 for fast hashing)
+const ShardCount uint64 = 2048 // Total number of shards (power of 2 for fast hashing)
 
 // Value must implement all cache entry interfaces: keying, sizing, and releasability.
 type Value interface {
 	types.Keyed
 	types.Sized
-	types.Releasable
 }
 
 // Map is a sharded concurrent map for high-performance caches.
@@ -38,16 +38,15 @@ func MapShardKey(key uint64) uint64 {
 }
 
 // Set inserts or updates a value in the correct shard. Returns a releaser for ref counting.
-func (smap *Map[V]) Set(value V) *Releaser[V] {
-	takenMem, releaser := smap.shards[value.ShardKey()].Set(value.Key(), value)
+func (smap *Map[V]) Set(value V) {
+	takenMem := smap.shards[value.ShardKey()].Set(value.Key(), value)
 	atomic.AddInt64(&smap.len, 1)
 	atomic.AddInt64(&smap.mem, takenMem)
-	return releaser
 }
 
 // Get fetches a value and its releaser from the correct shard.
 // found==false means the value is absent.
-func (smap *Map[V]) Get(key uint64, shardKey uint64) (value V, releaser *Releaser[V], found bool) {
+func (smap *Map[V]) Get(key uint64, shardKey uint64) (value V, found bool) {
 	return smap.shards[shardKey].Get(key)
 }
 
@@ -55,9 +54,9 @@ func (smap *Map[V]) Update(old, new V) {
 	atomic.AddInt64(&smap.mem, new.Weight()-old.Weight())
 }
 
-// Release deletes a value by key, returning how much memory was freed and a pointer to its LRU/list element.
-func (smap *Map[V]) Release(key uint64) (freed int64, isHit bool) {
-	freed, isHit = smap.Shard(key).Release(key)
+// Remove deletes a value by key, returning how much memory was freed and a pointer to its LRU/list element.
+func (smap *Map[V]) Remove(key uint64) (freed int64, isHit bool) {
+	freed, isHit = smap.Shard(key).Remove(key)
 	if isHit {
 		atomic.AddInt64(&smap.len, -1)
 		atomic.AddInt64(&smap.mem, -freed)
@@ -75,15 +74,11 @@ func (shard *Shard[V]) Walk(ctx context.Context, fn func(uint64, V) bool, lockRe
 		defer shard.RUnlock()
 	}
 	for k, v := range shard.items {
-		v.IncRefCount()
-		releaser := NewReleaser(v, shard.releaserPool)
 		select {
 		case <-ctx.Done():
-			releaser.Release()
 			return
 		default:
 			ok := fn(k, v)
-			releaser.Release()
 			if !ok {
 				return
 			} else {

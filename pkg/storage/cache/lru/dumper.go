@@ -148,14 +148,14 @@ func (c *Storage) LoadFromDir(ctx context.Context, dir string) error {
 				continue
 			}
 
-			resp := model.ResponsePool.Get().Init().Touch()
+			resp := new(model.Response).Init().Touch()
 			if err = resp.UnmarshalBinary(data, c.backend.RevalidatorMaker); err != nil {
 				log.Err(err).Msgf("[dump] unmarshal binary: %s", err.Error())
 				errors++
 				continue
 			}
 
-			c.Set(resp).Release()
+			c.Set(resp)
 			success++
 		}
 	}

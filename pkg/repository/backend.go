@@ -1,11 +1,11 @@
 package repository
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
-	synced "github.com/Borislavv/traefik-http-cache-plugin/pkg/sync"
 	"net/http"
 	"time"
 )
@@ -21,16 +21,12 @@ type Backender interface {
 // Backend implements the Backender interface.
 // It fetches and constructs SEO page data responses from an external backend.
 type Backend struct {
-	cfg    *config.Cache       // Global configuration (SEO backend URL, etc)
-	reader synced.PooledReader // Efficient reader for HTTP responses
+	cfg *config.Cache // Global configuration (SEO backend URL, etc)
 }
 
 // NewBackend creates a new instance of Backend.
-func NewBackend(cfg *config.Cache, reader synced.PooledReader) *Backend {
-	return &Backend{
-		cfg:    cfg,
-		reader: reader,
-	}
+func NewBackend(cfg *config.Cache) *Backend {
+	return &Backend{cfg: cfg}
 }
 
 // Fetch method fetches page data for the given request and constructs a cacheable response.
@@ -87,10 +83,11 @@ func (s *Backend) requestExternalBackend(ctx context.Context, req *model.Request
 	defer func() { _ = response.Body.Close() }()
 
 	// Read response body using a pooled reader to reduce allocations.
-	body, freeFn, err := s.reader.Read(response)
+	body := new(bytes.Buffer)
+	_, err = body.ReadFrom(response.Body)
 	if err != nil {
 		return nil, err
 	}
 
-	return model.NewData(response.StatusCode, response.Header, body, freeFn), nil
+	return model.NewData(response.StatusCode, response.Header, body.Bytes()), nil
 }

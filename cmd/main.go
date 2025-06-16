@@ -74,9 +74,18 @@ func main() {
 		http.ListenAndServe("localhost:6060", nil)
 	}()
 
-	f, _ := os.Create("heap.prof")
-	pprof.Lookup("heap").WriteTo(f, 0)
+	f, err := os.Create("cpu_profile.pprof")
+	if err != nil {
+		panic(err)
+	}
 	defer f.Close()
+
+	// Запускаем запись CPU профиля
+	if err = pprof.StartCPUProfile(f); err != nil {
+		panic(err)
+	}
+	// Обязательно останови профиль перед завершением программы
+	defer pprof.StopCPUProfile()
 
 	// Create a root context for gracefulShutdown shutdown and cancellation.
 	ctx, cancel := context.WithCancel(context.Background())

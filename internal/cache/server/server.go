@@ -14,7 +14,6 @@ import (
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/server/controller"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/server/middleware"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage"
-	synced "github.com/Borislavv/traefik-http-cache-plugin/pkg/sync"
 	"github.com/rs/zerolog/log"
 	"sync"
 	"sync/atomic"
@@ -40,7 +39,6 @@ type HttpServer struct {
 	cfg           *config.Config
 	db            storage.Storage
 	backend       repository.Backender
-	reader        synced.PooledReader
 	probe         liveness.Prober
 	metrics       metrics.Meter
 	server        httpserver.Server
@@ -54,7 +52,6 @@ func New(
 	cfg *config.Config,
 	db storage.Storage,
 	backend repository.Backender,
-	reader synced.PooledReader,
 	probe liveness.Prober,
 ) (*HttpServer, error) {
 	var err error
@@ -73,7 +70,6 @@ func New(
 		cfg:           cfg,
 		db:            db,
 		backend:       backend,
-		reader:        reader,
 		probe:         probe,
 		isServerAlive: &atomic.Bool{},
 	}
@@ -171,9 +167,9 @@ func (s *HttpServer) initServer() error {
 // controllers returns all HTTP controllers for the server (endpoints/handlers).
 func (s *HttpServer) controllers() []controller.HttpController {
 	return []controller.HttpController{
-		liveness.NewController(s.probe),                                 // Liveness/healthcheck endpoint
-		api.NewCacheController(s.ctx, s.cfg, s.db, s.backend, s.reader), // Main cache handler
-		api2.NewPrometheusMetrics(s.ctx),                                // Metrics metrics endpoint
+		liveness.NewController(s.probe),                       // Liveness/healthcheck endpoint
+		api.NewCacheController(s.ctx, s.cfg, s.db, s.backend), // Main cache handler
+		api2.NewPrometheusMetrics(s.ctx),                      // Metrics metrics endpoint
 	}
 }
 
