@@ -12,17 +12,17 @@ import (
 )
 
 const (
-	shardRateLimit        = 16   // Global limiter: maximum concurrent refreshes across all shards
-	shardRateLimitBurst   = 8    // Global limiter: maximum parallel requests.
-	refreshRateLimit      = 1000 // Global limiter: maximum concurrent refreshes across all shards
-	refreshRateLimitBurst = 100  // Global limiter: maximum parallel requests.
+	shardRateLimit        = 64   // Global limiter: maximum concurrent refreshes across all shards
+	shardRateLimitBurst   = 16   // Global limiter: maximum parallel requests.
+	refreshRateLimit      = 1024 // Global limiter: maximum concurrent refreshes across all shards
+	refreshRateLimitBurst = 128  // Global limiter: maximum parallel requests.
 	refreshSamples        = 16   // Number of items to sample per shard per refreshItem tick
 	// Max refreshes per second = shardRateLimit(32) * refreshSamples(32) = 1024.
 )
 
 var (
-	refreshSuccessNumCh = make(chan struct{}) // Successful refreshes counter channel
-	refreshErroredNumCh = make(chan struct{}) // Failed refreshes counter channel
+	refreshSuccessNumCh = make(chan struct{}, 64) // Successful refreshes counter channel
+	refreshErroredNumCh = make(chan struct{}, 64) // Failed refreshes counter channel
 )
 
 type Refresher interface {

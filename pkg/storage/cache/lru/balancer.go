@@ -28,7 +28,7 @@ func (s *ShardNode) Weight() int64 {
 }
 
 type Balancer interface {
-	Rebalance()
+	rebalance()
 	Shards() [sharded.ShardCount]*ShardNode
 	RandShardNode() *ShardNode
 	Register(shard *sharded.Shard[*model.Response])
@@ -74,7 +74,7 @@ func (b *Balance) RunRebalancer() {
 	}()
 }
 
-func (b *Balance) Rebalance() {
+func (b *Balance) rebalance() {
 	// sort shardNodes by weight (freedMem)
 	b.memList.Sort(list.DESC)
 }
@@ -127,7 +127,8 @@ func (b *Balance) Remove(shardKey uint64) {
 // MostLoadedSampled returns the first non-empty shard node from the front of memList,
 // optionally skipping a number of nodes by offset (for concurrent eviction fairness).
 func (b *Balance) MostLoadedSampled(offset int) (*ShardNode, bool) {
-	el, ok := b.memList.NextUnlocked(offset)
+	b.rebalance()
+	el, ok := b.memList.Next(offset)
 	if !ok {
 		return nil, false
 	}

@@ -50,7 +50,7 @@ func (c *Storage) evictUntilWithinLimit() (items int, mem int64) {
 			shardOffset = 0
 		}
 
-		c.balancer.Rebalance()
+		c.balancer.rebalance()
 		shard, found := c.balancer.MostLoadedSampled(shardOffset)
 		if !found {
 			continue
@@ -64,16 +64,13 @@ func (c *Storage) evictUntilWithinLimit() (items int, mem int64) {
 		offset := 0
 		evictions := 0
 		for c.shouldEvict() {
-			lru.Lock()
-			el, ok := lru.NextUnlocked(offset)
+			el, ok := lru.Next(offset)
 			if !ok {
-				lru.Unlock()
 				break
 			}
 
 			key := el.Value().Key()
 			shardKey := el.Value().ShardKey()
-			lru.Unlock()
 
 			freedMem, isHit := c.del(key, shardKey)
 			if isHit {
