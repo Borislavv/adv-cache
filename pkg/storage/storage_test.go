@@ -49,10 +49,10 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
-			for j := 0; j < 10000; j++ {
+			for j := 0; j < 1000; j++ {
 				_, _ = db.Get(responses[(i*j)%length].Request())
 			}
-			i += 10000
+			i += 1000
 		}
 	})
 	b.StopTimer()
@@ -89,10 +89,10 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
-			for j := 0; j < 10000; j++ {
+			for j := 0; j < 1000; j++ {
 				db.Set(responses[(i*j)%length])
 			}
-			i += 10000
+			i += 1000
 		}
 	})
 	b.StopTimer()

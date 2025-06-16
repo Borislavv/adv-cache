@@ -20,7 +20,6 @@ func NewShard[V Value](id uint64, defaultLen int) *Shard[V] {
 		id:      id,
 		RWMutex: &sync.RWMutex{},
 		items:   make(map[uint64]V, defaultLen),
-		id:      id,
 	}
 }
 

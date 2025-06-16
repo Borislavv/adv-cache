@@ -8,7 +8,7 @@ import (
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/types"
 )
 
-const ShardCount uint64 = 2048 // Total number of shards (power of 2 for fast hashing)
+const NumOfShards uint64 = 2048 // Total number of shards (power of 2 for fast hashing)
 
 // Value must implement all cache entry interfaces: keying, sizing, and releasability.
 type Value interface {

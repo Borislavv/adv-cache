@@ -73,7 +73,10 @@ func NewCacheController(
 
 // Index is the main HTTP handler for /api/v1/cache.
 func (c *CacheController) Index(r *fasthttp.RequestCtx) {
-	f := time.Now()
+	var f time.Time
+	if c.cfg.IsDebugOn() {
+		f = time.Now()
+	}
 
 	// Extract application context from request, fallback to base context.
 	ctx, cancel := context.WithCancel(c.ctx)

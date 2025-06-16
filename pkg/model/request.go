@@ -17,10 +17,7 @@ const (
 	maxTagsLen                 = 10  // Maximum number of tags per request
 )
 
-var (
-	// Pools for reusable objects and buffers.
-	HasherPool = &sync.Pool{New: func() any { return xxh3.New() }}
-)
+var HasherPool = &sync.Pool{New: func() any { return xxh3.New() }}
 
 // Request holds normalized, deduplicated, hashed and uniquely queryable representation of a cache request.
 type Request struct {

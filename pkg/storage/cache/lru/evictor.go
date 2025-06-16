@@ -7,8 +7,6 @@ import (
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/utils"
 )
 
-const evictionsPerSample = 8
-
 var (
 	_maxShards          = float64(sharded.NumOfShards)
 	fatShardsPercentage = int(_maxShards * 0.25)
@@ -22,22 +20,19 @@ func (c *Storage) runEvictor() {
 // evictor is the main background eviction loop for one worker.
 // Each worker tries to bring Weight usage under the threshold by evicting from most loaded shards.
 func (c *Storage) evictor() {
-	t := utils.NewTicker(c.ctx, time.Second)
+	t := utils.NewTicker(c.ctx, time.Millisecond*250)
 	for {
 		select {
 		case <-c.ctx.Done():
 			return
 		case <-t:
+			c.balancer.Rebalance()
 			items, freedMem := c.evictUntilWithinLimit()
 			if c.cfg.IsDebugOn() && (items > 0 || freedMem > 0) {
 				evictionStatCh <- evictionStat{items: items, freedMem: freedMem}
 			}
 		}
 	}
-}
-
-func (c *Storage) usedMem() int64 {
-	return c.shardedMap.Mem()
 }
 
 // shouldEvict checks if current Weight usage has reached or exceeded the threshold.
@@ -52,10 +47,10 @@ func (c *Storage) evictUntilWithinLimit() (items int, mem int64) {
 	for c.shouldEvict() {
 		shardOffset++
 		if shardOffset >= fatShardsPercentage {
+			c.balancer.Rebalance()
 			shardOffset = 0
 		}
 
-		c.balancer.rebalance()
 		shard, found := c.balancer.MostLoadedSampled(shardOffset)
 		if !found {
 			continue
@@ -63,7 +58,7 @@ func (c *Storage) evictUntilWithinLimit() (items int, mem int64) {
 
 		lru := shard.lruList
 		if lru.Len() == 0 {
-			break
+			continue
 		}
 
 		offset := 0
@@ -74,10 +69,7 @@ func (c *Storage) evictUntilWithinLimit() (items int, mem int64) {
 				break
 			}
 
-			key := el.Value().Key()
-			shardKey := el.Value().ShardKey()
-
-			freedMem, isHit := c.del(key, shardKey)
+			freedMem, isHit := c.del(el.Value().Key())
 			if isHit {
 				items++
 				evictions++

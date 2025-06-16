@@ -5,6 +5,7 @@ import (
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/prometheus/metrics"
 	"github.com/valyala/fasthttp"
 	"strconv"
+	"unsafe"
 )
 
 type PrometheusMetrics struct {
@@ -18,14 +19,20 @@ func NewPrometheusMetrics(ctx context.Context, metrics metrics.Meter) *Prometheu
 
 func (m *PrometheusMetrics) Middleware(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 	return func(ctx *fasthttp.RequestCtx) {
-		timer := m.metrics.NewResponseTimeTimer(string(ctx.Path()), string(ctx.Method()))
+		pth := ctx.Path()
+		path := *(*string)(unsafe.Pointer(&pth))
 
-		m.metrics.IncTotal(string(ctx.Path()), string(ctx.Method()), "")
+		mthd := ctx.Method()
+		method := *(*string)(unsafe.Pointer(&mthd))
+
+		timer := m.metrics.NewResponseTimeTimer(path, method)
+
+		m.metrics.IncTotal(path, method, "")
 
 		next(ctx)
 
-		m.metrics.IncStatus(string(ctx.Path()), string(ctx.Method()), strconv.Itoa(ctx.Response.StatusCode()))
-		m.metrics.IncTotal(string(ctx.Path()), string(ctx.Method()), strconv.Itoa(ctx.Response.StatusCode()))
+		m.metrics.IncStatus(path, method, strconv.Itoa(ctx.Response.StatusCode()))
+		m.metrics.IncTotal(path, method, strconv.Itoa(ctx.Response.StatusCode()))
 
 		m.metrics.FlushResponseTimeTimer(timer)
 	}

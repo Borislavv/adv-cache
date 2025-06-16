@@ -96,12 +96,8 @@ func (c *Storage) Set(new *model.Response) {
 }
 
 // Del does not guarantee that the item will be deleted at this time because other users may exist.
-func (c *Storage) del(key uint64, shardKey uint64) (freed int64, isHit bool) {
-	freed, isHit = c.shardedMap.Remove(key)
-	if isHit {
-		c.balancer.Remove(shardKey)
-	}
-	return freed, isHit
+func (c *Storage) del(key uint64) (freed int64, isHit bool) {
+	return c.shardedMap.Remove(key)
 }
 
 // touch bumps the Storage position of an existing entry (MoveToFront) and increases its refcount.

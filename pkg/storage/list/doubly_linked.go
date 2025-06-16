@@ -40,14 +40,14 @@ func (e *Element[T]) Weight() int64 {
 // List is a generic doubly linked list with optional thread safety.
 type List[T types.Sized] struct {
 	len  int64
-	mu   *sync.Mutex
+	mu   *sync.RWMutex
 	root *Element[T]
 }
 
 // New creates a new list. If isThreadSafe is true, all ops are guarded by a mutex.
 func New[T types.Sized]() *List[T] {
 	l := &List[T]{
-		mu: &sync.Mutex{},
+		mu: &sync.RWMutex{},
 	}
 	l.init()
 	return l
@@ -97,7 +97,6 @@ func (l *List[T]) remove(e *Element[T]) T {
 func (l *List[T]) Remove(e *Element[T]) T {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-
 	if e == nil || e.list != l {
 		var zero T
 		return zero
@@ -109,7 +108,6 @@ func (l *List[T]) Remove(e *Element[T]) T {
 func (l *List[T]) PushFront(v T) *Element[T] {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-
 	return l.insertValue(v, l.root)
 }
 
