@@ -81,8 +81,6 @@ func (shard *Shard[V]) Walk(ctx context.Context, fn func(uint64, V) bool, lockRe
 			ok := fn(k, v)
 			if !ok {
 				return
-			} else {
-				continue
 			}
 		}
 	}
