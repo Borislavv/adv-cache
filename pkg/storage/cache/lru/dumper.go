@@ -4,159 +4,155 @@ import (
 	"bufio"
 	"compress/gzip"
 	"context"
-	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
+	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
 	"github.com/rs/zerolog/log"
-	"io"
+	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
-const (
-	dumpFileName = "cache.dump"
-	filePerm     = 0644
-)
+const dumpFileName = "cache.dump.gz"
 
-// DumpToDir writes all shards into a single binary file with length-prefixed records.
+var dumpEntryPool = sync.Pool{
+	New: func() any { return new(dumpEntry) },
+}
+
+type dumpEntry struct {
+	Unique     string      `json:"unique"`
+	StatusCode int         `json:"statusCode"`
+	Headers    http.Header `json:"headers"`
+	Body       []byte      `json:"body"`
+	Project    []byte      `json:"project"`
+	Domain     []byte      `json:"domain"`
+	Language   []byte      `json:"language"`
+	KeyBuf     []byte      `json:"keyBuf"`
+	Tags       [][]byte    `json:"tags"`
+}
+
 func (c *Storage) DumpToDir(ctx context.Context, dir string) error {
-	from := time.Now()
-
+	start := time.Now()
 	filename := filepath.Join(dir, dumpFileName)
+
 	f, err := os.Create(filename)
 	if err != nil {
-		err = fmt.Errorf("create dump file error: %w", err)
-		log.Err(err).Msg("[dump] " + err.Error())
-		return err
+		return fmt.Errorf("create dump file error: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 
 	gz := gzip.NewWriter(f)
 	defer func() { _ = gz.Close() }()
 
-	bufWriter := bufio.NewWriterSize(gz, 8*1024*1024) // 8MB буфер
+	bw := bufio.NewWriterSize(gz, 64*1024*1024) // 64MB
+	defer func() { _ = bw.Flush() }()
 
-	errors := 0
-	success := 0
-	for shardID, node := range c.balancer.Shards() {
-		node.shard.Walk(ctx, func(_ uint64, resp *model.Response) bool {
-			select {
-			case <-ctx.Done():
-				return false
-			default:
-				if data, err := resp.MarshalBinary(); err != nil {
-					log.Err(err).Msg("[dump] " + fmt.Errorf("marshal data to binary failed: %w", err).Error())
-					errors++
-					return true
-				} else {
-					// [shard_id:uint16][len:uint32][payload]
-					if err = binary.Write(bufWriter, binary.LittleEndian, uint16(shardID)); err != nil {
-						log.Err(err).Msg("[dump] write shard_id to binary failed")
-						errors++
-						return true
-					}
-					if err = binary.Write(bufWriter, binary.LittleEndian, uint32(len(data))); err != nil {
-						log.Err(err).Msg("[dump] write payload length to binary failed")
-						errors++
-						return true
-					}
-					if _, err := bufWriter.Write(data); err != nil {
-						log.Err(err).Msg("[dump] write payload to binary failed")
-						errors++
-						return true
-					}
-					success++
-				}
+	var success, errors int32
+	enc := json.NewEncoder(bw)
+	mu := sync.Mutex{}
+
+	c.shardedMap.WalkShards(func(shardKey uint64, shard *sharded.Shard[*model.Response]) {
+		shard.Walk(ctx, func(key uint64, resp *model.Response) bool {
+			mu.Lock()
+			defer mu.Unlock()
+
+			e := dumpEntryPool.Get().(*dumpEntry)
+			*e = dumpEntry{
+				Unique:     fmt.Sprintf("%d-%d", shardKey, key),
+				StatusCode: resp.Data().StatusCode(),
+				Headers:    resp.Data().Headers(),
+				Body:       resp.Data().Body(),
+				Project:    resp.Request().GetProject(),
+				Domain:     resp.Request().GetDomain(),
+				Language:   resp.Request().GetLanguage(),
+				Tags:       resp.Request().GetTags(),
+				KeyBuf:     resp.Request().KeyBuf,
 			}
+
+			if err = enc.Encode(e); err != nil {
+				log.Err(err).Msg("[dump] entry encode error")
+				atomic.AddInt32(&errors, 1)
+			} else {
+				atomic.AddInt32(&success, 1)
+			}
+
+			// Clean and put back to pool
+			*e = dumpEntry{}
+			dumpEntryPool.Put(e)
 			return true
 		}, true)
-	}
+	})
 
-	if err = bufWriter.Flush(); err != nil {
-		err = fmt.Errorf("flush buffer failed: %w", err)
-		log.Err(err).Msg("[dump] " + err.Error())
-		return err
-	}
-
-	if err = gz.Close(); err != nil {
-		err = fmt.Errorf("flush gzip buffer failed: %w", err)
-		log.Err(err).Msg("[dump] " + err.Error())
-		return err
-	}
-
-	log.Info().Msgf(
-		"[dump] dump to: %s successfully written %d keys, errors %d (elapsed: %s)",
-		filename, success, errors, time.Since(from).String(),
-	)
-
+	log.Info().Msgf("[dump] finished writing %d entries, errors: %d (elapsed: %s)", success, errors, time.Since(start))
 	if errors > 0 {
-		return fmt.Errorf(fmt.Sprintf("dump errors: %d", errors))
+		return fmt.Errorf("completed with %d errors", errors)
 	}
-
 	return nil
 }
 
-// LoadFromDir loads all data from the single dump file.
 func (c *Storage) LoadFromDir(ctx context.Context, dir string) error {
-	from := time.Now()
-
+	start := time.Now()
 	filename := filepath.Join(dir, dumpFileName)
+
 	f, err := os.Open(filename)
 	if err != nil {
-		return fmt.Errorf("open dump file: %w", err)
+		return fmt.Errorf("open dump file error: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 
 	gz, err := gzip.NewReader(f)
 	if err != nil {
-		return fmt.Errorf("make a gzip reader: %w", err)
+		return fmt.Errorf("gzip reader error: %w", err)
 	}
 	defer func() { _ = gz.Close() }()
 
-	bufReader := bufio.NewReaderSize(gz, 8*1024*1024) // 8mb
+	dec := json.NewDecoder(bufio.NewReaderSize(gz, 64*1024*1024)) // 64MB
 
-	errors := 0
-	success := 0
-	for {
-		select {
-		case <-ctx.Done():
+	var success, failed int
+	for dec.More() {
+		if ctx.Err() != nil {
+			log.Warn().Msg("[dump] context cancelled")
 			return ctx.Err()
-		default:
-			var shardID uint16
-			if err = binary.Read(bufReader, binary.LittleEndian, &shardID); err != nil {
-				if err == io.EOF {
-					log.Info().Msgf("[dump] successfully loaded %d keys, errors: %d (elapsed: %s)", success, errors, time.Since(from).String())
-					return nil
-				}
-				log.Err(err).Msgf("[dump] read shard_id: %s", err.Error())
-				errors++
-				continue
-			}
-
-			var dataLen uint32
-			if err = binary.Read(bufReader, binary.LittleEndian, &dataLen); err != nil {
-				log.Err(err).Msgf("[dump] read dataLen: %s", err.Error())
-				errors++
-				continue
-			}
-
-			data := make([]byte, dataLen)
-			if _, err = io.ReadFull(bufReader, data); err != nil {
-				log.Err(err).Msgf("[dump] read full payload: %s", err.Error())
-				errors++
-				continue
-			}
-
-			resp := new(model.Response).Init().Touch()
-			if err = resp.UnmarshalBinary(data, c.backend.RevalidatorMaker); err != nil {
-				log.Err(err).Msgf("[dump] unmarshal binary: %s", err.Error())
-				errors++
-				continue
-			}
-
-			c.Set(resp)
-			success++
 		}
+
+		entry := dumpEntryPool.Get().(*dumpEntry)
+		if err = dec.Decode(entry); err != nil {
+			log.Err(err).Msg("[dump] decode error")
+			failed++
+			dumpEntryPool.Put(entry)
+			continue
+		}
+
+		data := model.NewData(entry.StatusCode, entry.Headers, entry.Body)
+		req, err := model.NewManualRequest(entry.Project, entry.Domain, entry.Language, entry.Tags)
+		if err != nil {
+			log.Err(err).Msg("[dump] request build failed")
+			failed++
+			dumpEntryPool.Put(entry)
+			continue
+		}
+		req.KeyBuf = entry.KeyBuf
+
+		resp, err := model.NewResponse(data, req, c.cfg, c.backend.RevalidatorMaker(req))
+		if err != nil {
+			log.Err(err).Msg("[dump] response build failed")
+			failed++
+			dumpEntryPool.Put(entry)
+			continue
+		}
+
+		c.Set(resp)
+		success++
+		dumpEntryPool.Put(entry)
 	}
+
+	log.Info().Msgf("[dump] restored %d entries, errors: %d (elapsed: %s)", success, failed, time.Since(start))
+	if failed > 0 {
+		return fmt.Errorf("load completed with %d errors", failed)
+	}
+	return nil
 }
