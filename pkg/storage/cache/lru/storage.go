@@ -90,9 +90,6 @@ func (c *Storage) Get(req *model.Request) (*model.Response, bool) {
 func (c *Storage) Set(new *model.Response) {
 	existing, found := c.shardedMap.Get(new.Request().Key(), new.Request().ShardKey())
 	if found {
-		log.Info().Msgf("EXISTS: dom: %s, proj: %s, lng: %s, tags: %s", string(existing.Request().GetDomain()), string(existing.Request().GetProject()), string(existing.Request().GetLanguage()), string(existing.Request().ToQuery()))
-		log.Info().Msgf("NEW: dom: %s, proj: %s, lng: %s, tags: %s", string(existing.Request().GetDomain()), string(existing.Request().GetProject()), string(existing.Request().GetLanguage()), string(existing.Request().ToQuery()))
-		panic("found")
 		c.update(existing, new)
 		return
 	}

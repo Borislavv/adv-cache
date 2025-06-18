@@ -41,11 +41,13 @@ func (c *Storage) DumpToDir(ctx context.Context, dir string) error {
 
 	bufWriter := bufio.NewWriterSize(gz, 128*1024*1024) // 128MB
 
+	var mu = &sync.Mutex{}
 	var success, errors int32
-	var mu sync.Mutex
-
 	c.shardedMap.WalkShards(func(shardKey uint64, shard *sharded.Shard[*model.Response]) {
 		shard.Walk(ctx, func(key uint64, resp *model.Response) bool {
+			mu.Lock()
+			defer mu.Unlock()
+
 			if ctx.Err() != nil {
 				log.Warn().Msg("[dump] context cancelled")
 				return false
@@ -61,9 +63,6 @@ func (c *Storage) DumpToDir(ctx context.Context, dir string) error {
 			header := [6]byte{}
 			binary.LittleEndian.PutUint64(header[0:], shardKey)
 			binary.LittleEndian.PutUint32(header[2:], uint32(len(data)))
-
-			mu.Lock()
-			defer mu.Unlock()
 
 			if _, err = bufWriter.Write(header[:]); err != nil {
 				log.Err(err).Msg("[dump] write header error")
