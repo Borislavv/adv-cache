@@ -56,10 +56,10 @@ func NewManualRequest(project, domain, language []byte, tags [][]byte) (*Request
 // NewRequest builds a Request from fasthttp.Args, with strict interning and pooling.
 func NewRequest(q *fasthttp.Args) (*Request, error) {
 	var (
-		project  = q.Peek("project[id]")
-		domain   = q.Peek("domain")
-		language = q.Peek("language")
-		tags     = extractTags(q)
+		project  = extractArgAndCopy(q.Peek("project[id]"))
+		domain   = extractArgAndCopy(q.Peek("domain"))
+		language = extractArgAndCopy(q.Peek("language"))
+		tags     = extractTagsAndCopy(q)
 	)
 	r, err := new(Request).setUp(project, domain, language, tags).validate()
 	if err != nil {
@@ -68,12 +68,10 @@ func NewRequest(q *fasthttp.Args) (*Request, error) {
 	return r, nil
 }
 
-func DEBUG_ONLY_copyTags(in [][]byte) [][]byte {
-	out := make([][]byte, len(in))
-	for i, t := range in {
-		out[i] = append([]byte(nil), t...)
-	}
-	return out
+func extractArgAndCopy(arg []byte) []byte {
+	argument := make([]byte, len(arg))
+	copy(argument, arg)
+	return argument
 }
 
 // setUp initializes the Request, interns all fields, builds keys, and sets up uniqueQuery.
@@ -81,7 +79,7 @@ func (r *Request) setUp(project, domain, language []byte, tags [][]byte) *Reques
 	r.project = project
 	r.domain = domain
 	r.language = language
-	r.tags = DEBUG_ONLY_copyTags(tags)
+	r.tags = tags
 
 	r.setUpQuery()
 	r.setUpShardKey(r.setUpKey())
@@ -103,8 +101,8 @@ func (r *Request) validate() (*Request, error) {
 	return r, nil
 }
 
-// extractTags collects choice-like tags from the args, returns them and a release function.
-func extractTags(args *fasthttp.Args) [][]byte {
+// extractTagsAndCopy collects choice-like tags from the args, returns them and a release function.
+func extractTagsAndCopy(args *fasthttp.Args) [][]byte {
 	var (
 		nullValue   = []byte("null")
 		choiceValue = []byte("choice")
@@ -116,7 +114,9 @@ func extractTags(args *fasthttp.Args) [][]byte {
 		if !bytes.HasPrefix(key, choiceValue) || bytes.Equal(tag, nullValue) {
 			return
 		}
-		tags = append(tags, tag)
+		copiedTag := make([]byte, len(tag))
+		copy(copiedTag, tag)
+		tags = append(tags, copiedTag)
 		i++
 	})
 
@@ -147,10 +147,8 @@ func (r *Request) setUpKey() uint64 {
 		buf = append(buf, tag...)
 	}
 
-	//hasher := HasherPool.Get().(*xxh3.Hasher)
-	//defer HasherPool.Put(hasher)
-
-	hasher := xxh3.New()
+	hasher := HasherPool.Get().(*xxh3.Hasher)
+	defer HasherPool.Put(hasher)
 
 	hasher.Reset()
 	if _, err := hasher.Write(buf); err != nil {

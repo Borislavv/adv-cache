@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,12 +27,12 @@ type dumpEntry struct {
 	Unique     string      `json:"unique"`
 	StatusCode int         `json:"statusCode"`
 	Headers    http.Header `json:"headers"`
-	Body       string      `json:"body"`
-	Project    string      `json:"project"`  // Interned project name
-	Domain     string      `json:"domain"`   // Interned domain
-	Language   string      `json:"language"` // Interned language
-	Tags       []string    `json:"tags"`     // Array of interned tag values
+	Body       []byte      `json:"body"`
+	Project    []byte      `json:"project"`  // Interned project name
+	Domain     []byte      `json:"domain"`   // Interned domain
+	Language   []byte      `json:"language"` // Interned language
 	KeyBuf     []byte      `json:"keyBuf"`
+	Tags       [][]byte    `json:"tags"` // Array of interned tag values
 }
 
 // DumpToDir writes all shards into a single binary file with length-prefixed records.
@@ -64,30 +63,23 @@ func (c *Storage) DumpToDir(ctx context.Context, dir string) error {
 		}
 	}()
 
-	var mu = &sync.Mutex{}
+	mu := &sync.Mutex{}
 	var success, errors int32
 	c.shardedMap.WalkShards(func(shardKey uint64, shard *sharded.Shard[*model.Response]) {
 		shard.Walk(ctx, func(key uint64, resp *model.Response) bool {
 			mu.Lock()
 			defer mu.Unlock()
-
-			tags := make([]string, 0, 10)
-			for _, tag := range resp.Request().GetTags() {
-				tags = append(tags, string(tag))
-			}
-
-			entry := dumpEntry{
+			b, merr := json.Marshal(&dumpEntry{
 				Unique:     fmt.Sprintf("%d-%d", shardKey, key),
 				StatusCode: resp.Data().StatusCode(),
 				Headers:    resp.Data().Headers(),
-				Body:       string(resp.Data().Body()),
-				Project:    string(resp.Request().GetProject()),
-				Domain:     string(resp.Request().GetDomain()),
-				Language:   string(resp.Request().GetLanguage()),
-				Tags:       tags,
+				Body:       resp.Data().Body(),
+				Project:    resp.Request().GetProject(),
+				Domain:     resp.Request().GetDomain(),
+				Language:   resp.Request().GetLanguage(),
+				Tags:       resp.Request().GetTags(),
 				KeyBuf:     resp.Request().KeyBuf,
-			}
-			b, merr := json.Marshal(&entry)
+			})
 			if merr != nil {
 				log.Err(merr).Msg("failed to marshal dump entry")
 				atomic.AddInt32(&errors, 1)
@@ -120,10 +112,6 @@ func (c *Storage) DumpToDir(ctx context.Context, dir string) error {
 
 // LoadFromDir loads all entries from dump file and restores them into the storage.
 func (c *Storage) LoadFromDir(ctx context.Context, dir string) error {
-
-	log.Info().Msg("[dump] loading storage from dump has been started")
-	defer log.Info().Msg("[dump] loading storage from dump has been finished")
-
 	start := time.Now()
 	filename := filepath.Join(dir, dumpFileName)
 
@@ -131,23 +119,19 @@ func (c *Storage) LoadFromDir(ctx context.Context, dir string) error {
 	if err != nil {
 		return fmt.Errorf("open dump file error: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	decoder := json.NewDecoder(bufio.NewReaderSize(f, 256*1024*1024)) // 256MB
 
-	var (
-		success, failed int32
-		datum           = make(map[string]struct{})
-	)
-
-	lineNum := 0
+	var lineNum, success, failed int
 	for {
+		lineNum++
+
 		if ctx.Err() != nil {
 			log.Warn().Msg("[dump] context cancelled")
 			return ctx.Err()
 		}
 
-		lineNum++
 		var raw json.RawMessage
 		if err = decoder.Decode(&raw); err != nil {
 			if err == io.EOF {
@@ -157,49 +141,37 @@ func (c *Storage) LoadFromDir(ctx context.Context, dir string) error {
 			continue
 		}
 
-		log.Info().Int("line", lineNum).RawJSON("raw", raw).Msg(">> raw entry")
-
-		var entry dumpEntry
-		if err = json.Unmarshal(raw, &entry); err != nil {
+		var entry = &dumpEntry{}
+		if err = json.Unmarshal(raw, entry); err != nil {
 			log.Err(err).Msg("[dump] failed to decode json entry")
-			atomic.AddInt32(&failed, 1)
+			failed++
 			continue
 		}
 
-		tags := make([][]byte, 0, 10)
-		for _, tag := range entry.Tags {
-			tags = append(tags, append([]byte(nil), []byte(tag)...))
-		}
-
-		data := model.NewData(entry.StatusCode, entry.Headers, []byte(entry.Body))
-		req, err := model.NewManualRequest([]byte(entry.Project), []byte(entry.Domain), []byte(entry.Language), tags[:])
+		data := model.NewData(entry.StatusCode, entry.Headers, entry.Body)
+		req, err := model.NewManualRequest(entry.Project, entry.Domain, entry.Language, entry.Tags)
 		if err != nil {
 			log.Err(err).Msg("[dump] failed to create request")
-			atomic.AddInt32(&failed, 1)
+			failed++
 			continue
 		}
 
 		resp, err := model.NewResponse(data, req, c.cfg, c.backend.RevalidatorMaker(req))
 		if err != nil {
 			log.Err(err).Msg("[dump] failed to create response")
-			atomic.AddInt32(&failed, 1)
+			failed++
 			continue
 		}
 
 		uniq := fmt.Sprintf("%d-%d", req.ShardKey(), req.Key())
 		if uniq != entry.Unique {
-			log.Info().Msgf("ENTRY: dom: %s, proj: %s, lng: %s, tags: %s", entry.Domain, entry.Project, entry.Language, strings.Join(entry.Tags, ","))
+			log.Info().Msgf("ENTRY: dom: %s, proj: %s, lng: %s, tags: %s", entry.Domain, entry.Project, entry.Language, string(bytes.Join(entry.Tags, []byte(","))))
 			log.Info().Msgf("NEW_REQUEST: dom: %s, proj: %s, lng: %s, tags: %s", string(req.GetDomain()), string(req.GetProject()), string(req.GetLanguage()), bytes.Join(req.GetTags(), []byte(",")))
 			panic(fmt.Sprintf("uniq (%s) != entry.Unique (%s) (keyBuf={now: %s, entry: %s})", uniq, entry.Unique, string(req.KeyBuf), string(entry.KeyBuf)))
 		}
 
-		if _, exists := datum[uniq]; exists {
-			panic("duplicate response in dump: " + uniq)
-		}
-		datum[uniq] = struct{}{}
-
 		c.Set(resp)
-		atomic.AddInt32(&success, 1)
+		success++
 	}
 
 	log.Info().Msgf("[dump] restored %d entries, errors: %d (elapsed: %s)", success, failed, time.Since(start))
