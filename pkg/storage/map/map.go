@@ -100,10 +100,6 @@ func (smap *Map[V]) WalkShards(fn func(key uint64, shard *Shard[V])) {
 	for k, s := range smap.shards {
 		go func(key uint64, shard *Shard[V]) {
 			defer wg.Done()
-
-			shard.Lock()
-			defer shard.Unlock()
-
 			fn(key, shard)
 		}(uint64(k), s)
 	}
