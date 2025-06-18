@@ -28,6 +28,7 @@ type Request struct {
 	uniqueQuery []byte   // Built query string (for HTTP requests)
 	key         uint64   // xxh3 hash of all above fields (acts as the main cache key)
 	shardKey    uint64   // Which shard this request maps to
+	KeyBuf      []byte
 }
 
 func (r *Request) Weight() int64 {
@@ -67,12 +68,20 @@ func NewRequest(q *fasthttp.Args) (*Request, error) {
 	return r, nil
 }
 
+func DEBUG_ONLY_copyTags(in [][]byte) [][]byte {
+	out := make([][]byte, len(in))
+	for i, t := range in {
+		out[i] = append([]byte(nil), t...)
+	}
+	return out
+}
+
 // setUp initializes the Request, interns all fields, builds keys, and sets up uniqueQuery.
 func (r *Request) setUp(project, domain, language []byte, tags [][]byte) *Request {
 	r.project = project
 	r.domain = domain
 	r.language = language
-	r.tags = tags
+	r.tags = DEBUG_ONLY_copyTags(tags)
 
 	r.setUpQuery()
 	r.setUpShardKey(r.setUpKey())
@@ -138,13 +147,17 @@ func (r *Request) setUpKey() uint64 {
 		buf = append(buf, tag...)
 	}
 
-	hasher := HasherPool.Get().(*xxh3.Hasher)
-	defer HasherPool.Put(hasher)
+	//hasher := HasherPool.Get().(*xxh3.Hasher)
+	//defer HasherPool.Put(hasher)
+
+	hasher := xxh3.New()
 
 	hasher.Reset()
 	if _, err := hasher.Write(buf); err != nil {
 		panic(err)
 	}
+
+	r.KeyBuf = buf
 
 	r.key = hasher.Sum64()
 	return r.key
