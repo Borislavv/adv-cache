@@ -39,7 +39,7 @@ func (c *Storage) DumpToDir(ctx context.Context, dir string) error {
 	}
 	defer gz.Close()
 
-	bufWriter := bufio.NewWriterSize(gz, 128*1024*1024) // 128MB
+	bufWriter := bufio.NewWriterSize(gz, 512*1024*1024) // 128MB
 
 	var mu = &sync.Mutex{}
 	var success, errors int32
@@ -60,9 +60,9 @@ func (c *Storage) DumpToDir(ctx context.Context, dir string) error {
 				return true
 			}
 
-			header := [6]byte{}
+			header := [12]byte{}
 			binary.LittleEndian.PutUint64(header[0:], shardKey)
-			binary.LittleEndian.PutUint32(header[2:], uint32(len(data)))
+			binary.LittleEndian.PutUint32(header[8:], uint32(len(data)))
 
 			if _, err = bufWriter.Write(header[:]); err != nil {
 				log.Err(err).Msg("[dump] write header error")
@@ -117,11 +117,11 @@ func (c *Storage) LoadFromDir(ctx context.Context, dir string) error {
 
 	var success, errors, total int
 
-	header := make([]byte, 6) // 2 bytes shardID + 4 bytes dataLen
+	header := make([]byte, 12) // 2 bytes shardID + 4 bytes dataLen
 
 	for {
 		if ctx.Err() != nil {
-			log.Warn().Msg("[load] context cancelled")
+			log.Warn().Msg("[dump] context cancelled")
 			return ctx.Err()
 		}
 
@@ -129,30 +129,30 @@ func (c *Storage) LoadFromDir(ctx context.Context, dir string) error {
 			if err == io.EOF {
 				break
 			}
-			log.Err(err).Msg("[load] read header error")
+			log.Err(err).Msg("[dump] read header error")
 			errors++
 			break
 		}
 
-		shardID := binary.LittleEndian.Uint16(header[0:])
-		dataLen := binary.LittleEndian.Uint32(header[2:])
+		shardKey := binary.LittleEndian.Uint16(header[0:])
+		dataLen := binary.LittleEndian.Uint32(header[8:])
 
 		if dataLen == 0 || dataLen > 512*1024*1024 { // sanity check (max 512MB payload)
-			log.Error().Uint16("shard", shardID).Uint32("len", dataLen).Msg("[load] invalid dataLen")
+			log.Error().Uint16("shard", shardKey).Uint32("len", dataLen).Msg("[dump] invalid dataLen")
 			errors++
 			continue
 		}
 
 		data := make([]byte, dataLen)
 		if _, err := io.ReadFull(bufReader, data); err != nil {
-			log.Err(err).Uint16("shard", shardID).Msg("[load] read data error")
+			log.Err(err).Uint16("shard", shardKey).Msg("[dump] read data error")
 			errors++
 			continue
 		}
 
 		resp := new(model.Response).Init().Touch()
 		if err := resp.UnmarshalBinary(data, c.backend.RevalidatorMaker); err != nil {
-			log.Err(err).Str("key", fmt.Sprintf("%d", resp.Key())).Msg("[load] unmarshal failed")
+			log.Err(err).Str("key", fmt.Sprintf("%d", resp.Key())).Msg("[dump] unmarshal failed")
 			errors++
 			continue
 		}
@@ -162,7 +162,7 @@ func (c *Storage) LoadFromDir(ctx context.Context, dir string) error {
 		total++
 	}
 
-	log.Info().Msgf("[load] loaded %d keys, errors: %d (elapsed: %s)", success, errors, time.Since(start))
+	log.Info().Msgf("[dump] loaded %d keys, errors: %d (elapsed: %s)", success, errors, time.Since(start))
 	if errors > 0 {
 		return fmt.Errorf("load completed with %d errors", errors)
 	}
