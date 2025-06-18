@@ -28,6 +28,7 @@ type Request struct {
 	uniqueQuery []byte   // Built query string (for HTTP requests)
 	key         uint64   // xxh3 hash of all above fields (acts as the main cache key)
 	shardKey    uint64   // Which shard this request maps to
+	KeyBuf      []byte
 }
 
 func (r *Request) Weight() int64 {
@@ -55,16 +56,22 @@ func NewManualRequest(project, domain, language []byte, tags [][]byte) (*Request
 // NewRequest builds a Request from fasthttp.Args, with strict interning and pooling.
 func NewRequest(q *fasthttp.Args) (*Request, error) {
 	var (
-		project  = q.Peek("project[id]")
-		domain   = q.Peek("domain")
-		language = q.Peek("language")
-		tags     = extractTags(q)
+		project  = extractArgAndCopy(q.Peek("project[id]"))
+		domain   = extractArgAndCopy(q.Peek("domain"))
+		language = extractArgAndCopy(q.Peek("language"))
+		tags     = extractTagsAndCopy(q)
 	)
 	r, err := new(Request).setUp(project, domain, language, tags).validate()
 	if err != nil {
 		return nil, err
 	}
 	return r, nil
+}
+
+func extractArgAndCopy(arg []byte) []byte {
+	argument := make([]byte, len(arg))
+	copy(argument, arg)
+	return argument
 }
 
 // setUp initializes the Request, interns all fields, builds keys, and sets up uniqueQuery.
@@ -94,8 +101,8 @@ func (r *Request) validate() (*Request, error) {
 	return r, nil
 }
 
-// extractTags collects choice-like tags from the args, returns them and a release function.
-func extractTags(args *fasthttp.Args) [][]byte {
+// extractTagsAndCopy collects choice-like tags from the args, returns them and a release function.
+func extractTagsAndCopy(args *fasthttp.Args) [][]byte {
 	var (
 		nullValue   = []byte("null")
 		choiceValue = []byte("choice")
@@ -107,7 +114,9 @@ func extractTags(args *fasthttp.Args) [][]byte {
 		if !bytes.HasPrefix(key, choiceValue) || bytes.Equal(tag, nullValue) {
 			return
 		}
-		tags = append(tags, tag)
+		copiedTag := make([]byte, len(tag))
+		copy(copiedTag, tag)
+		tags = append(tags, copiedTag)
 		i++
 	})
 
@@ -145,6 +154,8 @@ func (r *Request) setUpKey() uint64 {
 	if _, err := hasher.Write(buf); err != nil {
 		panic(err)
 	}
+
+	r.KeyBuf = buf
 
 	r.key = hasher.Sum64()
 	return r.key

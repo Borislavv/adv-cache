@@ -81,8 +81,6 @@ func (shard *Shard[V]) Walk(ctx context.Context, fn func(uint64, V) bool, lockRe
 			ok := fn(k, v)
 			if !ok {
 				return
-			} else {
-				continue
 			}
 		}
 	}
@@ -102,10 +100,6 @@ func (smap *Map[V]) WalkShards(fn func(key uint64, shard *Shard[V])) {
 	for k, s := range smap.shards {
 		go func(key uint64, shard *Shard[V]) {
 			defer wg.Done()
-
-			shard.Lock()
-			defer shard.Unlock()
-
 			fn(key, shard)
 		}(uint64(k), s)
 	}
