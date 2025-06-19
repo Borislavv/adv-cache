@@ -21,13 +21,13 @@ type CacheV2 struct {
 }
 
 type EvictionV2 struct {
-	Policy    string  `yaml:"policy"`    // "lru", "lfu", etc.
+	Policy    string  `yaml:"policy"`    // at now, it's only "lru" with works per shard
 	Threshold float64 `yaml:"threshold"` // 0.9 means 90%
 }
 
 type StorageV2 struct {
 	Type string `yaml:"type"` // "malloc"
-	Size string `yaml:"size"` // 21474836480=2gb(bytes)
+	Size uint   `yaml:"size"` // 21474836480=2gb(bytes)
 }
 
 type RefreshV2 struct {
@@ -41,7 +41,8 @@ type RefreshV2 struct {
 	// expireTime = ttl * (-beta * ln(random()))
 	// Подробнее: RFC 5861 и https://web.archive.org/web/20100829170210/http://labs.google.com/papers/staleness.pdf
 	// beta: "0.4"
-	Beta float64 `yaml:"beta"` // between 0 and 1
+	Beta     float64       `yaml:"beta"`      // between 0 and 1
+	MinStale time.Duration `yaml:"min_stale"` // computed=time.Duration(float64(TTL/ErrorTTL) * Beta)
 }
 
 type CacheRuleV2 struct {
@@ -64,7 +65,7 @@ const (
 	configPathLocal = "../../config/config.local.yaml"
 )
 
-func LoadConfigV2() (*V2, error) {
+func LoadConfigV2() (V2, error) {
 	var path string
 
 	if _, err := os.Stat(configPathLocal); err == nil {
@@ -73,21 +74,23 @@ func LoadConfigV2() (*V2, error) {
 		if _, err = os.Stat(configPath); err == nil {
 			path = configPath
 		} else {
-			return nil, errors.New("config does not exist by path: " + configPath + " or " + configPathLocal)
+			return V2{}, errors.New("config does not exist by path: " + configPath + " or " + configPathLocal)
 		}
 	} else {
-		return nil, fmt.Errorf("stat config path: %w", err)
+		return V2{}, fmt.Errorf("stat config path: %w", err)
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read config yaml file %s: %w", path, err)
+		return V2{}, fmt.Errorf("read config yaml file %s: %w", path, err)
 	}
 
 	var cfg V2
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("unmarshal yaml from %s: %w", path, err)
+		return V2{}, fmt.Errorf("unmarshal yaml from %s: %w", path, err)
 	}
 
-	return &cfg, nil
+	cfg.Cache.Refresh.MinStale = time.Duration(float64(cfg.Cache.Refresh.TTL) * cfg.Cache.Refresh.Beta)
+
+	return cfg, nil
 }
