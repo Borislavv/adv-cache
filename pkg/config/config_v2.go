@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"gopkg.in/yaml.v3"
 	"os"
@@ -58,15 +59,34 @@ type CacheValue struct {
 	Headers []string `yaml:"headers"`
 }
 
-func LoadConfigV2(path string) (*V2, error) {
+const (
+	configPath      = "../../config/config.yaml"
+	configPathLocal = "../../config/config.local.yaml"
+)
+
+func LoadConfigV2() (*V2, error) {
+	var path string
+
+	if _, err := os.Stat(configPathLocal); err == nil {
+		path = configPathLocal
+	} else if os.IsNotExist(err) {
+		if _, err = os.Stat(configPath); err == nil {
+			path = configPath
+		} else {
+			return nil, errors.New("config does not exist by path: " + configPath + " or " + configPathLocal)
+		}
+	} else {
+		return nil, fmt.Errorf("stat config path: %w", err)
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read config yaml file: %w", err)
+		return nil, fmt.Errorf("read config yaml file %s: %w", path, err)
 	}
 
 	var cfg V2
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("unmarshal yaml: %w", err)
+		return nil, fmt.Errorf("unmarshal yaml from %s: %w", path, err)
 	}
 
 	return &cfg, nil
