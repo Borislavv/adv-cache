@@ -5,20 +5,25 @@ cache:
     threshold: 0.9 # Когда кэш заполнен на 90% — запуск вытеснения
   storage:
     type: "malloc"
-    size: "21474836480" # 20GB in bytes
+    size: 21474836480 # 20GB in bytes
   refresh:
-    ttl: "1d"
-    beta: "0.4"
+    ttl: "24h"
+    beta: 0.4
+    backend_url: ""
+  persistence:
+    is_enabled: true
+    dump_dir: "public/dump"
+    dump_name: "cache.dump.gz"
   rules:
-    - path: "/api/v2/pagedata"
+    - path: "/api/v1/user"
       cache_key:
-        query: ['project', 'stream', 'sport', 'language'] # Параметры, которые будут учавствовать в ключе кэширования
-        headers: ['Accept-Encoding', 'X-Project-ID'] # Хедеры, которые будут учавствовать в ключе кэширования
+        query: ['param1', 'param2', 'param3', 'param4'] # Параметры, которые будут учавствовать в ключе кэширования
+        headers: ['Accept-Encoding', 'X-Custom-ID'] # Хедеры, которые будут учавствовать в ключе кэширования
       cache_value:
-        headers: ['Cache-Control', 'X-Project-ID'] # Хедеры ответа, которые будут сохранены в кэше вместе с body
-    - path: "/api/v1/pagecontent"
+        headers: ['Cache-Control', 'X-Custom-ID'] # Хедеры ответа, которые будут сохранены в кэше вместе с body
+    - path: "/api/v1/data"
       cache_key:
-        query: ['project', 'stream', 'sport', 'language'] # Параметры, которые будут учавствовать в ключе кэширования
-        headers: ['Accept-Encoding', 'X-Project-ID'] # Хедеры, которые будут учавствовать в ключе кэширования
+        query: ['param1', 'param2', 'param3', 'param4', 'param5'] # Параметры, которые будут учавствовать в ключе кэширования
+        headers: ['Accept-Encoding', 'X-Custom-ID'] # Хедеры, которые будут учавствовать в ключе кэширования
       cache_value:
-        headers: ['Cache-Control', 'X-Project-ID'] # Хедеры ответа, которые будут сохранены в кэше вместе с body
+        headers: ['Cache-Control', 'X-Custom-ID'] # Хедеры ответа, которые будут сохранены в кэше вместе с body
