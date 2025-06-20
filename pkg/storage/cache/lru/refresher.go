@@ -23,8 +23,8 @@ const (
 )
 
 var (
-	refreshSuccessNumCh = make(chan struct{}, 64) // Successful refreshes counter channel
-	refreshErroredNumCh = make(chan struct{}, 64) // Failed refreshes counter channel
+	refreshSuccessNumCh = make(chan struct{}, runtime.GOMAXPROCS(0)*4) // Successful refreshes counter channel
+	refreshErroredNumCh = make(chan struct{}, runtime.GOMAXPROCS(0)*4) // Failed refreshes counter channel
 )
 
 type Refresher interface {
