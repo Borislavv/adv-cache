@@ -32,7 +32,7 @@ var (
 
 // Response is the main cache object, holding the request, payload, metadata, and list pointers.
 type Response struct {
-	cfg           *config.V2                                        // Immutable field
+	cfg           *config.Cache                                     // Immutable field
 	request       *atomic.Pointer[Request]                          // Associated Key
 	data          *atomic.Pointer[Data]                             // Cached data
 	lruListElem   *atomic.Pointer[list.Element[*Response]]          // Pointer for LRU list (per-shard)
@@ -43,7 +43,7 @@ type Response struct {
 
 // NewResponse constructs a new Response using memory pools and sets up all fields.
 func NewResponse(
-	data *Data, req *Request, cfg *config.V2,
+	data *Data, req *Request, cfg *config.Cache,
 	revalidator func(ctx context.Context) (data *Data, err error),
 ) (*Response, error) {
 	return new(Response).Init().SetUp(cfg, data, req, revalidator), nil
@@ -65,7 +65,7 @@ func (r *Response) Init() *Response {
 
 // SetUp stores the Data, Request, and config-driven fields into the Response.
 func (r *Response) SetUp(
-	cfg *config.V2,
+	cfg *config.Cache,
 	data *Data,
 	req *Request,
 	revalidator func(ctx context.Context) (data *Data, err error),
