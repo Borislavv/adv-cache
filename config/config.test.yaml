@@ -3,7 +3,7 @@ cache:
 
   preallocate:
     num_shards: 2048 # Fixed constant (see `NumOfShards` in code). Controls the number of sharded maps.
-    per_shard: 0  # Preallocated map size per shard. Without resizing, this supports ~16,785,408 keys in total.
+    per_shard: 256  # Preallocated map size per shard. Without resizing, this supports ~16,785,408 keys in total.
     # Note: this is an upper-bound estimate and may vary depending on hash distribution quality.
 
   eviction:
