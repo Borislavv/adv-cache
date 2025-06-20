@@ -34,10 +34,10 @@ func NewApp(ctx context.Context, cfg *config.Config, probe liveness.Prober) (*Ca
 
 	// Setup sharded map for high-concurrency cache storage.
 	shardedMap := sharded.NewMap[*model.Response](cfg.InitStorageLengthPerShard)
-	backend := repository.NewBackend(&cfg.Cache)
+	backend := repository.NewBackend(cfg.V2)
 	balancer := lru.NewBalancer(ctx, shardedMap)
 	refresher := lru.NewRefresher(ctx, &cfg.Cache, balancer)
-	db := storage.New(ctx, &cfg.Cache, balancer, refresher, backend, shardedMap)
+	db := storage.New(ctx, cfg.V2, balancer, refresher, backend, shardedMap)
 
 	// Compose the HTTP server (API, metrics and so on)
 	srv, err := server.New(ctx, cfg, db, backend, probe)
