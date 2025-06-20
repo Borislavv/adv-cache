@@ -103,7 +103,10 @@ func (c *Storage) Set(new *model.Response) {
 
 	// Admission control: if memory is over threshold, evaluate before inserting
 	if c.shouldEvict() {
-		victim := c.balancer.FindVictim(shardKey)
+		victim, ok := c.balancer.FindVictim(shardKey)
+		if !ok {
+			return
+		}
 		if victim != nil && !c.tinyLFU.Admit(new, victim) {
 			// New item is less frequent than victim, skip insertion
 			return
