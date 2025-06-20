@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/prometheus/metrics/keyword"
 	"github.com/VictoriaMetrics/metrics"
@@ -45,7 +46,7 @@ func (m *Metrics) IncTotal(path, method, status string) {
 		*buf = append(*buf, status...)
 		*buf = append(*buf, `"}`...)
 
-		metrics.GetOrCreateCounter(string(*buf)).Inc()
+		metrics.GetOrCreateCounter(unsafe.String(&(*buf)[0], len(*buf))).Inc()
 		return
 	}
 
@@ -59,7 +60,7 @@ func (m *Metrics) IncTotal(path, method, status string) {
 	*buf = append(*buf, method...)
 	*buf = append(*buf, `"}`...)
 
-	metrics.GetOrCreateCounter(string(*buf)).Inc()
+	metrics.GetOrCreateCounter(unsafe.String(&(*buf)[0], len(*buf))).Inc()
 }
 
 func (m *Metrics) IncStatus(path, method, status string) {
@@ -75,7 +76,7 @@ func (m *Metrics) IncStatus(path, method, status string) {
 	*buf = append(*buf, status...)
 	*buf = append(*buf, `"}`...)
 
-	metrics.GetOrCreateCounter(string(*buf)).Inc()
+	metrics.GetOrCreateCounter(unsafe.String(&(*buf)[0], len(*buf))).Inc()
 }
 
 // Timer — пул-ориентированный трекер времени
@@ -109,11 +110,11 @@ func (m *Metrics) NewResponseTimeTimer(path, method string) *Timer {
 
 func (m *Metrics) FlushResponseTimeTimer(t *Timer) {
 	durationMs := float64(time.Since(t.start).Milliseconds())
-	metrics.GetOrCreateHistogram(t.buf.String()).Update(durationMs)
+	metrics.GetOrCreateHistogram(unsafe.String(&t.buf.Bytes()[0], t.buf.Len())).Update(durationMs)
 	timerPool.Put(t)
 }
 
-// ===== buf []byte pooling =====
+// ===== []byte pooling =====
 
 var bufPool = sync.Pool{
 	New: func() any {
