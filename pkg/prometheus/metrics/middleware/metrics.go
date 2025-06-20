@@ -9,6 +9,8 @@ import (
 	"unsafe"
 )
 
+var emptyStr = ""
+
 type PrometheusMetrics struct {
 	ctx   context.Context
 	meter metrics.Meter
@@ -32,12 +34,11 @@ func (m *PrometheusMetrics) Middleware(next fasthttp.RequestHandler) fasthttp.Re
 		pth := ctx.Path()
 		method := ctx.Method()
 
-		// Unsafe zero-alloc conversion
 		pathStr := *(*string)(unsafe.Pointer(&pth))
 		methodStr := *(*string)(unsafe.Pointer(&method))
 
 		timer := m.meter.NewResponseTimeTimer(pathStr, methodStr)
-		m.meter.IncTotal(pathStr, methodStr, "") // total requests (no status)
+		m.meter.IncTotal(pathStr, methodStr, emptyStr) // total requests (no status)
 
 		next(ctx)
 
