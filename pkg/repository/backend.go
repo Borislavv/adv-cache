@@ -21,11 +21,11 @@ type Backender interface {
 // Backend implements the Backender interface.
 // It fetches and constructs SEO page data responses from an external backend.
 type Backend struct {
-	cfg *config.Cache // Global configuration (SEO backend URL, etc)
+	cfg *config.V2 // Global configuration (backend URL, etc)
 }
 
 // NewBackend creates a new instance of Backend.
-func NewBackend(cfg *config.Cache) *Backend {
+func NewBackend(cfg *config.V2) *Backend {
 	return &Backend{cfg: cfg}
 }
 
@@ -61,7 +61,7 @@ func (s *Backend) requestExternalBackend(ctx context.Context, req *model.Request
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
-	url := s.cfg.BackendUrl
+	url := s.cfg.Cache.Refresh.BackendURL
 	query := req.ToQuery()
 
 	// Efficiently concatenate base URL and query.
@@ -89,5 +89,5 @@ func (s *Backend) requestExternalBackend(ctx context.Context, req *model.Request
 		return nil, err
 	}
 
-	return model.NewData(response.StatusCode, response.Header, body.Bytes()), nil
+	return model.NewData(s.cfg, req.Path(), response.StatusCode, response.Header, body.Bytes()), nil
 }
