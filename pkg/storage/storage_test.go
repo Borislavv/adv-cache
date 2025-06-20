@@ -21,7 +21,7 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cfg := &config.Cache{
+	cfg := &config.CacheBox{
 		AppEnv:                    "dev",
 		AppDebug:                  false,
 		BackendUrl:                "https://seo-master.lux.kube.xbet.lan/api/v2/pagedata",
@@ -64,7 +64,7 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cfg := &config.Cache{
+	cfg := &config.CacheBox{
 		AppEnv:                    "dev",
 		AppDebug:                  false,
 		BackendUrl:                "https://seo-master.lux.kube.xbet.lan/api/v2/pagedata",
@@ -103,7 +103,7 @@ func BenchmarkGetAllocs(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cfg := &config.Cache{
+	cfg := &config.CacheBox{
 		BackendUrl:                "https://seo-master.lux.kube.xbet.lan/api/v2/pagedata",
 		RevalidateBeta:            0.3,
 		RevalidateInterval:        time.Hour,
@@ -134,7 +134,7 @@ func BenchmarkSetAllocs(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cfg := &config.Cache{
+	cfg := &config.CacheBox{
 		BackendUrl:                "https://seo-master.lux.kube.xbet.lan/api/v2/pagedata",
 		RevalidateBeta:            0.3,
 		RevalidateInterval:        time.Hour,
