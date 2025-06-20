@@ -2,15 +2,16 @@ package lru
 
 import (
 	"context"
+	"runtime"
+	"strconv"
+	"time"
+
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/repository"
 	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/utils"
 	"github.com/rs/zerolog/log"
-	"runtime"
-	"strconv"
-	"time"
 )
 
 const dumpDir = "public/dump"
@@ -90,6 +91,23 @@ func (c *Storage) Set(new *model.Response) {
 		c.update(existing, new)
 		return
 	}
+
+	// Admission control: if memory is over threshold, evaluate before inserting
+	if c.shouldEvict() {
+		victim, ok := c.balancer.FindVictim(shardKey)
+		if !ok {
+			return
+		}
+		if victim != nil && !c.tinyLFU.Admit(new, victim) {
+			// New item is less frequent than victim, skip insertion
+			log.Warn().Msgf("not admitted")
+			return
+		} else {
+			log.Warn().Msgf("->>> admitted")
+		}
+	}
+
+	// Proceed with insert
 	c.set(new)
 }
 
