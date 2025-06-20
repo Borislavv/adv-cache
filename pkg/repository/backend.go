@@ -21,11 +21,11 @@ type Backender interface {
 // Backend implements the Backender interface.
 // It fetches and constructs SEO page data responses from an external backend.
 type Backend struct {
-	cfg *config.V2 // Global configuration (backend URL, etc)
+	cfg *config.Cache // Global configuration (backend URL, etc)
 }
 
 // NewBackend creates a new instance of Backend.
-func NewBackend(cfg *config.V2) *Backend {
+func NewBackend(cfg *config.Cache) *Backend {
 	return &Backend{cfg: cfg}
 }
 
