@@ -8,10 +8,10 @@ import (
 )
 
 const (
-	bufferSize    = 1 << 25 // 32MB ring buffer
-	sketchWidth   = 1 << 18
+	bufferSize    = 1 << 16 // 32MB ring buffer
+	sketchWidth   = 1 << 15
 	sketchDepth   = 5
-	doorkeeperCap = 1 << 20
+	doorkeeperCap = 1 << 18
 )
 
 // TinyLFU ties TinyLFU logic into LRU.

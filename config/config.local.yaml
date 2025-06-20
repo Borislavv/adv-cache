@@ -12,11 +12,11 @@ cache:
 
   storage:
     type: "malloc"
-    size: 5000000 # 20 GB of maximum allowed memory for the in-memory cache (in bytes).
+    size: 15000000 # 20 GB of maximum allowed memory for the in-memory cache (in bytes).
 
   refresh:
-    ttl: "24h"
-    beta: 0.4 # Controls randomness in refresh timing to avoid thundering herd.
+    ttl: "20m"
+    beta: 0.5 # Controls randomness in refresh timing to avoid thundering herd.
     backend_url: "https://seo-master.lux.kube.xbet.lan"
 
   persistence:

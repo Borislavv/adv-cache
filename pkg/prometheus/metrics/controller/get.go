@@ -1,25 +1,23 @@
 package controller
 
 import (
-	"context"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/prometheus/metrics/adapter"
+	"github.com/VictoriaMetrics/metrics"
 	"github.com/fasthttp/router"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/valyala/fasthttp"
 )
 
 const PrometheusMetricsPath = "/metrics"
 
-type PrometheusMetrics struct {
-	ctx context.Context
-}
+type PrometheusMetrics struct{}
 
-func NewPrometheusMetrics(ctx context.Context) *PrometheusMetrics {
-	return &PrometheusMetrics{ctx: ctx}
+func NewPrometheusMetrics() *PrometheusMetrics {
+	return &PrometheusMetrics{}
 }
 
 func (m *PrometheusMetrics) Get(ctx *fasthttp.RequestCtx) {
-	adapter.NewFastHTTPHandlerFunc(promhttp.Handler())(ctx)
+	ctx.SetContentType("text/plain; charset=utf-8")
+	ctx.SetStatusCode(fasthttp.StatusOK)
+	metrics.WritePrometheus(ctx, true)
 }
 
 func (m *PrometheusMetrics) AddRoute(router *router.Router) {
