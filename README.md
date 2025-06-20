@@ -54,7 +54,6 @@ All major settings are controlled via environment variables:
 | Variable                        | Description                                                             | Example                |
 |---------------------------------|-------------------------------------------------------------------------|------------------------|
 | `APP_ENV`                       | Environment: `prod`, `dev` or `test`                                    | `prod`                 |
-| `APP_DEBUG`                     | Enable debug logging                                                    | `true`                 |
 | `BACKEND_URL`                   | Upstream external backend URL                                           | `http://backend:8080/` |
 | `REVALIDATE_BETA`               | Background refresh beta (0.1...0.9 recommended)                         | `0.5`                  |
 | `REVALIDATE_INTERVAL`           | Background revalidation interval (stale TTL on error = 10% of interval) | `10h`                  |

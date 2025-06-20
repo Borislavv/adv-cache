@@ -26,19 +26,11 @@ func init() {
 	// Bind all relevant environment variables using Viper.
 	viper.AutomaticEnv()
 	_ = viper.BindEnv("APP_ENV")
-	_ = viper.BindEnv("APP_DEBUG")
-	_ = viper.BindEnv("INIT_STORAGE_LEN_PER_SHARD")
-	_ = viper.BindEnv("EVICTION_ALGO")
-	_ = viper.BindEnv("MEMORY_FILL_THRESHOLD")
-	_ = viper.BindEnv("MEMORY_LIMIT")
-	_ = viper.BindEnv("REVALIDATE_BETA")
-	_ = viper.BindEnv("REVALIDATE_INTERVAL")
-	_ = viper.BindEnv("BACKEND_URL")
 	_ = viper.BindEnv("FASTHTTP_SERVER_NAME")
 	_ = viper.BindEnv("FASTHTTP_SERVER_PORT")
 	_ = viper.BindEnv("FASTHTTP_SERVER_SHUTDOWN_TIMEOUT")
 	_ = viper.BindEnv("FASTHTTP_SERVER_REQUEST_TIMEOUT")
-	_ = viper.BindEnv("LIVENESS_PROBE_FAILED_TIMEOUT")
+	_ = viper.BindEnv("LIVENESS_PROBE_TIMEOUT")
 	_ = viper.BindEnv("IS_PROMETHEUS_METRICS_ENABLED")
 }
 
