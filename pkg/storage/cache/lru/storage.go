@@ -5,6 +5,7 @@ import (
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/repository"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/cache/lfu"
 	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/utils"
 	"github.com/rs/zerolog/log"
@@ -30,6 +31,7 @@ type Storage struct {
 	ctx             context.Context               // Main context for lifecycle control
 	cfg             *config.Cache                 // CacheBox configuration
 	shardedMap      *sharded.Map[*model.Response] // Sharded storage for cache entries
+	tinyLFU         *lfu.TinyLFU                  // Helps hold more frequency used items in cache while eviction
 	backend         repository.Backender          // Remote backend server.
 	refresher       Refresher                     // Background refresher (see refresher.go)
 	balancer        Balancer                      // Helps pick shards to evict from
@@ -44,6 +46,7 @@ func NewStorage(
 	balancer Balancer,
 	refresher Refresher,
 	backend repository.Backender,
+	tinyLFU *lfu.TinyLFU,
 	shardedMap *sharded.Map[*model.Response],
 ) *Storage {
 	storage := &Storage{
@@ -53,6 +56,7 @@ func NewStorage(
 		refresher:       refresher,
 		balancer:        balancer,
 		backend:         backend,
+		tinyLFU:         tinyLFU,
 		memoryThreshold: int64(float64(cfg.Cache.Storage.Size) * cfg.Cache.Eviction.Threshold),
 	}
 
@@ -85,11 +89,28 @@ func (c *Storage) Get(req *model.Request) (*model.Response, bool) {
 
 // Set inserts or updates a response in the cache, updating Weight usage and Storage position.
 func (c *Storage) Set(new *model.Response) {
-	existing, found := c.shardedMap.Get(new.Request().MapKey(), new.Request().ShardKey())
+	key := new.Request().MapKey()
+	shardKey := new.Request().ShardKey()
+
+	// Track access frequency
+	c.tinyLFU.Increment(key)
+
+	existing, found := c.shardedMap.Get(key, shardKey)
 	if found {
 		c.update(existing, new)
 		return
 	}
+
+	// Admission control: if memory is over threshold, evaluate before inserting
+	if c.shouldEvict() {
+		victim := c.balancer.FindVictim(shardKey)
+		if victim != nil && !c.tinyLFU.Admit(new, victim) {
+			// New item is less frequent than victim, skip insertion
+			return
+		}
+	}
+
+	// Proceed with insert
 	c.set(new)
 }
 

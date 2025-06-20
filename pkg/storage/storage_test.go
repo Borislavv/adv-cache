@@ -6,9 +6,12 @@ import (
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/mock"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/repository"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/cache/lfu"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/cache/lru"
 	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
 	"github.com/rs/zerolog/log"
+	"github.com/spf13/viper"
+	"os"
 	"runtime"
 	"testing"
 
@@ -18,6 +21,10 @@ import (
 var cfg *config.Cache
 
 func init() {
+	viper.AutomaticEnv()
+	_ = viper.BindEnv("APP_ENV")
+	_ = os.Setenv("APP_ENV", config.Test)
+
 	var err error
 	cfg, err = config.LoadConfig()
 	if err != nil {
@@ -43,7 +50,8 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 	balancer := lru.NewBalancer(ctx, shardedMap)
 	refresher := lru.NewRefresher(ctx, cfg, balancer)
 	backend := repository.NewBackend(cfg)
-	db := New(ctx, cfg, balancer, refresher, backend, shardedMap)
+	tinyLFU := lfu.NewTinyLFU(ctx)
+	db := New(ctx, cfg, balancer, refresher, backend, tinyLFU, shardedMap)
 
 	responses := mock.GenerateRandomResponses(cfg, path, b.N+1)
 	for _, resp := range responses {
@@ -74,7 +82,8 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 	balancer := lru.NewBalancer(ctx, shardedMap)
 	refresher := lru.NewRefresher(ctx, cfg, balancer)
 	backend := repository.NewBackend(cfg)
-	db := New(ctx, cfg, balancer, refresher, backend, shardedMap)
+	tinyLFU := lfu.NewTinyLFU(ctx)
+	db := New(ctx, cfg, balancer, refresher, backend, tinyLFU, shardedMap)
 
 	responses := mock.GenerateRandomResponses(cfg, path, b.N+1)
 	length := len(responses)
@@ -102,7 +111,8 @@ func BenchmarkGetAllocs(b *testing.B) {
 	balancer := lru.NewBalancer(ctx, shardedMap)
 	refresher := lru.NewRefresher(ctx, cfg, balancer)
 	backend := repository.NewBackend(cfg)
-	db := New(ctx, cfg, balancer, refresher, backend, shardedMap)
+	tinyLFU := lfu.NewTinyLFU(ctx)
+	db := New(ctx, cfg, balancer, refresher, backend, tinyLFU, shardedMap)
 
 	resp := mock.GenerateRandomResponses(cfg, path, 1)[0]
 	db.Set(resp)
@@ -124,7 +134,8 @@ func BenchmarkSetAllocs(b *testing.B) {
 	balancer := lru.NewBalancer(ctx, shardedMap)
 	refresher := lru.NewRefresher(ctx, cfg, balancer)
 	backend := repository.NewBackend(cfg)
-	db := New(ctx, cfg, balancer, refresher, backend, shardedMap)
+	tinyLFU := lfu.NewTinyLFU(ctx)
+	db := New(ctx, cfg, balancer, refresher, backend, tinyLFU, shardedMap)
 
 	resp := mock.GenerateRandomResponses(cfg, path, 1)[0]
 

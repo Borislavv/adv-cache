@@ -32,6 +32,7 @@ type Balancer interface {
 	Update(existing *model.Response)
 	Move(shardKey uint64, el *list.Element[*model.Response])
 	MostLoadedSampled(offset int) (*ShardNode, bool)
+	FindVictim(shardKey uint64) *model.Response
 }
 
 // Balance maintains per-shard Storage lists and provides efficient selection of loaded shards for eviction.
@@ -102,4 +103,13 @@ func (b *Balance) MostLoadedSampled(offset int) (*ShardNode, bool) {
 		return nil, false
 	}
 	return el.Value(), ok
+}
+
+func (b *Balance) FindVictim(shardKey uint64) *model.Response {
+	lru := b.shards[shardKey].lruList
+	el := lru.Back()
+	if el == nil {
+		return nil
+	}
+	return el.Value()
 }

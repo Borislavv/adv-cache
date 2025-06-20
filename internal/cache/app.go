@@ -9,6 +9,7 @@ import (
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/repository"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/shutdown"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/cache/lfu"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/cache/lru"
 	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
 	"github.com/rs/zerolog/log"
@@ -37,7 +38,8 @@ func NewApp(ctx context.Context, cfg *config.Config, probe liveness.Prober) (*Ca
 	backend := repository.NewBackend(cfg.Cache)
 	balancer := lru.NewBalancer(ctx, shardedMap)
 	refresher := lru.NewRefresher(ctx, cfg.Cache, balancer)
-	db := storage.New(ctx, cfg.Cache, balancer, refresher, backend, shardedMap)
+	tinyLFU := lfu.NewTinyLFU(ctx)
+	db := storage.New(ctx, cfg.Cache, balancer, refresher, backend, tinyLFU, shardedMap)
 
 	// Compose the HTTP server (API, metrics and so on)
 	srv, err := server.New(ctx, cfg, db, backend, probe)
