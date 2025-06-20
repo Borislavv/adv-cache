@@ -18,7 +18,7 @@ const (
 
 // GenerateRandomRequests produces a slice of *model.Request for use in tests and benchmarks.
 // Each request gets a unique combination of project, domain, language, and tags.
-func GenerateRandomRequests(cfg *config.V2, num int) []*model.Request {
+func GenerateRandomRequests(cfg *config.Cache, num int) []*model.Request {
 	i := 0
 	list := make([]*model.Request, 0, num)
 
@@ -40,16 +40,16 @@ func GenerateRandomRequests(cfg *config.V2, num int) []*model.Request {
 						"choice[choice]": []byte("choice[choice][name]=betting_live&choice[choice][choice][name]=betting_live_null&choice[choice][choice][choice][name]=betting_live_null_" + strconv.Itoa(projectID) + "&choice[choice][choice][choice][choice][name]=betting_live_null_" + strconv.Itoa(projectID) + "_" + strconv.Itoa(projectID) + "&choice[choice][choice][choice][choice][choice][name]=betting_live_null_" + strconv.Itoa(projectID) + "_" + strconv.Itoa(projectID) + "_" + strconv.Itoa(i) + "&choice[choice][choice][choice][choice][choice][choice]=null"),
 					},
 					map[string][][]byte{
-						"Content-Type":    {[]byte("application/json")},
-						"Cache-Control":   {[]byte("max-age=1234567890")},
-						"Content-Length":  {[]byte("1234567890")},
-						"X-Project-ID":    {[]byte("62")},
-						"Accept-Encoding": {[]byte("gzip"), []byte("br")},
-						"X-Real-IP":       {[]byte("192.168.1.10")},
-						"User-Agent":      {[]byte("Go-http-client/1.1")},
-						"Authorization":   {[]byte("Bearer example.jwt.token")},
-						"X-Request-ID":    {[]byte("req-abc123")},
-						"Accept-Language": {[]byte("en-US,en;q=0.9")},
+						"Content-Type":     {[]byte("application/json")},
+						"CacheBox-Control": {[]byte("max-age=1234567890")},
+						"Content-Length":   {[]byte("1234567890")},
+						"X-Project-ID":     {[]byte("62")},
+						"Accept-Encoding":  {[]byte("gzip"), []byte("br")},
+						"X-Real-IP":        {[]byte("192.168.1.10")},
+						"User-Agent":       {[]byte("Go-http-client/1.1")},
+						"Authorization":    {[]byte("Bearer example.jwt.token")},
+						"X-Request-ID":     {[]byte("req-abc123")},
+						"Accept-Language":  {[]byte("en-US,en;q=0.9")},
 					},
 				)
 				list = append(list, req)
@@ -61,7 +61,7 @@ func GenerateRandomRequests(cfg *config.V2, num int) []*model.Request {
 
 // GenerateRandomResponses generates a list of *model.Response, each linked to a random request and containing
 // random body data. Used for stress/load/benchmark testing of cache systems.
-func GenerateRandomResponses(cfg *config.V2, num int) []*model.Response {
+func GenerateRandomResponses(cfg *config.Cache, num int) []*model.Response {
 	headers := http.Header{}
 	headers.Add("Accept", "application/json")
 	headers.Add("Content-Type", "application/json")
