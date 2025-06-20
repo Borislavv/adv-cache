@@ -60,15 +60,13 @@ func loadCfg() *config.Config {
 		log.Err(err).Msg("[main] failed to unmarshal config from envs")
 		panic(err)
 	}
-	// Calculate the refresh duration threshold as a function of revalidate interval and beta.
-	cfg.RefreshDurationThreshold = time.Duration(float64(cfg.RevalidateInterval) * cfg.RevalidateBeta)
 
-	v2, err := config2.LoadConfigV2()
+	cacheConfig, err := config2.LoadConfig()
 	if err != nil {
 		log.Err(err).Msg("[main] failed to load config from envs")
 		panic(err)
 	}
-	cfg.V2 = v2
+	cfg.Cache = cacheConfig
 
 	return cfg
 }
@@ -90,7 +88,7 @@ func main() {
 	gracefulShutdown.SetGracefulTimeout(time.Millisecond * 9000) // 9.0s
 
 	// Initialize liveness probe for Kubernetes/Cloud health checks.
-	probe := liveness.NewProbe(cfg.LivenessProbeTimeout)
+	probe := liveness.NewProbe(cfg.LivenessTimeout())
 
 	// Initialize and start the cache application.
 	if app, err := cache.NewApp(ctx, cfg, probe); err != nil {
