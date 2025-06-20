@@ -28,7 +28,7 @@ type evictionStat struct {
 // Storage is a Weight-aware, sharded Storage cache with background eviction and refreshItem support.
 type Storage struct {
 	ctx             context.Context               // Main context for lifecycle control
-	cfg             *config.Cache                 // Cache configuration
+	cfg             *config.V2                    // Cache configuration
 	shardedMap      *sharded.Map[*model.Response] // Sharded storage for cache entries
 	refresher       Refresher                     // Background refresher (see refresher.go)
 	balancer        Balancer                      // Helps pick shards to evict from
@@ -40,7 +40,7 @@ type Storage struct {
 // NewStorage constructs a new Storage cache instance and launches eviction and refreshItem routines.
 func NewStorage(
 	ctx context.Context,
-	cfg *config.Cache,
+	cfg *config.V2,
 	balancer Balancer,
 	refresher Refresher,
 	backend repository.Backender,
@@ -53,7 +53,7 @@ func NewStorage(
 		refresher:       refresher,
 		balancer:        balancer,
 		backend:         backend,
-		memoryThreshold: int64(float64(cfg.MemoryLimit) * cfg.MemoryFillThreshold),
+		memoryThreshold: int64(float64(cfg.Cache.Storage.Size) * cfg.Cache.Eviction.Threshold),
 	}
 
 	// Register all existing shards with the balancer.
@@ -67,10 +67,7 @@ func NewStorage(
 	// Launch background refresher and evictors.
 	storage.refresher.RunRefresher()
 	storage.runEvictor()
-
-	if cfg.IsDebugOn() {
-		storage.runLogger()
-	}
+	storage.runLogger()
 
 	return storage
 }
@@ -78,7 +75,7 @@ func NewStorage(
 // Get retrieves a response by request and bumps its Storage position.
 // Returns: (response, releaser, found).
 func (c *Storage) Get(req *model.Request) (*model.Response, bool) {
-	resp, found := c.shardedMap.Get(req.Key(), req.ShardKey())
+	resp, found := c.shardedMap.Get(req.MapKey(), req.ShardKey())
 	if found {
 		c.touch(resp)
 		return resp, true
@@ -88,7 +85,7 @@ func (c *Storage) Get(req *model.Request) (*model.Response, bool) {
 
 // Set inserts or updates a response in the cache, updating Weight usage and Storage position.
 func (c *Storage) Set(new *model.Response) {
-	existing, found := c.shardedMap.Get(new.Request().Key(), new.Request().ShardKey())
+	existing, found := c.shardedMap.Get(new.Request().MapKey(), new.Request().ShardKey())
 	if found {
 		c.update(existing, new)
 		return
@@ -143,7 +140,7 @@ func (c *Storage) runLogger() {
 					mem        = utils.FmtMem(c.shardedMap.Mem())
 					length     = strconv.Itoa(int(c.shardedMap.Len()))
 					gc         = strconv.Itoa(int(m.NumGC))
-					limit      = utils.FmtMem(int64(c.cfg.MemoryLimit))
+					limit      = utils.FmtMem(int64(c.cfg.Cache.Storage.Size))
 					goroutines = strconv.Itoa(runtime.NumGoroutine())
 					alloc      = utils.FmtMem(int64(m.Alloc))
 					freedMem   = utils.FmtMem(evictsMemPer5Sec)
