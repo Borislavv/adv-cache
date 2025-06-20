@@ -28,7 +28,7 @@ func (c *Storage) evictor() {
 			return
 		case <-t:
 			items, freedMem := c.evictUntilWithinLimit()
-			if c.cfg.IsDebugOn() && (items > 0 || freedMem > 0) {
+			if items > 0 || freedMem > 0 {
 				select {
 				case <-c.ctx.Done():
 					return
@@ -75,7 +75,7 @@ func (c *Storage) evictUntilWithinLimit() (items int, mem int64) {
 				break
 			}
 
-			freedMem, isHit := c.del(el.Value().Key())
+			freedMem, isHit := c.del(el.Value().MapKey())
 			if isHit {
 				items++
 				evictions++
