@@ -1,24 +1,29 @@
 cache:
   enabled: true
   eviction:
-    policy: "lru"
+    policy: "LRU"
     threshold: 0.9 # Когда кэш заполнен на 90% — запуск вытеснения
   storage:
     type: "malloc"
-    size: "21474836480" # 20GB in bytes
+    size: 21474836480 # 20GB in bytes
   refresh:
-    ttl: "1d"
-    beta: "0.4"
+    ttl: "24h"
+    beta: 0.4
+    backend_url: "https://seo-master.lux.kube.xbet.lan/api/v2/pagedata"
+  persistence:
+    is_enabled: true
+    dump_dir: "public/dump"
+    dump_name: "cache.dump.gz"
   rules:
     - path: "/api/v2/pagedata"
       cache_key:
-        query: ['project', 'stream', 'sport', 'language'] # Параметры, которые будут учавствовать в ключе кэширования
-        headers: ['Accept-Encoding', 'X-Project-ID'] # Хедеры, которые будут учавствовать в ключе кэширования
+        query: ['project[id]', 'domain', 'language', 'choice'] # check: as a prefix
+        headers: ['Accept-Encoding', 'X-Project-ID'] # check: equals
       cache_value:
-        headers: ['Cache-Control', 'X-Project-ID'] # Хедеры ответа, которые будут сохранены в кэше вместе с body
+        headers: ['X-Project-ID'] # check: equals
     - path: "/api/v1/pagecontent"
       cache_key:
-        query: ['project', 'stream', 'sport', 'language'] # Параметры, которые будут учавствовать в ключе кэширования
-        headers: ['Accept-Encoding', 'X-Project-ID'] # Хедеры, которые будут учавствовать в ключе кэширования
+        query: ['project[id]', 'domain', 'language', 'choice'] # check: as a prefix
+        headers: ['Accept-Encoding', 'X-Project-ID'] # check: equals
       cache_value:
-        headers: ['Cache-Control', 'X-Project-ID'] # Хедеры ответа, которые будут сохранены в кэше вместе с body
+        headers: ['X-Project-ID'] # check: equals
