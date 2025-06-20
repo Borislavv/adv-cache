@@ -78,7 +78,7 @@ type CacheValue struct {
 }
 
 const (
-	configPath      = "/config/config.yaml"
+	configPath      = "/config/config.prod.yaml"
 	configPathLocal = "/config/config.local.yaml"
 	configPathTest  = "/../../config/config.test.yaml"
 )
