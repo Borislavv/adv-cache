@@ -7,7 +7,7 @@ import (
 )
 
 type Config struct {
-	cacheConfig.V2           // loads from yaml
+	*cacheConfig.V2          // loads from yaml
 	cacheConfig.Cache        `mapstructure:",squash"`
 	prometheusconifg.Metrics `mapstructure:",squash"`
 	fasthttpconfig.Server    `mapstructure:",squash"`
