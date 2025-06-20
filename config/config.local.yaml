@@ -1,7 +1,9 @@
 cache:
   enabled: true
+  preallocate:
+    per_shard: 20000 # пре инициализированный размер мапппы в каждом шарде
   eviction:
-    policy: "LRU"
+    policy: "lru"
     threshold: 0.9 # Когда кэш заполнен на 90% — запуск вытеснения
   storage:
     type: "malloc"
