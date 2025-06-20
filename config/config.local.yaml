@@ -1,31 +1,40 @@
 cache:
   enabled: true
+
   preallocate:
-    per_shard: 20000 # пре инициализированный размер мапппы в каждом шарде
+    num_shards: 2048 # Fixed constant (see `NumOfShards` in code). Controls the number of sharded maps.
+    per_shard: 8196  # Preallocated map size per shard. Without resizing, this supports ~16,785,408 keys in total.
+    # Note: this is an upper-bound estimate and may vary depending on hash distribution quality.
+
   eviction:
     policy: "lru"
-    threshold: 0.9 # Когда кэш заполнен на 90% — запуск вытеснения
+    threshold: 0.9 # Trigger eviction when cache memory usage exceeds 90% of its configured limit.
+
   storage:
     type: "malloc"
-    size: 21474836480 # 20GB in bytes
+    size: 21474836480 # 20 GB of maximum allowed memory for the in-memory cache (in bytes).
+
   refresh:
     ttl: "24h"
-    beta: 0.4
-    backend_url: "https://seo-master.lux.kube.xbet.lan/api/v2/pagedata"
+    beta: 0.4 # Controls randomness in refresh timing to avoid thundering herd.
+    backend_url: "https://seo-master.lux.kube.xbet.lan"
+
   persistence:
     is_enabled: true
     dump_dir: "public/dump"
     dump_name: "cache.dump.gz"
+
   rules:
     - path: "/api/v2/pagedata"
       cache_key:
-        query: ['project[id]', 'domain', 'language', 'choice'] # check: as a prefix
-        headers: ['Accept-Encoding', 'X-Project-ID'] # check: equals
+        query: ['project[id]', 'domain', 'language', 'choice'] # Match query parameters by prefix.
+        headers: ['Accept-Encoding', 'X-Project-ID']           # Match headers by exact value.
       cache_value:
-        headers: ['X-Project-ID'] # check: equals
+        headers: ['X-Project-ID']                              # Store only when headers match exactly.
+
     - path: "/api/v1/pagecontent"
       cache_key:
-        query: ['project[id]', 'domain', 'language', 'choice'] # check: as a prefix
-        headers: ['Accept-Encoding', 'X-Project-ID'] # check: equals
+        query: ['project[id]', 'domain', 'language', 'choice'] # Match query parameters by prefix.
+        headers: ['Accept-Encoding', 'X-Project-ID']           # Match headers by exact value.
       cache_value:
-        headers: ['X-Project-ID'] # check: equals
+        headers: ['X-Project-ID']                              # Store only when headers match exactly.

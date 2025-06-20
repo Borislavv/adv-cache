@@ -18,7 +18,7 @@ const (
 
 // GenerateRandomRequests produces a slice of *model.Request for use in tests and benchmarks.
 // Each request gets a unique combination of project, domain, language, and tags.
-func GenerateRandomRequests(cfg *config.Cache, num int) []*model.Request {
+func GenerateRandomRequests(cfg *config.Cache, path []byte, num int) []*model.Request {
 	i := 0
 	list := make([]*model.Request, 0, num)
 
@@ -31,7 +31,7 @@ func GenerateRandomRequests(cfg *config.Cache, num int) []*model.Request {
 				}
 				req := model.NewRequest(
 					cfg,
-					[]byte("/api/v2/pagedata"),
+					path,
 					map[string][]byte{
 						"project[id]":    []byte(strconv.Itoa(projectID)),
 						"domain":         []byte("1x001.com"),
@@ -61,14 +61,14 @@ func GenerateRandomRequests(cfg *config.Cache, num int) []*model.Request {
 
 // GenerateRandomResponses generates a list of *model.Response, each linked to a random request and containing
 // random body data. Used for stress/load/benchmark testing of cache systems.
-func GenerateRandomResponses(cfg *config.Cache, num int) []*model.Response {
+func GenerateRandomResponses(cfg *config.Cache, path []byte, num int) []*model.Response {
 	headers := http.Header{}
 	headers.Add("Accept", "application/json")
 	headers.Add("Content-Type", "application/json")
 
 	list := make([]*model.Response, 0, num)
-	for _, req := range GenerateRandomRequests(cfg, num) {
-		data := model.NewData(200, headers, []byte(GenerateRandomString()))
+	for _, req := range GenerateRandomRequests(cfg, path, num) {
+		data := model.NewData(cfg, path, http.StatusOK, headers, []byte(GenerateRandomString()))
 		resp, err := model.NewResponse(
 			data, req, cfg,
 			func(ctx context.Context) (*model.Data, error) {

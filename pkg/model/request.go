@@ -26,7 +26,7 @@ func NewRequestFromFasthttp(cfg *config.Cache, r *fasthttp.RequestCtx) *Request 
 		cfg:  cfg,
 		path: r.Path(),
 	}
-	req.setUp(r.QueryArgs(), &r.Request.Header)
+	req.setUp(r.Path(), r.QueryArgs(), &r.Request.Header)
 	return req
 }
 
@@ -69,7 +69,7 @@ func (r *Request) Weight() int64 {
 	return int64(unsafe.Sizeof(*r)) + int64(len(r.query))
 }
 
-func (r *Request) setUp(args *fasthttp.Args, header *fasthttp.RequestHeader) {
+func (r *Request) setUp(path []byte, args *fasthttp.Args, header *fasthttp.RequestHeader) {
 	var argsBuf []byte
 	if args.Len() > 0 {
 		argsLength := 1
@@ -118,9 +118,10 @@ func (r *Request) setUp(args *fasthttp.Args, header *fasthttp.RequestHeader) {
 		}
 	}
 
-	bufLen := len(argsBuf) + len(headersBuf) + 1
+	bufLen := len(argsBuf) + len(headersBuf) + len(path) + 1
 	buf := make([]byte, 0, bufLen)
 	if bufLen > 1 {
+		buf = append(buf, path...)
 		buf = append(buf, argsBuf...)
 		buf = append(buf, []byte("\n")...)
 		buf = append(buf, headersBuf...)
