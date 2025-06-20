@@ -8,6 +8,12 @@ import (
 	"time"
 )
 
+const (
+	Prod = "prod"
+	Dev  = "dev"
+	Test = "test"
+)
+
 type Cache struct {
 	Cache CacheBox `yaml:"cache"`
 }
@@ -73,26 +79,36 @@ type CacheValue struct {
 const (
 	configPath      = "/config/config.yaml"
 	configPathLocal = "/config/config.local.yaml"
+	configPathTest  = "/config/config.test.yaml"
 )
 
 func LoadConfig() (*Cache, error) {
+	appEnv := os.Getenv("APP_ENV")
+	if appEnv == "" {
+		return nil, errors.New("APP_ENV environment variable not set")
+	}
+
 	var path string
+	switch {
+	case appEnv == Prod:
+		path = configPath
+	case appEnv == Dev:
+		path = configPathLocal
+	case appEnv == Test:
+		path = configPathTest
+	default:
+		return nil, errors.New("unknown APP_ENV: " + appEnv)
+	}
 
 	dir, err := os.Getwd()
 	if err != nil {
 		return nil, err
 	}
 
-	if _, err = os.Stat(dir + configPathLocal); err == nil {
-		path = dir + configPathLocal
-	} else if os.IsNotExist(err) {
-		if _, err = os.Stat(dir + configPath); err == nil {
-			path = dir + configPath
-		} else {
-			return nil, errors.New("config does not exist by path: " + dir + configPath + " or " + dir + configPathLocal)
-		}
-	} else {
+	if _, err = os.Stat(dir + path); err != nil {
 		return nil, fmt.Errorf("stat config path: %w", err)
+	} else {
+		path = dir + path
 	}
 
 	data, err := os.ReadFile(path)

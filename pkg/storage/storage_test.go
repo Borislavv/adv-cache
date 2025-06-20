@@ -2,16 +2,15 @@ package storage
 
 import (
 	"context"
-	"runtime"
-	"testing"
-	"time"
-
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/mock"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/repository"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/cache/lru"
 	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
+	"github.com/rs/zerolog/log"
+	"runtime"
+	"testing"
 
 	"github.com/rs/zerolog"
 )
@@ -19,29 +18,11 @@ import (
 var cfg *config.Cache
 
 func init() {
-	cfg = &config.Cache{
-		Cache: config.CacheBox{
-			Enabled: true,
-			Preallocate: config.Preallocation{
-				PerShard: 0,
-			},
-			Eviction: config.Eviction{
-				Policy:    "lru",
-				Threshold: 0.9,
-			},
-			Refresh: config.Refresh{
-				TTL:        time.Hour,
-				ErrorTTL:   time.Minute * 10,
-				Beta:       0.4,
-				MinStale:   time.Minute * 40,
-				BackendURL: "https://seo-master.lux.kube.xbet.lan",
-			},
-			Storage: config.Storage{
-				Type: "malloc",
-				Size: 1024 * 1024 * 256, // 256mb
-			},
-			Rules: nil,
-		},
+	var err error
+	cfg, err = config.LoadConfig()
+	if err != nil {
+		log.Err(err).Msg("[test] failed to load config from yaml")
+		panic(err)
 	}
 
 	zerolog.SetGlobalLevel(zerolog.ErrorLevel)
