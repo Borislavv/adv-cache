@@ -16,7 +16,7 @@ import (
 const dumpDir = "public/dump"
 
 var (
-	evictionStatCh = make(chan evictionStat, 32)
+	evictionStatCh = make(chan evictionStat, runtime.GOMAXPROCS(0)*4)
 )
 
 // evictionStat carries statistics for each eviction batch.
@@ -30,9 +30,9 @@ type Storage struct {
 	ctx             context.Context               // Main context for lifecycle control
 	cfg             *config.Cache                 // CacheBox configuration
 	shardedMap      *sharded.Map[*model.Response] // Sharded storage for cache entries
+	backend         repository.Backender          // Remote backend server.
 	refresher       Refresher                     // Background refresher (see refresher.go)
 	balancer        Balancer                      // Helps pick shards to evict from
-	backend         repository.Backender          // Remote backend server.
 	mem             int64                         // Current Weight usage (bytes)
 	memoryThreshold int64                         // Threshold for triggering eviction (bytes)
 }
@@ -98,7 +98,7 @@ func (c *Storage) del(key uint64) (freed int64, isHit bool) {
 	return c.shardedMap.Remove(key)
 }
 
-// touch bumps the Storage position of an existing entry (MoveToFront) and increases its refcount.
+// touch bumps the Storage position of an existing entry (MoveToFront) and increases its refCount.
 func (c *Storage) touch(existing *model.Response) {
 	c.balancer.Update(existing)
 }
