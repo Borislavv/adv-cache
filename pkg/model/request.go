@@ -13,14 +13,14 @@ import (
 var hasherPool = &sync.Pool{New: func() any { return xxh3.New() }}
 
 type Request struct {
-	cfg   *config.V2
+	cfg   *config.Cache
 	key   uint64
 	shard uint64
 	query []byte
 	path  []byte
 }
 
-func NewRequestFromFasthttp(cfg *config.V2, r *fasthttp.RequestCtx) *Request {
+func NewRequestFromFasthttp(cfg *config.Cache, r *fasthttp.RequestCtx) *Request {
 	sanitizeRequest(cfg, r)
 	req := &Request{
 		cfg:  cfg,
@@ -30,7 +30,7 @@ func NewRequestFromFasthttp(cfg *config.V2, r *fasthttp.RequestCtx) *Request {
 	return req
 }
 
-func NewRawRequest(cfg *config.V2, key, shard uint64, query, path []byte) *Request {
+func NewRawRequest(cfg *config.Cache, key, shard uint64, query, path []byte) *Request {
 	return &Request{
 		cfg:   cfg,
 		key:   key,
@@ -40,7 +40,7 @@ func NewRawRequest(cfg *config.V2, key, shard uint64, query, path []byte) *Reque
 	}
 }
 
-func NewRequest(cfg *config.V2, path []byte, args map[string][]byte, headers map[string][][]byte) *Request {
+func NewRequest(cfg *config.Cache, path []byte, args map[string][]byte, headers map[string][][]byte) *Request {
 	req := &Request{
 		cfg:  cfg,
 		path: path,
@@ -198,13 +198,13 @@ func hash(buf []byte) uint64 {
 	return hasher.Sum64()
 }
 
-func sanitizeRequest(cfg *config.V2, ctx *fasthttp.RequestCtx) {
+func sanitizeRequest(cfg *config.Cache, ctx *fasthttp.RequestCtx) {
 	allowedQueries, allowedHeaders := getKeyAllowed(cfg, ctx.Path())
 	filterKeyQueriesInPlace(ctx, allowedQueries)
 	filterKeyHeadersInPlace(ctx, allowedHeaders)
 }
 
-func getKeyAllowed(cfg *config.V2, path []byte) (queries [][]byte, headers [][]byte) {
+func getKeyAllowed(cfg *config.Cache, path []byte) (queries [][]byte, headers [][]byte) {
 	queries = make([][]byte, 0, 14)
 	headers = make([][]byte, 0, 14)
 	for _, rule := range cfg.Cache.Rules {
