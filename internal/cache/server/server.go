@@ -169,7 +169,7 @@ func (s *HttpServer) controllers() []controller.HttpController {
 	return []controller.HttpController{
 		api.NewCacheController(s.ctx, s.cfg, s.db, s.backend), // Main cache handler
 		liveness.NewController(s.probe),                       // Liveness/healthcheck endpoint
-		api2.NewPrometheusMetrics(s.ctx),                      // Metrics metrics endpoint
+		api2.NewPrometheusMetrics(),                           // Metrics metrics endpoint
 	}
 }
 

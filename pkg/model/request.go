@@ -221,20 +221,37 @@ func getKeyAllowed(cfg *config.Cache, path []byte) (queries [][]byte, headers []
 	return queries, headers
 }
 
-func filterKeyQueriesInPlace(ctx *fasthttp.RequestCtx, allowed [][]byte) {
-	args := ctx.QueryArgs()
-	result := fasthttp.AcquireArgs()
+var bufferPool = &sync.Pool{
+	New: func() interface{} {
+		return new(bytes.Buffer)
+	},
+}
 
-	args.VisitAll(func(k, v []byte) {
+func filterKeyQueriesInPlace(ctx *fasthttp.RequestCtx, allowed [][]byte) {
+	original := ctx.QueryArgs()
+	buf := bufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+
+	original.VisitAll(func(k, v []byte) {
 		for _, ak := range allowed {
 			if bytes.HasPrefix(k, ak) {
-				result.AddBytesKV(k, v)
+				buf.Write(k)
+				buf.WriteByte('=')
+				buf.Write(v)
+				buf.WriteByte('&')
 				break
 			}
 		}
 	})
 
-	ctx.URI().SetQueryString(result.String())
+	if buf.Len() > 0 {
+		buf.Truncate(buf.Len() - 1) // удалить последний &
+		ctx.URI().SetQueryStringBytes(buf.Bytes())
+	} else {
+		ctx.URI().SetQueryStringBytes(nil) // удалить query
+	}
+
+	bufferPool.Put(buf)
 }
 
 func filterKeyHeadersInPlace(ctx *fasthttp.RequestCtx, allowed [][]byte) {

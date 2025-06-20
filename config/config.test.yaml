@@ -3,7 +3,7 @@ cache:
 
   preallocate:
     num_shards: 2048 # Fixed constant (see `NumOfShards` in code). Controls the number of sharded maps.
-    per_shard: 8196  # Preallocated map size per shard. Without resizing, this supports ~16,785,408 keys in total.
+    per_shard: 0  # Preallocated map size per shard. Without resizing, this supports ~16,785,408 keys in total.
     # Note: this is an upper-bound estimate and may vary depending on hash distribution quality.
 
   eviction:
@@ -12,11 +12,11 @@ cache:
 
   storage:
     type: "malloc"
-    size: 15000000 # 20 GB of maximum allowed memory for the in-memory cache (in bytes).
+    size: 1000000 # 20 GB of maximum allowed memory for the in-memory cache (in bytes).
 
   refresh:
-    ttl: "20m"
-    beta: 0.5 # Controls randomness in refresh timing to avoid thundering herd.
+    ttl: "10m"
+    beta: 0.4 # Controls randomness in refresh timing to avoid thundering herd.
     backend_url: "https://seo-master.lux.kube.xbet.lan"
 
   persistence:

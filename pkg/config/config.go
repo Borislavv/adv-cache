@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"gopkg.in/yaml.v3"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -79,25 +80,22 @@ type CacheValue struct {
 const (
 	configPath      = "/config/config.yaml"
 	configPathLocal = "/config/config.local.yaml"
-	configPathTest  = "/config/config.test.yaml"
+	configPathTest  = "/../../config/config.test.yaml"
 )
 
 func LoadConfig() (*Cache, error) {
-	appEnv := os.Getenv("APP_ENV")
-	if appEnv == "" {
-		return nil, errors.New("APP_ENV environment variable not set")
-	}
+	env := os.Getenv("APP_ENV")
 
 	var path string
 	switch {
-	case appEnv == Prod:
+	case env == Prod:
 		path = configPath
-	case appEnv == Dev:
+	case env == Dev:
 		path = configPathLocal
-	case appEnv == Test:
+	case env == Test:
 		path = configPathTest
 	default:
-		return nil, errors.New("unknown APP_ENV: " + appEnv)
+		return nil, errors.New("unknown APP_ENV: '" + env + "'")
 	}
 
 	dir, err := os.Getwd()
@@ -105,10 +103,13 @@ func LoadConfig() (*Cache, error) {
 		return nil, err
 	}
 
-	if _, err = os.Stat(dir + path); err != nil {
+	path, err = filepath.Abs(filepath.Clean(dir + path))
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve absolute config filepath: %w", err)
+	}
+
+	if _, err = os.Stat(path); err != nil {
 		return nil, fmt.Errorf("stat config path: %w", err)
-	} else {
-		path = dir + path
 	}
 
 	data, err := os.ReadFile(path)

@@ -119,6 +119,17 @@ func (l *List[T]) PushBack(v T) *Element[T] {
 	return l.insertValue(v, l.root.prev)
 }
 
+// Back returns the last element in the list or nil if the list is empty.
+func (l *List[T]) Back() *Element[T] {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	if l.len == 0 {
+		return nil
+	}
+	return l.root.prev
+}
+
 // MoveToFront moves e to the front of the list without removing it from memory or touching the pool.
 func (l *List[T]) MoveToFront(e *Element[T]) {
 	l.mu.Lock()

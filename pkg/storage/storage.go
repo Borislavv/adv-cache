@@ -6,6 +6,7 @@ import (
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/repository"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/cache"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/cache/lfu"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/cache/lru"
 	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
 )
@@ -43,6 +44,7 @@ func New(
 	balancer lru.Balancer,
 	refresher lru.Refresher,
 	backend repository.Backender,
+	tinyLFU *lfu.TinyLFU,
 	shardedMap *sharded.Map[*model.Response],
 ) (db *AlgoStorage) {
 	var s Storage
@@ -53,7 +55,7 @@ func New(
 	switch cache.Algorithm(cfg.Cache.Eviction.Policy) {
 	case cache.LRU:
 		// Least Recently Used (Storage) cache
-		s = lru.NewStorage(ctx, cfg, balancer, refresher, backend, shardedMap)
+		s = lru.NewStorage(ctx, cfg, balancer, refresher, backend, tinyLFU, shardedMap)
 	default:
 		// Panic for unsupported/unknown algorithms.
 		panic("eviction policy '" + cfg.Cache.Eviction.Policy + "' is not implemented yet")
