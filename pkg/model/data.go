@@ -17,7 +17,7 @@ type Data struct {
 
 // NewData creates a new Data object, compressing body with gzip if large enough.
 // Uses memory pools for buffer and writer to minimize allocations.
-func NewData(cfg *config.V2, path []byte, statusCode int, headers http.Header, body []byte) *Data {
+func NewData(cfg *config.Cache, path []byte, statusCode int, headers http.Header, body []byte) *Data {
 	data := &Data{
 		headers:    getAllowedValueHeaders(cfg, path, headers),
 		statusCode: statusCode,
@@ -73,7 +73,7 @@ headersLoop:
 	}
 }
 
-func getValueAllowed(cfg *config.V2, path []byte) (headers [][]byte) {
+func getValueAllowed(cfg *config.Cache, path []byte) (headers [][]byte) {
 	headers = make([][]byte, 0, 7)
 	for _, rule := range cfg.Cache.Rules {
 		if bytes.HasPrefix(path, rule.PathBytes) {
@@ -85,7 +85,7 @@ func getValueAllowed(cfg *config.V2, path []byte) (headers [][]byte) {
 	return headers
 }
 
-func getAllowedValueHeaders(cfg *config.V2, path []byte, headers http.Header) http.Header {
+func getAllowedValueHeaders(cfg *config.Cache, path []byte, headers http.Header) http.Header {
 	allowedValueHeaders := getValueAllowed(cfg, path)
 	filterValueHeadersInPlace(headers, allowedValueHeaders)
 	return headers
