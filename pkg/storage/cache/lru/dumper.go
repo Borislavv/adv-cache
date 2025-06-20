@@ -28,11 +28,10 @@ type dumpEntry struct {
 	StatusCode int         `json:"statusCode"`
 	Headers    http.Header `json:"headers"`
 	Body       []byte      `json:"body"`
-	Project    []byte      `json:"project"`
-	Domain     []byte      `json:"domain"`
-	Language   []byte      `json:"language"`
-	KeyBuf     []byte      `json:"keyBuf"`
-	Tags       [][]byte    `json:"tags"`
+	Query      []byte      `json:"query"`
+	Path       []byte      `json:"path"`
+	MapKey     uint64      `json:"mapKey"`
+	ShardKey   uint64      `json:"shardKey"`
 }
 
 func (c *Storage) DumpToDir(ctx context.Context, dir string) error {
@@ -66,11 +65,10 @@ func (c *Storage) DumpToDir(ctx context.Context, dir string) error {
 				StatusCode: resp.Data().StatusCode(),
 				Headers:    resp.Data().Headers(),
 				Body:       resp.Data().Body(),
-				Project:    resp.Request().GetProject(),
-				Domain:     resp.Request().GetDomain(),
-				Language:   resp.Request().GetLanguage(),
-				Tags:       resp.Request().GetTags(),
-				KeyBuf:     resp.Request().KeyBuf,
+				Query:      resp.Request().ToQuery(),
+				Path:       resp.Request().Path(),
+				MapKey:     resp.Request().MapKey(),
+				ShardKey:   resp.Request().ShardKey(),
 			}
 
 			if err = enc.Encode(e); err != nil {
@@ -127,16 +125,8 @@ func (c *Storage) LoadFromDir(ctx context.Context, dir string) error {
 			continue
 		}
 
-		data := model.NewData(entry.StatusCode, entry.Headers, entry.Body)
-		req, err := model.NewManualRequest(entry.Project, entry.Domain, entry.Language, entry.Tags)
-		if err != nil {
-			log.Err(err).Msg("[dump] request build failed")
-			failed++
-			dumpEntryPool.Put(entry)
-			continue
-		}
-		req.KeyBuf = entry.KeyBuf
-
+		data := model.NewData(c.cfg, entry.Path, entry.StatusCode, entry.Headers, entry.Body)
+		req := model.NewRawRequest(c.cfg, entry.MapKey, entry.ShardKey, entry.Query, entry.Path)
 		resp, err := model.NewResponse(data, req, c.cfg, c.backend.RevalidatorMaker(req))
 		if err != nil {
 			log.Err(err).Msg("[dump] response build failed")
