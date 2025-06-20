@@ -8,21 +8,37 @@ import (
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/repository"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/cache/lru"
 	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
-	"github.com/rs/zerolog/log"
+	"github.com/rs/zerolog"
 	"runtime"
 	"testing"
-
-	"github.com/rs/zerolog"
+	"time"
 )
 
 var cfg *config.Cache
 
 func init() {
-	var err error
-	cfg, err = config.LoadConfig()
-	if err != nil {
-		log.Err(err).Msg("[test] failed to load config from yaml")
-		panic(err)
+	cfg = &config.Cache{
+		Cache: config.CacheBox{
+			Enabled: true,
+			Preallocate: config.Preallocation{
+				PerShard: 8196,
+			},
+			Eviction: config.Eviction{
+				Policy:    "lru",
+				Threshold: 0.9,
+			},
+			Refresh: config.Refresh{
+				TTL:        time.Hour,
+				ErrorTTL:   time.Minute * 10,
+				Beta:       0.4,
+				MinStale:   time.Minute * 40,
+				BackendURL: "https://seo-master.lux.kube.xbet.lan",
+			},
+			Storage: config.Storage{
+				Type: "malloc",
+				Size: 1024 * 1024 * 5, // 5 MB
+			},
+		},
 	}
 
 	zerolog.SetGlobalLevel(zerolog.ErrorLevel)
