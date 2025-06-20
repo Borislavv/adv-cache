@@ -28,7 +28,7 @@ type evictionStat struct {
 // Storage is a Weight-aware, sharded Storage cache with background eviction and refreshItem support.
 type Storage struct {
 	ctx             context.Context               // Main context for lifecycle control
-	cfg             *config.V2                    // Cache configuration
+	cfg             *config.Cache                 // CacheBox configuration
 	shardedMap      *sharded.Map[*model.Response] // Sharded storage for cache entries
 	refresher       Refresher                     // Background refresher (see refresher.go)
 	balancer        Balancer                      // Helps pick shards to evict from
@@ -40,7 +40,7 @@ type Storage struct {
 // NewStorage constructs a new Storage cache instance and launches eviction and refreshItem routines.
 func NewStorage(
 	ctx context.Context,
-	cfg *config.V2,
+	cfg *config.Cache,
 	balancer Balancer,
 	refresher Refresher,
 	backend repository.Backender,
