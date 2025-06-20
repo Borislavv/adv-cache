@@ -39,13 +39,15 @@ type AlgoStorage struct {
 //	shardedMap  - shared sharded map storage for concurrent key/value access
 func New(
 	ctx context.Context,
-	cfg *config.V2,
+	cfg *config.Cache,
 	balancer lru.Balancer,
 	refresher lru.Refresher,
 	backend repository.Backender,
 	shardedMap *sharded.Map[*model.Response],
 ) (db *AlgoStorage) {
 	var s Storage
+
+	// TODO need implement select by storage type (malloc and so on)
 
 	// Select and initialize storage backend by eviction algorithm type.
 	switch cache.Algorithm(cfg.Cache.Eviction.Policy) {
