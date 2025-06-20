@@ -1,0 +1,31 @@
+cache:
+  enabled: true
+  preallocate:
+    per_shard: 20000 # пре инициализированный размер мапппы в каждом шарде
+  eviction:
+    policy: "lru"
+    threshold: 0.9 # Когда кэш заполнен на 90% — запуск вытеснения
+  storage:
+    type: "malloc"
+    size: 21474836480 # 20GB in bytes
+  refresh:
+    ttl: "24h"
+    beta: 0.4
+    backend_url: "https://seo-master.lux.kube.xbet.lan/api/v2/pagedata"
+  persistence:
+    is_enabled: true
+    dump_dir: "public/dump"
+    dump_name: "cache.dump.gz"
+  rules:
+    - path: "/api/v2/pagedata"
+      cache_key:
+        query: ['project[id]', 'domain', 'language', 'choice'] # check: as a prefix
+        headers: ['Accept-Encoding', 'X-Project-ID'] # check: equals
+      cache_value:
+        headers: ['X-Project-ID'] # check: equals
+    - path: "/api/v1/pagecontent"
+      cache_key:
+        query: ['project[id]', 'domain', 'language', 'choice'] # check: as a prefix
+        headers: ['Accept-Encoding', 'X-Project-ID'] # check: equals
+      cache_value:
+        headers: ['X-Project-ID'] # check: equals

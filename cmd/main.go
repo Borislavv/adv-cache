@@ -4,19 +4,16 @@ import (
 	"context"
 	"github.com/Borislavv/traefik-http-cache-plugin/internal/cache"
 	"github.com/Borislavv/traefik-http-cache-plugin/internal/cache/config"
+	config2 "github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/k8s/probe/liveness"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/shutdown"
 	"github.com/joho/godotenv"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/viper"
 	"go.uber.org/automaxprocs/maxprocs"
-	"net/http"
-	"os"
 	"runtime"
-	"runtime/pprof"
 	"time"
 )
-import _ "net/http/pprof"
 
 // Initializes environment variables from .env files and binds them using Viper.
 // This allows overriding any value via environment variables.
@@ -63,30 +60,19 @@ func loadCfg() *config.Config {
 		log.Err(err).Msg("[main] failed to unmarshal config from envs")
 		panic(err)
 	}
-	// Calculate the refresh duration threshold as a function of revalidate interval and beta.
-	cfg.RefreshDurationThreshold = time.Duration(float64(cfg.RevalidateInterval) * cfg.RevalidateBeta)
+
+	cacheConfig, err := config2.LoadConfig()
+	if err != nil {
+		log.Err(err).Msg("[main] failed to load config from envs")
+		panic(err)
+	}
+	cfg.Cache = cacheConfig
+
 	return cfg
 }
 
 // Main entrypoint: configures and starts the cache application.
 func main() {
-	go func() {
-		http.ListenAndServe("localhost:6060", nil)
-	}()
-
-	f, err := os.Create("cpu_profile.pprof")
-	if err != nil {
-		panic(err)
-	}
-	defer f.Close()
-
-	// Запускаем запись CPU профиля
-	if err = pprof.StartCPUProfile(f); err != nil {
-		panic(err)
-	}
-	// Обязательно останови профиль перед завершением программы
-	defer pprof.StopCPUProfile()
-
 	// Create a root context for gracefulShutdown shutdown and cancellation.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -99,10 +85,10 @@ func main() {
 
 	// Setup gracefulShutdown shutdown handler (SIGTERM, SIGINT, etc).
 	gracefulShutdown := shutdown.NewGraceful(ctx, cancel)
-	gracefulShutdown.SetGracefulTimeout(time.Millisecond * 9500) // 9.5s
+	gracefulShutdown.SetGracefulTimeout(time.Millisecond * 9000) // 9.0s
 
 	// Initialize liveness probe for Kubernetes/Cloud health checks.
-	probe := liveness.NewProbe(cfg.LivenessProbeTimeout)
+	probe := liveness.NewProbe(cfg.LivenessTimeout())
 
 	// Initialize and start the cache application.
 	if app, err := cache.NewApp(ctx, cfg, probe); err != nil {

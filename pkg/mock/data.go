@@ -18,7 +18,7 @@ const (
 
 // GenerateRandomRequests produces a slice of *model.Request for use in tests and benchmarks.
 // Each request gets a unique combination of project, domain, language, and tags.
-func GenerateRandomRequests(num int) []*model.Request {
+func GenerateRandomRequests(cfg *config.Cache, num int) []*model.Request {
 	i := 0
 	list := make([]*model.Request, 0, num)
 
@@ -29,22 +29,29 @@ func GenerateRandomRequests(num int) []*model.Request {
 				if i >= num {
 					return list
 				}
-				req, err := model.NewManualRequest(
-					[]byte(strconv.Itoa(projectID)), // Project ID as []byte
-					[]byte("1x001.com"),             // Fixed domain for testing
-					[]byte(lng),                     // Language
-					[][]byte{ // Tags (variation for entropy)
-						[]byte(`betting`),
-						[]byte(`betting_null`),
-						[]byte(`betting_null_sport`),
-						[]byte(`betting_null_sport_` + strconv.Itoa(projectID)),
-						[]byte(`betting_null_sport_` + strconv.Itoa(projectID) + `_` + strconv.Itoa(i)),
-						[]byte(`betting_null_sport_` + strconv.Itoa(projectID) + `_` + strconv.Itoa(i) + `_` + strconv.Itoa(i)),
+				req := model.NewRequest(
+					cfg,
+					[]byte("/api/v2/pagedata"),
+					map[string][]byte{
+						"project[id]":    []byte(strconv.Itoa(projectID)),
+						"domain":         []byte("1x001.com"),
+						"language":       []byte(lng),
+						"choice[name]":   []byte("betting"),
+						"choice[choice]": []byte("choice[choice][name]=betting_live&choice[choice][choice][name]=betting_live_null&choice[choice][choice][choice][name]=betting_live_null_" + strconv.Itoa(projectID) + "&choice[choice][choice][choice][choice][name]=betting_live_null_" + strconv.Itoa(projectID) + "_" + strconv.Itoa(projectID) + "&choice[choice][choice][choice][choice][choice][name]=betting_live_null_" + strconv.Itoa(projectID) + "_" + strconv.Itoa(projectID) + "_" + strconv.Itoa(i) + "&choice[choice][choice][choice][choice][choice][choice]=null"),
+					},
+					map[string][][]byte{
+						"Content-Type":     {[]byte("application/json")},
+						"CacheBox-Control": {[]byte("max-age=1234567890")},
+						"Content-Length":   {[]byte("1234567890")},
+						"X-Project-ID":     {[]byte("62")},
+						"Accept-Encoding":  {[]byte("gzip"), []byte("br")},
+						"X-Real-IP":        {[]byte("192.168.1.10")},
+						"User-Agent":       {[]byte("Go-http-client/1.1")},
+						"Authorization":    {[]byte("Bearer example.jwt.token")},
+						"X-Request-ID":     {[]byte("req-abc123")},
+						"Accept-Language":  {[]byte("en-US,en;q=0.9")},
 					},
 				)
-				if err != nil {
-					panic(err)
-				}
 				list = append(list, req)
 				i++
 			}
@@ -60,7 +67,7 @@ func GenerateRandomResponses(cfg *config.Cache, num int) []*model.Response {
 	headers.Add("Content-Type", "application/json")
 
 	list := make([]*model.Response, 0, num)
-	for _, req := range GenerateRandomRequests(num) {
+	for _, req := range GenerateRandomRequests(cfg, num) {
 		data := model.NewData(200, headers, []byte(GenerateRandomString()))
 		resp, err := model.NewResponse(
 			data, req, cfg,

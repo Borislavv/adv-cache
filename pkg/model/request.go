@@ -2,203 +2,263 @@ package model
 
 import (
 	"bytes"
-	"errors"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
 	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
 	"github.com/valyala/fasthttp"
 	"github.com/zeebo/xxh3"
 	"sync"
-	"sync/atomic"
 	"unsafe"
 )
 
-const (
-	preallocatedBufferCapacity = 256 // For pre-allocated buffer for query strings and URL
-	tagBufferCapacity          = 128 // For each tag's []byte slice
-	maxTagsLen                 = 10  // Maximum number of tags per request
-)
+var hasherPool = &sync.Pool{New: func() any { return xxh3.New() }}
 
-var HasherPool = &sync.Pool{New: func() any { return xxh3.New() }}
-
-// Request holds normalized, deduplicated, hashed and uniquely queryable representation of a cache request.
 type Request struct {
-	project     []byte   // Interned project name
-	domain      []byte   // Interned domain
-	language    []byte   // Interned language
-	tags        [][]byte // Array of interned tag values
-	uniqueQuery []byte   // Built query string (for HTTP requests)
-	key         uint64   // xxh3 hash of all above fields (acts as the main cache key)
-	shardKey    uint64   // Which shard this request maps to
-	KeyBuf      []byte
+	cfg   *config.Cache
+	key   uint64
+	shard uint64
+	query []byte
+	path  []byte
+}
+
+func NewRequestFromFasthttp(cfg *config.Cache, r *fasthttp.RequestCtx) *Request {
+	sanitizeRequest(cfg, r)
+	req := &Request{
+		cfg:  cfg,
+		path: r.Path(),
+	}
+	req.setUp(r.QueryArgs(), &r.Request.Header)
+	return req
+}
+
+func NewRawRequest(cfg *config.Cache, key, shard uint64, query, path []byte) *Request {
+	return &Request{
+		cfg:   cfg,
+		key:   key,
+		shard: shard,
+		query: query,
+		path:  path,
+	}
+}
+
+func NewRequest(cfg *config.Cache, path []byte, args map[string][]byte, headers map[string][][]byte) *Request {
+	req := &Request{
+		cfg:  cfg,
+		path: path,
+	}
+	req.setUpManually(args, headers)
+	return req
+}
+
+func (r *Request) ToQuery() []byte {
+	return r.query
+}
+
+func (r *Request) Path() []byte {
+	return r.path
+}
+
+func (r *Request) MapKey() uint64 {
+	return r.key
+}
+
+func (r *Request) ShardKey() uint64 {
+	return r.shard
 }
 
 func (r *Request) Weight() int64 {
-	weight := int(unsafe.Sizeof(*r))
-	weight += len(r.project)
-	weight += len(r.domain)
-	weight += len(r.language)
-	weight += len(r.uniqueQuery)
-	weight += len(r.tags)
-	for _, tag := range r.tags {
-		weight += len(tag)
-	}
-	return int64(weight)
+	return int64(unsafe.Sizeof(*r)) + int64(len(r.query))
 }
 
-// NewManualRequest creates a Request with explicit parameters, bypassing fasthttp.
-func NewManualRequest(project, domain, language []byte, tags [][]byte) (*Request, error) {
-	r, err := new(Request).setUp(project, domain, language, tags).validate()
-	if err != nil {
-		return nil, err
-	}
-	return r, nil
-}
+func (r *Request) setUp(args *fasthttp.Args, header *fasthttp.RequestHeader) {
+	var argsBuf []byte
+	if args.Len() > 0 {
+		argsLength := 1
+		args.VisitAll(func(key, value []byte) {
+			argsLength += len(key) + len(value) + 2
+		})
 
-// NewRequest builds a Request from fasthttp.Args, with strict interning and pooling.
-func NewRequest(q *fasthttp.Args) (*Request, error) {
-	var (
-		project  = extractArgAndCopy(q.Peek("project[id]"))
-		domain   = extractArgAndCopy(q.Peek("domain"))
-		language = extractArgAndCopy(q.Peek("language"))
-		tags     = extractTagsAndCopy(q)
-	)
-	r, err := new(Request).setUp(project, domain, language, tags).validate()
-	if err != nil {
-		return nil, err
-	}
-	return r, nil
-}
-
-func extractArgAndCopy(arg []byte) []byte {
-	argument := make([]byte, len(arg))
-	copy(argument, arg)
-	return argument
-}
-
-// setUp initializes the Request, interns all fields, builds keys, and sets up uniqueQuery.
-func (r *Request) setUp(project, domain, language []byte, tags [][]byte) *Request {
-	r.project = project
-	r.domain = domain
-	r.language = language
-	r.tags = tags
-
-	r.setUpQuery()
-	r.setUpShardKey(r.setUpKey())
-
-	return r
-}
-
-// validate ensures that required fields are set (project, domain, language).
-func (r *Request) validate() (*Request, error) {
-	if len(r.project) == 0 {
-		return nil, errors.New("project is not specified")
-	}
-	if len(r.domain) == 0 {
-		return nil, errors.New("domain is not specified")
-	}
-	if len(r.language) == 0 {
-		return nil, errors.New("language is not specified")
-	}
-	return r, nil
-}
-
-// extractTagsAndCopy collects choice-like tags from the args, returns them and a release function.
-func extractTagsAndCopy(args *fasthttp.Args) [][]byte {
-	var (
-		nullValue   = []byte("null")
-		choiceValue = []byte("choice")
-	)
-
-	i := 0
-	tags := make([][]byte, 0, 10)
-	args.VisitAll(func(key, tag []byte) {
-		if !bytes.HasPrefix(key, choiceValue) || bytes.Equal(tag, nullValue) {
-			return
+		argsBuf = make([]byte, 0, argsLength)
+		argsBuf = append(argsBuf, []byte("?")...)
+		args.VisitAll(func(key, value []byte) {
+			copiedValue := make([]byte, len(value))
+			// allocate a new slice because the origin slice valid only during request is alive,
+			// further this "value" slice will be reused for new data be fasthttp (owner).
+			// Don't remove allocation or will have UNDEFINED BEHAVIOR!
+			copy(copiedValue, value)
+			argsBuf = append(argsBuf, key...)
+			argsBuf = append(argsBuf, []byte("=")...)
+			argsBuf = append(argsBuf, value...)
+			argsBuf = append(argsBuf, []byte("&")...)
+		})
+		if len(argsBuf) > 1 {
+			argsBuf = argsBuf[:len(argsBuf)-1] // remove the last & char
+		} else {
+			argsBuf = argsBuf[:0] // no parameters
 		}
-		copiedTag := make([]byte, len(tag))
-		copy(copiedTag, tag)
-		tags = append(tags, copiedTag)
-		i++
-	})
+	}
 
-	return tags
+	var headersBuf []byte
+	if header.Len() > 0 {
+		headersLength := 0
+		header.VisitAll(func(key, value []byte) {
+			headersLength += len(key) + len(value) + 2
+		})
+
+		headersBuf = make([]byte, 0, headersLength)
+		header.VisitAll(func(key, value []byte) {
+			headersBuf = append(headersBuf, key...)
+			headersBuf = append(headersBuf, []byte(":")...)
+			headersBuf = append(headersBuf, value...)
+			headersBuf = append(headersBuf, []byte("\n")...)
+		})
+		if len(headersBuf) > 0 {
+			headersBuf = headersBuf[:len(headersBuf)-1] // remove the last \n char
+		} else {
+			headersBuf = headersBuf[:0] // no headers
+		}
+	}
+
+	bufLen := len(argsBuf) + len(headersBuf) + 1
+	buf := make([]byte, 0, bufLen)
+	if bufLen > 1 {
+		buf = append(buf, argsBuf...)
+		buf = append(buf, []byte("\n")...)
+		buf = append(buf, headersBuf...)
+	}
+
+	r.query = argsBuf
+	r.key = hash(buf)
+	r.shard = sharded.MapShardKey(r.key)
 }
 
-// Getters for all important fields.
-func (r *Request) GetProject() []byte  { return r.project }
-func (r *Request) GetDomain() []byte   { return r.domain }
-func (r *Request) GetLanguage() []byte { return r.language }
-func (r *Request) GetTags() [][]byte   { return r.tags }
-
-// setUpKey computes a unique hash key (xxh3) for this request.
-func (r *Request) setUpKey() uint64 {
-	length := len(r.project) + len(r.domain) + len(r.language)
-	for _, tag := range r.tags {
-		length += len(tag)
+func (r *Request) setUpManually(args map[string][]byte, headers map[string][][]byte) {
+	argsLength := 1
+	for key, value := range args {
+		argsLength += len(key) + len(value) + 2
 	}
 
-	buf := make([]byte, 0, length)
-	buf = append(buf, r.project...)
-	buf = append(buf, r.domain...)
-	buf = append(buf, r.language...)
-	for _, tag := range r.tags {
-		if len(tag) == 0 {
-			continue
+	queryBuf := make([]byte, 0, argsLength)
+	queryBuf = append(queryBuf, []byte("?")...)
+	for key, value := range args {
+		queryBuf = append(queryBuf, key...)
+		queryBuf = append(queryBuf, []byte("=")...)
+		queryBuf = append(queryBuf, value...)
+		queryBuf = append(queryBuf, []byte("&")...)
+	}
+	if len(queryBuf) > 1 {
+		queryBuf = queryBuf[:len(queryBuf)-1] // remove the last & char
+	} else {
+		queryBuf = queryBuf[:0] // no parameters
+	}
+
+	headersLength := 0
+	for key, values := range headers {
+		for _, value := range values {
+			headersLength += len(key) + len(value) + 2
 		}
-		buf = append(buf, tag...)
 	}
 
-	hasher := HasherPool.Get().(*xxh3.Hasher)
-	defer HasherPool.Put(hasher)
+	headersBuf := make([]byte, 0, headersLength)
+	for key, values := range headers {
+		for _, value := range values {
+			headersBuf = append(headersBuf, key...)
+			headersBuf = append(headersBuf, []byte(":")...)
+			headersBuf = append(headersBuf, value...)
+			headersBuf = append(headersBuf, []byte("\n")...)
+		}
+	}
+	if len(headersBuf) > 0 {
+		headersBuf = headersBuf[:len(headersBuf)-1] // remove the last \n char
+	} else {
+		headersBuf = headersBuf[:0] // no headers
+	}
+
+	bufLen := len(queryBuf) + len(headersBuf) + 1
+	buf := make([]byte, 0, bufLen)
+	if bufLen > 1 {
+		buf = append(buf, queryBuf...)
+		buf = append(buf, []byte("\n")...)
+		buf = append(buf, headersBuf...)
+	}
+
+	r.query = queryBuf
+	r.key = hash(buf)
+	r.shard = sharded.MapShardKey(r.key)
+}
+
+func hash(buf []byte) uint64 {
+	hasher := hasherPool.Get().(*xxh3.Hasher)
+	defer hasherPool.Put(hasher)
 
 	hasher.Reset()
 	if _, err := hasher.Write(buf); err != nil {
 		panic(err)
 	}
 
-	r.KeyBuf = buf
-
-	r.key = hasher.Sum64()
-	return r.key
+	return hasher.Sum64()
 }
 
-// Key returns the computed hash key for the request.
-func (r *Request) Key() uint64 { return atomic.LoadUint64(&r.key) }
-
-// ShardKey returns the precomputed shard index.
-func (r *Request) ShardKey() uint64 { return atomic.LoadUint64(&r.shardKey) }
-
-// setUpShardKey computes the shard index from the key.
-func (r *Request) setUpShardKey(key uint64) {
-	r.shardKey = sharded.MapShardKey(key)
+func sanitizeRequest(cfg *config.Cache, ctx *fasthttp.RequestCtx) {
+	allowedQueries, allowedHeaders := getKeyAllowed(cfg, ctx.Path())
+	filterKeyQueriesInPlace(ctx, allowedQueries)
+	filterKeyHeadersInPlace(ctx, allowedHeaders)
 }
 
-// setUpQuery builds the query string for backend usage (uses same buffer for efficiency).
-func (r *Request) setUpQuery() {
-	buf := make([]byte, 0, preallocatedBufferCapacity+(tagBufferCapacity*maxTagsLen))
-	buf = append(buf, []byte("?project[id]=")...)
-	buf = append(buf, r.project...)
-	buf = append(buf, []byte("&domain=")...)
-	buf = append(buf, r.domain...)
-	buf = append(buf, []byte("&language=")...)
-	buf = append(buf, r.language...)
-
-	n := 0
-	for _, tag := range r.tags {
-		if len(tag) == 0 {
-			continue
+func getKeyAllowed(cfg *config.Cache, path []byte) (queries [][]byte, headers [][]byte) {
+	queries = make([][]byte, 0, 14)
+	headers = make([][]byte, 0, 14)
+	for _, rule := range cfg.Cache.Rules {
+		if bytes.HasPrefix(path, rule.PathBytes) {
+			for _, param := range rule.CacheKey.QueryBytes {
+				queries = append(queries, param)
+			}
+			for _, header := range rule.CacheKey.HeadersBytes {
+				headers = append(headers, header)
+			}
 		}
-		buf = append(buf, []byte("&choice")...)
-		buf = append(buf, bytes.Repeat([]byte("[choice]"), n)...)
-		buf = append(buf, []byte("[name]=")...)
-		buf = append(buf, tag...)
-		n++
 	}
-	buf = append(buf, []byte("&choice")...)
-	buf = append(buf, bytes.Repeat([]byte("[choice]"), n)...)
-	buf = append(buf, []byte("=null")...)
-
-	r.uniqueQuery = buf
+	return queries, headers
 }
 
-// ToQuery returns the generated query string.
-func (r *Request) ToQuery() []byte { return r.uniqueQuery }
+func filterKeyQueriesInPlace(ctx *fasthttp.RequestCtx, allowed [][]byte) {
+	args := ctx.QueryArgs()
+	result := fasthttp.AcquireArgs()
+
+	args.VisitAll(func(k, v []byte) {
+		for _, ak := range allowed {
+			if bytes.HasPrefix(k, ak) {
+				result.AddBytesKV(k, v)
+				break
+			}
+		}
+	})
+
+	ctx.URI().SetQueryString(result.String())
+}
+
+func filterKeyHeadersInPlace(ctx *fasthttp.RequestCtx, allowed [][]byte) {
+	headers := &ctx.Request.Header
+
+	var filtered [][2][]byte
+	headers.VisitAll(func(k, v []byte) {
+		for _, ak := range allowed {
+			if bytes.EqualFold(k, ak) {
+				// allocate a new slice because the origin slice valid until request is alive,
+				// further this "value" (slice) will be reused for new data be fasthttp (owner).
+				// Don't remove allocation or will have UNDEFINED BEHAVIOR!
+				kCopy := append([]byte(nil), k...)
+				vCopy := append([]byte(nil), v...)
+				filtered = append(filtered, [2][]byte{kCopy, vCopy})
+				break
+			}
+		}
+	})
+
+	// Remove all headers
+	headers.Reset()
+
+	// Setting up only allowed
+	for _, kv := range filtered {
+		headers.SetBytesKV(kv[0], kv[1])
+	}
+}

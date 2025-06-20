@@ -47,14 +47,16 @@ func New(
 ) (db *AlgoStorage) {
 	var s Storage
 
+	// TODO need implement select by storage type (malloc and so on)
+
 	// Select and initialize storage backend by eviction algorithm type.
-	switch cache.Algorithm(cfg.EvictionAlgo) {
+	switch cache.Algorithm(cfg.Cache.Eviction.Policy) {
 	case cache.LRU:
 		// Least Recently Used (Storage) cache
 		s = lru.NewStorage(ctx, cfg, balancer, refresher, backend, shardedMap)
 	default:
 		// Panic for unsupported/unknown algorithms.
-		panic("algorithm " + cfg.EvictionAlgo + " is not implemented yet")
+		panic("eviction policy '" + cfg.Cache.Eviction.Policy + "' is not implemented yet")
 	}
 
 	return &AlgoStorage{Storage: s}

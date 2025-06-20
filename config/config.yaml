@@ -1,0 +1,31 @@
+cache:
+  enabled: true
+  preallocate:
+    per_shard: 20000 # пре инициализированный размер мапппы в каждом шарде
+  eviction:
+    policy: "lru"
+    threshold: 0.9 # Когда кэш заполнен на 90% — запуск вытеснения
+  storage:
+    type: "malloc"
+    size: 21474836480 # 20GB in bytes
+  refresh:
+    ttl: "24h"
+    beta: 0.4
+    backend_url: ""
+  persistence:
+    is_enabled: true
+    dump_dir: "public/dump"
+    dump_name: "cache.dump.gz"
+  rules:
+    - path: "/api/v1/user"
+      cache_key:
+        query: ['param1', 'param2', 'param3', 'param4'] # Параметры, которые будут учавствовать в ключе кэширования
+        headers: ['Accept-Encoding', 'X-Custom-ID'] # Хедеры, которые будут учавствовать в ключе кэширования
+      cache_value:
+        headers: ['Cache-Control', 'X-Custom-ID'] # Хедеры ответа, которые будут сохранены в кэше вместе с body
+    - path: "/api/v1/data"
+      cache_key:
+        query: ['param1', 'param2', 'param3', 'param4', 'param5'] # Параметры, которые будут учавствовать в ключе кэширования
+        headers: ['Accept-Encoding', 'X-Custom-ID'] # Хедеры, которые будут учавствовать в ключе кэширования
+      cache_value:
+        headers: ['Cache-Control', 'X-Custom-ID'] # Хедеры ответа, которые будут сохранены в кэше вместе с body

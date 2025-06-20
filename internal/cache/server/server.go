@@ -153,7 +153,7 @@ func (s *HttpServer) initServer() error {
 	s.cancel = cancel
 
 	// Compose server with controllers and middlewares.
-	if server, err := httpserver.New(ctx, s.cfg, s.controllers(), s.middlewares()); err != nil {
+	if server, err := httpserver.New(ctx, s.cfg.Server, s.controllers(), s.middlewares()); err != nil {
 		cancel()
 		log.Err(err).Msg(InitFailedErrorMessage)
 		return errors.New(InitFailedErrorMessage)
@@ -177,7 +177,7 @@ func (s *HttpServer) controllers() []controller.HttpController {
 func (s *HttpServer) middlewares() []middleware.HttpMiddleware {
 	return []middleware.HttpMiddleware{
 		/** exec 1st. */ middleware.NewApplicationJsonMiddleware(), // Sets Content-Type
-		/** exec 2nd. */ middleware.NewWatermarkMiddleware(s.ctx, s.cfg), // Adds watermark info
+		/** exec 2nd. */ middleware.NewWatermarkMiddleware(s.ctx, s.cfg.Server), // Adds watermark info
 		/** exec 3rd. */ middleware2.NewPrometheusMetrics(s.ctx, s.metrics), // Metrics instrumentation
 	}
 }

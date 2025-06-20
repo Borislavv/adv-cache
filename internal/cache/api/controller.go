@@ -21,7 +21,7 @@ import (
 )
 
 // CacheGetPath for getting pagedata from cache via HTTP.
-const CacheGetPath = "/api/v1/cache"
+const CacheGetPath = "/{any:*}"
 
 // Predefined HTTP response templates for error handling (400/503)
 var (
@@ -67,39 +67,31 @@ func NewCacheController(
 		cache:   cache,
 		backend: backend,
 	}
-	if c.cfg.IsDebugOn() {
-		c.runLogger(ctx)
-	}
+	c.runLogger(ctx)
 	return c
 }
 
 // Index is the main HTTP handler for /api/v1/cache.
 func (c *CacheController) Index(r *fasthttp.RequestCtx) {
-	var from time.Time
-	if c.cfg.IsDebugOn() {
-		from = time.Now()
-	}
+	var from = time.Now()
 
 	// Extract application context from request, fallback to base context.
 	ctx, cancel := context.WithCancel(c.ctx)
 	defer cancel()
 
 	// Parse request parameters.
-	req, err := model.NewRequest(r.QueryArgs())
-	if err != nil {
-		c.respondThatTheRequestIsBad(err, r)
-		return
-	}
+	req := model.NewRequestFromFasthttp(c.cfg.Cache, r)
 
 	// Try to get response from cache.
 	resp, found := c.cache.Get(req)
 	if !found {
 		// On cache miss, get data from upstream backend and save in cache.
-		resp, err = c.backend.Fetch(ctx, req)
+		computed, err := c.backend.Fetch(ctx, req)
 		if err != nil {
 			c.respondThatServiceIsTemporaryUnavailable(err, r)
 			return
 		}
+		resp = computed
 		c.cache.Set(resp)
 	}
 
@@ -114,7 +106,7 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 	// Add revalidation time as Last-Modified
 	r.Response.Header.Add("Last-Modified", resp.RevalidatedAt().Format(http.TimeFormat))
 
-	if _, err = serverutils.Write(data.Body(), r); err != nil {
+	if _, err := serverutils.Write(data.Body(), r); err != nil {
 		c.respondThatServiceIsTemporaryUnavailable(err, r)
 		return
 	}
@@ -122,6 +114,8 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 	// Record the duration in debug mode for metrics.
 	count.Add(1)
 	duration.Add(time.Since(from).Nanoseconds())
+
+	// Achieving the best performance. Increases CPU usage.
 	runtime.Gosched()
 }
 

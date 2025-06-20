@@ -58,10 +58,7 @@ func NewRefresher(ctx context.Context, cfg *config.Cache, balancer Balancer) *Re
 // and continuously processes shard samples for candidate responses to refreshItem.
 func (r *Refresh) RunRefresher() {
 	go func() {
-		if r.cfg.IsDebugOn() {
-			r.runLogger()
-		}
-
+		r.runLogger()
 		for {
 			select {
 			case <-r.ctx.Done():

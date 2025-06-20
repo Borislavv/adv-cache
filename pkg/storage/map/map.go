@@ -39,7 +39,7 @@ func MapShardKey(key uint64) uint64 {
 
 // Set inserts or updates a value in the correct shard. Returns a releaser for ref counting.
 func (smap *Map[V]) Set(value V) {
-	takenMem := smap.shards[value.ShardKey()].Set(value.Key(), value)
+	takenMem := smap.shards[value.ShardKey()].Set(value.MapKey(), value)
 	atomic.AddInt64(&smap.len, 1)
 	atomic.AddInt64(&smap.mem, takenMem)
 }

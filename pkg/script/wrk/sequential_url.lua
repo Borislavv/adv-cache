@@ -19,7 +19,7 @@ request = function()
         .. "&choice[choice][choice][choice][choice]=betting_live_null_" .. sport .. "_" .. championship
         .. "&choice[choice][choice][choice][choice][choice]=betting_live_null_" .. sport .. "_" .. championship .. "_" .. match
 
-    local path = "/api/v1/cache?language=en&domain=melbet-djibouti.com&timezone=3&project[id]=62&stream=homepage&" .. q
+    local path = "/api/v2/pagedata?language=en&domain=melbet-djibouti.com&timezone=3&project[id]=62&stream=homepage&" .. q
 
     -- Инкрементируем счетчики с переходом к началу диапазона
     match = match + 1

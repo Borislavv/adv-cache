@@ -1,66 +1,124 @@
 package config
 
-import "time"
-
-// Environment constants for application mode.
-const (
-	EnvProd = "prod"
-	EnvDev  = "dev"
-	EnvTest = "test"
+import (
+	"errors"
+	"fmt"
+	"gopkg.in/yaml.v3"
+	"os"
+	"time"
 )
 
-// Cache is the main application configuration struct.
-// All fields are loaded via mapstructure for compatibility with envconfig/viper/unmarshalers.
 type Cache struct {
-	AppEnv     string `mapstructure:"APP_ENV"`     // Application environment: "prod", "dev", or "test"
-	AppDebug   bool   `mapstructure:"APP_DEBUG"`   // Enable debug logging and features
-	BackendUrl string `mapstructure:"BACKEND_URL"` // Upstream backend service base URL
-
-	// RevalidateBeta controls the probability distribution for background refresh of cached items.
-	//   - Must be in the range [0.1, 0.9] (0 disables, 1 is always refresh, 0.5 is typical).
-	//   - Used to randomize refresh times and avoid stampedes.
-	//   - 0.5 is a reasonable starting point; 1.0 is aggressive; 0.0 disables background refreshing.
-	RevalidateBeta float64 `mapstructure:"REVALIDATE_BETA"`
-
-	// RevalidateInterval is the base interval for periodic revalidation (e.g., "5m", "1h", "1d").
-	// On external backend error the stale TTL will be 10% of original interval.
-	RevalidateInterval time.Duration `mapstructure:"REVALIDATE_INTERVAL"`
-
-	// InitStorageLengthPerShard controls initial allocation for storage shard maps.
-	InitStorageLengthPerShard int `mapstructure:"INIT_STORAGE_LEN_PER_SHARD"`
-
-	// EvictionAlgo defines the eviction algorithm to use ("lru", "lfu", etc).
-	EvictionAlgo string `mapstructure:"EVICTION_ALGO"`
-
-	// MemoryFillThreshold is a ratio [0.0, 1.0] of allowed memory before aggressive eviction starts.
-	MemoryFillThreshold float64 `mapstructure:"MEMORY_FILL_THRESHOLD"`
-
-	// MemoryLimit is the upper bound (in bytes) for the cache's total memory usage.
-	MemoryLimit uint `mapstructure:"MEMORY_LIMIT"`
-
-	// LivenessProbeTimeout is the duration after which a failed liveness probe triggers error state.
-	LivenessProbeTimeout time.Duration `mapstructure:"LIVENESS_PROBE_FAILED_TIMEOUT"`
-
-	// RefreshDurationThreshold is calculated at startup and used to determine max staleness before revalidation.
-	RefreshDurationThreshold time.Duration
+	Cache CacheBox `yaml:"cache"`
 }
 
-// IsProdEnv returns true if the app is running in production mode.
-func (c *Cache) IsProdEnv() bool {
-	return c.AppEnv == EnvProd
+type CacheBox struct {
+	Enabled     bool          `yaml:"enabled"`
+	Preallocate Preallocation `yaml:"preallocate"`
+	Eviction    Eviction      `yaml:"eviction"`
+	Refresh     Refresh       `yaml:"refresh"`
+	Storage     Storage       `yaml:"storage"`
+	Rules       []*CacheRule  `yaml:"rules"`
 }
 
-// IsDevEnv returns true if the app is running in development mode.
-func (c *Cache) IsDevEnv() bool {
-	return c.AppEnv == EnvDev
+type Preallocation struct {
+	PerShard int `yaml:"per_shard"`
 }
 
-// IsTestEnv returns true if the app is running in test mode.
-func (c *Cache) IsTestEnv() bool {
-	return c.AppEnv == EnvTest
+type Eviction struct {
+	Policy    string  `yaml:"policy"`    // at now, it's only "lru" with works
+	Threshold float64 `yaml:"threshold"` // 0.9 means 90%
 }
 
-// IsDebugOn returns true if debug mode is enabled.
-func (c *Cache) IsDebugOn() bool {
-	return c.AppDebug
+type Storage struct {
+	Type string `yaml:"type"` // "malloc"
+	Size uint   `yaml:"size"` // 21474836480=2gb(bytes)
+}
+
+type Refresh struct {
+	// TTL - refresh TTL (max time life of response item in cache without refreshing).
+	TTL time.Duration `yaml:"ttl"` // e.g. "1d" (responses with 200 status code)
+	// ErrorTTL - error refresh TTL (max time life of response item with non 200 status code in cache without refreshing).
+	ErrorTTL time.Duration `yaml:"error_ttl"` // e.g. "1h" (responses with non 200 status code)
+	// beta определяет коэффициент, используемый для вычисления случайного момента обновления кэша.
+	// Чем выше beta, тем чаще кэш будет обновляться до истечения TTL.
+	// Формула взята из подхода "stochastic cache expiration" (см. Google Staleness paper):
+	// expireTime = ttl * (-beta * ln(random()))
+	// Подробнее: RFC 5861 и https://web.archive.org/web/20100829170210/http://labs.google.com/papers/staleness.pdf
+	// beta: "0.4"
+	Beta       float64       `yaml:"beta"`      // between 0 and 1
+	MinStale   time.Duration `yaml:"min_stale"` // computed=time.Duration(float64(TTL/ErrorTTL) * Beta)
+	BackendURL string        `yaml:"backend_url"`
+}
+
+type CacheRule struct {
+	Path       string `yaml:"path"`
+	PathBytes  []byte
+	CacheKey   CacheKey   `yaml:"cache_key"`
+	CacheValue CacheValue `yaml:"cache_value"`
+}
+
+type CacheKey struct {
+	Query        []string `yaml:"query"` // Параметры, которые будут участвовать в ключе кэширования
+	QueryBytes   [][]byte
+	Headers      []string `yaml:"headers"` // Хедеры, которые будут участвовать в ключе кэширования
+	HeadersBytes [][]byte
+}
+
+type CacheValue struct {
+	Headers      []string `yaml:"headers"` // Хедеры ответа, которые будут сохранены в кэше вместе с body
+	HeadersBytes [][]byte
+}
+
+const (
+	configPath      = "/config/config.yaml"
+	configPathLocal = "/config/config.local.yaml"
+)
+
+func LoadConfig() (*Cache, error) {
+	var path string
+
+	dir, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err = os.Stat(dir + configPathLocal); err == nil {
+		path = dir + configPathLocal
+	} else if os.IsNotExist(err) {
+		if _, err = os.Stat(dir + configPath); err == nil {
+			path = dir + configPath
+		} else {
+			return nil, errors.New("config does not exist by path: " + dir + configPath + " or " + dir + configPathLocal)
+		}
+	} else {
+		return nil, fmt.Errorf("stat config path: %w", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read config yaml file %s: %w", path, err)
+	}
+
+	var cfg *Cache
+	if err = yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("unmarshal yaml from %s: %w", path, err)
+	}
+
+	for k, rule := range cfg.Cache.Rules {
+		cfg.Cache.Rules[k].PathBytes = []byte(rule.Path)
+		for _, param := range rule.CacheKey.Query {
+			cfg.Cache.Rules[k].CacheKey.QueryBytes = append(cfg.Cache.Rules[k].CacheKey.QueryBytes, []byte(param))
+		}
+		for _, param := range rule.CacheKey.Headers {
+			cfg.Cache.Rules[k].CacheKey.HeadersBytes = append(cfg.Cache.Rules[k].CacheKey.HeadersBytes, []byte(param))
+		}
+		for _, param := range rule.CacheValue.Headers {
+			cfg.Cache.Rules[k].CacheValue.HeadersBytes = append(cfg.Cache.Rules[k].CacheValue.HeadersBytes, []byte(param))
+		}
+	}
+
+	cfg.Cache.Refresh.MinStale = time.Duration(float64(cfg.Cache.Refresh.TTL) * cfg.Cache.Refresh.Beta)
+
+	return cfg, nil
 }
