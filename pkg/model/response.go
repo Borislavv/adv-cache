@@ -19,7 +19,7 @@ const gzipThreshold = 1024 // Minimum body size to apply gzip compression
 
 var (
 	responsesPool = synced.NewBatchPool[*Response](func() *Response {
-		return new(Response).clear().Init()
+		return new(Response).Init()
 	})
 )
 

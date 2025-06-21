@@ -490,18 +490,21 @@ func filterKeyHeadersInPlace(ctx *fasthttp.RequestCtx, allowed *types.SizedBox[[
 	// Remove all headers
 	headers.Reset()
 
-	// Setting up only allowed
-	for _, filtered := range filteredSlice.Value {
-		headers.SetBytesKV(filtered[0].Value, filtered[1].Value)
+	if filteredSlice != nil {
+		// Setting up only allowed
+		for _, filtered := range filteredSlice.Value {
+			headers.SetBytesKV(filtered[0].Value, filtered[1].Value)
 
-		filtered[0].Value = filtered[0].Value[:0]
-		keyValueBufferPool.Put(filtered[0])
+			filtered[0].Value = filtered[0].Value[:0]
+			keyValueBufferPool.Put(filtered[0])
 
-		filtered[1].Value = filtered[1].Value[:0]
-		keyValueBufferPool.Put(filtered[1])
+			filtered[1].Value = filtered[1].Value[:0]
+			keyValueBufferPool.Put(filtered[1])
+		}
+
+		filteredSlice.Value = filteredSlice.Value[:0]
+		filteredSlicesPool.Put(filteredSlice)
 	}
-	filteredSlice.Value = filteredSlice.Value[:0]
-	filteredSlicesPool.Put(filteredSlice)
 }
 
 // clear resets the Request to zero (except for buffer capacity).

@@ -59,7 +59,10 @@ func (shard *Shard[V]) Get(key uint64) (val V, releaser *Releaser[V], isHit bool
 	shard.RLock()
 	value, ok := shard.items[key]
 	shard.RUnlock()
-	return value, NewReleaser[V](value, shard.releaserPool), ok
+	if ok {
+		return value, NewReleaser(value, shard.releaserPool), ok
+	}
+	return value, nil, false
 }
 
 // Remove removes a value from the shard, decrements counters, and may trigger full resource cleanup.
