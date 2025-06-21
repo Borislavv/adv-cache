@@ -9,16 +9,16 @@ import (
 
 // Shard is a single partition of the sharded map.
 // Each shard is an independent concurrent map with its own lock and refCounted pool for releasers.
-type Shard[V Value] struct {
+type Shard[V resource.Resource] struct {
 	*sync.RWMutex                                          // Shard-level RWMutex for concurrency
-	items         map[uint64]V                             // Actual storage: key -> Value
+	items         map[uint64]V                             // Actual storage: key -> Resource
 	releaserPool  *synced.BatchPool[*resource.Releaser[V]] // Pool for recycling Releaser objects (to minimize allocations)
 	id            uint64                                   // Shard ID (index)
 	mem           int64                                    // Weight usage in bytes (atomic)
 }
 
 // NewShard creates a new shard with its own lock, value map, and releaser pool.
-func NewShard[V Value](id uint64, defaultLen int) *Shard[V] {
+func NewShard[V resource.Resource](id uint64, defaultLen int) *Shard[V] {
 	return &Shard[V]{
 		id:      id,
 		RWMutex: &sync.RWMutex{},
@@ -41,7 +41,7 @@ func (shard *Shard[V]) Weight() int64 {
 
 // Set inserts or updates a value by key, resets refCount, and updates counters.
 // Returns a releaser for the inserted value.
-func (shard *Shard[V]) Set(key uint64, value V) (takenMem int64, *resource.Releaser[V]) {
+func (shard *Shard[V]) Set(key uint64, value V) (takenMem int64, releaser *resource.Releaser[V]) {
 	shard.Lock()
 	shard.items[key] = value
 	shard.Unlock()
@@ -50,16 +50,16 @@ func (shard *Shard[V]) Set(key uint64, value V) (takenMem int64, *resource.Relea
 	atomic.AddInt64(&shard.mem, takenMem)
 
 	// Return a releaser for this value (for the user to release later).
-	return takenMem
+	return takenMem, resource.NewReleaser[V](value, shard.releaserPool)
 }
 
 // Get retrieves a value and returns a releaser for it, incrementing its refCount.
 // Returns (value, releaser, true) if found; otherwise (zero, nil, false).
-func (shard *Shard[V]) Get(key uint64) (val V, *resource.Releaser[V], isHit bool) {
+func (shard *Shard[V]) Get(key uint64) (val V, releaser *resource.Releaser[V], isHit bool) {
 	shard.RLock()
 	value, ok := shard.items[key]
 	shard.RUnlock()
-	return value, ok
+	return value, resource.NewReleaser[V](value, shard.releaserPool), ok
 }
 
 // Remove removes a value from the shard, decrements counters, and may trigger full resource cleanup.
@@ -73,6 +73,11 @@ func (shard *Shard[V]) Remove(key uint64) (freed int64, isHit bool) {
 
 		weight := v.Weight()
 		atomic.AddInt64(&shard.mem, -weight)
+
+		// If all references are gone, call Release; otherwise mark as doomed for future cleanup.
+		if v.MarkAsDoomed() && v.RefCount() == 0 {
+			v.Release()
+		}
 
 		return weight, true
 	}

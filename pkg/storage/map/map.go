@@ -9,22 +9,15 @@ import (
 
 const NumOfShards uint64 = 2048 // Total number of shards (power of 2 for fast hashing)
 
-// Value must implement all cache entry interfaces: keying, sizing, and releasability.
-type Value interface {
-	resource.Keyed
-	resource.Sized
-	resource.Releasable
-}
-
 // Map is a sharded concurrent map for high-performance caches.
-type Map[V Value] struct {
+type Map[V resource.Resource] struct {
 	len    int64
 	mem    int64
 	shards [NumOfShards]*Shard[V]
 }
 
 // NewMap creates a new sharded map with preallocated shards and a default per-shard map capacity.
-func NewMap[V Value](defaultLen int) *Map[V] {
+func NewMap[V resource.Resource](defaultLen int) *Map[V] {
 	m := &Map[V]{}
 	for id := uint64(0); id < NumOfShards; id++ {
 		m.shards[id] = NewShard[V](id, defaultLen)
