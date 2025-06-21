@@ -4,23 +4,26 @@ import (
 	"bytes"
 	"compress/gzip"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/resource"
 	"net/http"
 	"unsafe"
 )
 
 // Data is the actual payload (status, h, body) stored in the cache.
 type Data struct {
-	statusCode int
-	headers    http.Header
-	body       []byte
+	statusCode     int
+	headers        http.Header
+	body           []byte
+	innerReleaseFn resource.ReleaseFunc // releasing body, headers
 }
 
 // NewData creates a new Data object, compressing body with gzip if large enough.
 // Uses memory pools for buffer and writer to minimize allocations.
-func NewData(cfg *config.Cache, path []byte, statusCode int, headers http.Header, body []byte) *Data {
+func NewData(cfg *config.Cache, path []byte, statusCode int, headers http.Header, body []byte, releaseFn resource.ReleaseFunc) *Data {
 	data := &Data{
-		headers:    getAllowedValueHeaders(cfg, path, headers),
-		statusCode: statusCode,
+		headers:        getAllowedValueHeaders(cfg, path, headers),
+		statusCode:     statusCode,
+		innerReleaseFn: releaseFn,
 	}
 
 	// Compress body if it shard large enough for gzip to help
@@ -60,6 +63,22 @@ func (d *Data) StatusCode() int { return d.statusCode }
 
 // Body returns the response body (possibly gzip-compressed).
 func (d *Data) Body() []byte { return d.body }
+
+// Release calls releaseFn and returns the Data to the pool.
+func (d *Data) Release() {
+	d.releaseFn()
+	d.clear()
+	DataPool.Put(d)
+}
+
+// clear zeroes the Data fields before pooling.
+func (d *Data) clear() *Data {
+	d.statusCode = 0
+	d.headers = nil
+	d.body = nil
+	d.releaseFn = nil
+	return d
+}
 
 func filterValueHeadersInPlace(headers http.Header, allowed [][]byte) {
 headersLoop:

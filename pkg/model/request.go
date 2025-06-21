@@ -2,42 +2,89 @@ package model
 
 import (
 	"bytes"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
-	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
-	"github.com/valyala/fasthttp"
-	"github.com/zeebo/xxh3"
 	"sort"
 	"sync"
 	"unsafe"
+
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
+	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/synced"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/types"
+	"github.com/valyala/fasthttp"
+	"github.com/zeebo/xxh3"
 )
 
-var hasherPool = &sync.Pool{New: func() any { return xxh3.New() }}
+const (
+	defaultPathLen   = 128
+	defaultQueryLen  = 512
+	defaultKeyBufLen = 1024
+)
+
+var (
+	hasherPool         = &sync.Pool{New: func() any { return xxh3.New() }}
+	requestBuffersPool = synced.NewBatchPool[*Request](func() *Request {
+		return new(Request).clear()
+	})
+	requestQueryBuffersPool = synced.NewBatchPool[*types.SizedBox[[]byte]](func() *types.SizedBox[[]byte] {
+		return types.NewSizedBox[[]byte](make([]byte, 0, defaultQueryLen), func(s *types.SizedBox[[]byte]) int64 {
+			return int64(len(s.Value))
+		})
+	})
+	requestHeaderBuffersPool = synced.NewBatchPool[*types.SizedBox[[]byte]](func() *types.SizedBox[[]byte] {
+		return types.NewSizedBox[[]byte](make([]byte, 0, defaultQueryLen), func(s *types.SizedBox[[]byte]) int64 {
+			return int64(len(s.Value))
+		})
+	})
+	requestKeyBufferPool = synced.NewBatchPool[*types.SizedBox[[]byte]](func() *types.SizedBox[[]byte] {
+		return types.NewSizedBox[[]byte](make([]byte, 0, defaultKeyBufLen), func(s *types.SizedBox[[]byte]) int64 {
+			return int64(len(s.Value))
+		})
+	})
+	requestQueryPathBuffersPool = synced.NewBatchPool[*types.SizedBox[[]byte]](func() *types.SizedBox[[]byte] {
+		return types.NewSizedBox[[]byte](make([]byte, 0, defaultPathLen), func(s *types.SizedBox[[]byte]) int64 {
+			return int64(len(s.Value))
+		})
+	})
+)
 
 type Request struct {
 	cfg   *config.Cache
 	key   uint64
 	shard uint64
-	query []byte
-	path  []byte
+	args  *types.SizedBox[[]byte]
+	path  *types.SizedBox[[]byte]
 }
 
 func NewRequestFromFasthttp(cfg *config.Cache, r *fasthttp.RequestCtx) *Request {
 	sanitizeRequest(cfg, r)
-	req := &Request{
+
+	path := requestQueryPathBuffersPool.Get()
+	path.Value = path.Value[:0]
+	path.Value = append(path.Value, r.Path()...)
+
+	req := requestBuffersPool.Get()
+	*req = Request{
 		cfg:  cfg,
-		path: r.Path(),
+		path: path,
 	}
-	req.setUp(r.Path(), r.QueryArgs(), &r.Request.Header)
+
+	req.setUp(r.QueryArgs(), &r.Request.Header)
+
 	return req
 }
 
 func NewRawRequest(cfg *config.Cache, key, shard uint64, query, path []byte) *Request {
+
 	return &Request{
 		cfg:   cfg,
 		key:   key,
 		shard: shard,
-		query: query,
-		path:  path,
+		args: types.NewSizedBox[[]byte](query, func(s *types.SizedBox[[]byte]) int64 {
+			return int64(len(s.Value))
+		}),
+		path: types.NewSizedBox[[]byte](path, func(s *types.SizedBox[[]byte]) int64 {
+			return int64(len(s.Value))
+		}),
 	}
 }
 
@@ -51,7 +98,7 @@ func NewRequest(cfg *config.Cache, path []byte, args map[string][]byte, headers 
 }
 
 func (r *Request) ToQuery() []byte {
-	return r.query
+	return r.args
 }
 
 func (r *Request) Path() []byte {
@@ -67,11 +114,12 @@ func (r *Request) ShardKey() uint64 {
 }
 
 func (r *Request) Weight() int64 {
-	return int64(unsafe.Sizeof(*r)) + int64(len(r.query))
+	return int64(unsafe.Sizeof(*r)) + int64(len(r.args.Value))
 }
 
-func (r *Request) setUp(path []byte, args *fasthttp.Args, header *fasthttp.RequestHeader) {
-	var argsBuf []byte
+func (r *Request) setUp(args *fasthttp.Args, header *fasthttp.RequestHeader) {
+	argsBuf := requestQueryBuffersPool.Get()
+
 	if args.Len() > 0 {
 		var sortedArgs []struct {
 			Key   []byte
@@ -111,8 +159,14 @@ func (r *Request) setUp(path []byte, args *fasthttp.Args, header *fasthttp.Reque
 			argsBuf = argsBuf[:0]
 		}
 	}
+	r.args = argsBuf
 
-	var headersBuf []byte
+	headersBuf := requestHeaderBuffersPool.Get()
+	defer func() {
+		headersBuf.Value = headersBuf.Value[:0]
+		requestHeaderBuffersPool.Put(headersBuf)
+	}()
+
 	if header.Len() > 0 {
 		var sortedHeaders []struct {
 			Key   []byte
@@ -161,8 +215,7 @@ func (r *Request) setUp(path []byte, args *fasthttp.Args, header *fasthttp.Reque
 		buf = append(buf, headersBuf...)
 	}
 
-	r.query = argsBuf
-	r.key = hash(buf)
+	r.key = hash(buf.Value)
 	r.shard = sharded.MapShardKey(r.key)
 }
 
@@ -216,7 +269,7 @@ func (r *Request) setUpManually(args map[string][]byte, headers map[string][][]b
 		buf = append(buf, headersBuf...)
 	}
 
-	r.query = queryBuf
+	r.args = queryBuf
 	r.key = hash(buf)
 	r.shard = sharded.MapShardKey(r.key)
 }
@@ -313,4 +366,22 @@ func filterKeyHeadersInPlace(ctx *fasthttp.RequestCtx, allowed [][]byte) {
 	for _, kv := range filtered {
 		headers.SetBytesKV(kv[0], kv[1])
 	}
+}
+
+// clear resets the Request to zero (except for buffer capacity).
+func (r *Request) clear() *Request {
+	r.key = 0
+	r.shard = 0
+	r.args = nil
+	r.path = nil
+	return r
+}
+
+// Release releases and resets the request (and any underlying buffer/tag slices) for reuse.
+func (r *Request) Release() {
+	requestQueryBuffersPool.Put(r.args)     // release args buffer
+	requestQueryPathBuffersPool.Put(r.path) // release args path buffer
+
+	r.clear()           // clear itself request
+	RequestsPool.Put(r) // release itself request
 }
