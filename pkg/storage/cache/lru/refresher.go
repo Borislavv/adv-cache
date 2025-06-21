@@ -3,7 +3,7 @@ package lru
 import (
 	"context"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/rate"
-	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/resource"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
 	"runtime"
 	"strconv"
 	"time"

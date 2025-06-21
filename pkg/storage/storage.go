@@ -16,10 +16,10 @@ import (
 type Storage interface {
 	// Get attempts to retrieve a cached response for the given request.
 	// Returns the response, a releaser for safe concurrent access, and a hit/miss flag.
-	Get(req *model.Request) (resp *model.Response, isHit bool)
+	Get(req *model.Request) (resp *model.Response, releaser *sharded.Releaser[*model.Response], isHit bool)
 
 	// Set stores a new response in the cache and returns a releaser for managing resource lifetime.
-	Set(resp *model.Response)
+	Set(resp *model.Response) (releaser *sharded.Releaser[*model.Response])
 
 	// Stop dumps itself in FS.
 	Stop()

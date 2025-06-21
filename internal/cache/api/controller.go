@@ -83,7 +83,8 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 	req := model.NewRequestFromFasthttp(c.cfg.Cache, r)
 
 	// Try to get response from cache.
-	resp, found := c.cache.Get(req)
+	resp, releaser, found := c.cache.Get(req)
+	defer releaser.Release()
 	if !found {
 		// On cache miss, get data from upstream backend and save in cache.
 		computed, err := c.backend.Fetch(ctx, req)
@@ -92,7 +93,8 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 			return
 		}
 		resp = computed
-		c.cache.Set(resp)
+		releaser = c.cache.Set(resp)
+		defer releaser.Release()
 	}
 
 	// Write status, headers, and body from the cached (or fetched) response.

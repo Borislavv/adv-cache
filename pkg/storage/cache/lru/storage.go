@@ -2,7 +2,6 @@ package lru
 
 import (
 	"context"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/resource"
 	"runtime"
 	"strconv"
 	"time"
@@ -80,7 +79,7 @@ func NewStorage(
 
 // Get retrieves a response by request and bumps its Storage position.
 // Returns: (response, releaser, found).
-func (c *Storage) Get(req *model.Request) (*model.Response, *resource.Releaser[*model.Response], bool) {
+func (c *Storage) Get(req *model.Request) (*model.Response, *sharded.Releaser[*model.Response], bool) {
 	resp, releaser, found := c.shardedMap.Get(req.MapKey(), req.ShardKey())
 	if found {
 		c.touch(resp)
@@ -90,7 +89,7 @@ func (c *Storage) Get(req *model.Request) (*model.Response, *resource.Releaser[*
 }
 
 // Set inserts or updates a response in the cache, updating Weight usage and Storage position.
-func (c *Storage) Set(new *model.Response) *resource.Releaser[*model.Response] {
+func (c *Storage) Set(new *model.Response) *sharded.Releaser[*model.Response] {
 	key := new.Request().MapKey()
 	shardKey := new.Request().ShardKey()
 
@@ -136,7 +135,7 @@ func (c *Storage) update(existing, new *model.Response) {
 }
 
 // set inserts a new response, updates Weight usage and registers in balancer.
-func (c *Storage) set(new *model.Response) *resource.Releaser[*model.Response] {
+func (c *Storage) set(new *model.Response) *sharded.Releaser[*model.Response] {
 	releaser := c.shardedMap.Set(new)
 	c.balancer.Set(new)
 	return releaser

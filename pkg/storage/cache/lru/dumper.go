@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/resource"
 	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
 	"github.com/rs/zerolog/log"
 	"net/http"
@@ -56,7 +55,7 @@ func (c *Storage) DumpToDir(ctx context.Context, dir string) error {
 	mu := sync.Mutex{}
 
 	c.shardedMap.WalkShards(func(shardKey uint64, shard *sharded.Shard[*model.Response]) {
-		shard.Walk(ctx, func(key uint64, resp *model.Response, releaser *resource.Releaser[*model.Response]) bool {
+		shard.Walk(ctx, func(key uint64, resp *model.Response, releaser *sharded.Releaser[*model.Response]) bool {
 			defer releaser.Release()
 
 			mu.Lock()

@@ -1,14 +1,15 @@
-package resource
+package sharded
 
 import (
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/consts"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/resource"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/synced"
 	"unsafe"
 )
 
 // Releaser is a wrapper for refCounting and releasing cached values.
 // Returned by Set and Get; must be released when no longer needed.
-type Releaser[V Resource] struct {
+type Releaser[V resource.Resource] struct {
 	val   V                               // Resource being tracked
 	relFn func(v V) bool                  // Release function: decrements refCount, may free value
 	pool  *synced.BatchPool[*Releaser[V]] // Pool for recycling this object
@@ -19,7 +20,7 @@ func (r *Releaser[V]) Weight() int64 {
 }
 
 // NewReleaser returns a pooled Releaser for a value, with a custom release logic.
-func NewReleaser[V Resource](val V, pool *synced.BatchPool[*Releaser[V]]) *Releaser[V] {
+func NewReleaser[V resource.Resource](val V, pool *synced.BatchPool[*Releaser[V]]) *Releaser[V] {
 	val.IncRefCount()
 	rel := pool.Get()
 	*rel = Releaser[V]{

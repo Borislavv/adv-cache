@@ -1,27 +1,29 @@
 package resource
 
 import (
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/synced"
+	"sync"
 	"unsafe"
 )
 
 const defaultBodyLength = 1024
 
-var bodyPool = synced.NewBatchPool[*ReleasableBody](func() *ReleasableBody {
-	return &ReleasableBody{
-		p: make([]byte, 0, defaultBodyLength),
-	}
-})
+var bodyPool = &sync.Pool{
+	New: func() any {
+		return &ReleasableBody{
+			p: make([]byte, 0, defaultBodyLength),
+		}
+	},
+}
 
 type ReleasableBody struct {
 	p []byte
 }
 
 func AcquireBody() *ReleasableBody {
-	return bodyPool.Get()
+	return bodyPool.Get().(*ReleasableBody)
 }
 
-// copy, don't use the same value
+// Bytes - returns a slice bytes which manages under sync.Pool. Copy output slice, don't use the same value.
 func (r *ReleasableBody) Bytes() []byte {
 	return r.p
 }
