@@ -2,6 +2,7 @@ package list
 
 import (
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/resource"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/synced"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -41,19 +42,23 @@ type List[T resource.Sized] struct {
 	len  int64
 	mu   *sync.RWMutex
 	root *Element[T]
+	pool *synced.BatchPool[*Element[T]]
 }
 
 // New creates a new list. If isThreadSafe is true, all ops are guarded by a mutex.
 func New[T resource.Sized]() *List[T] {
 	l := &List[T]{
 		mu: &sync.RWMutex{},
+		pool: synced.NewBatchPool[*Element[T]](func() *Element[T] {
+			return new(Element[T])
+		}),
 	}
 	l.init()
 	return l
 }
 
 func (l *List[T]) init() *List[T] {
-	root := &Element[T]{}
+	root := l.pool.Get()
 	l.root = root
 	l.root.next = l.root
 	l.root.prev = l.root
@@ -77,7 +82,8 @@ func (l *List[T]) insert(e, at *Element[T]) *Element[T] {
 }
 
 func (l *List[T]) insertValue(v T, at *Element[T]) *Element[T] {
-	el := &Element[T]{value: v}
+	el := l.pool.Get()
+	*el = Element[T]{value: v}
 	return l.insert(el, at)
 }
 
@@ -89,6 +95,7 @@ func (l *List[T]) remove(e *Element[T]) T {
 	e.prev = nil
 	e.list = nil
 	l.len--
+	l.pool.Put(e)
 	return val
 }
 

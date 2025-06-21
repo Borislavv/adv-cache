@@ -251,10 +251,13 @@ func (r *Response) clear() *Response {
 func (r *Response) Release() {
 	r.data.Load().Release()
 	r.request.Load().Release()
+
 	el := r.lruListElem.Load()
 	if el != nil {
+		// releases resources inside
 		el.List().Remove(el)
 	}
+
 	r.clear()
 	responsesPool.Put(r)
 }
