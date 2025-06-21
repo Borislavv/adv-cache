@@ -47,7 +47,7 @@ var (
 			return int64(len(s.Value))
 		})
 	})
-	sortedArgsPool = synced.NewBatchPool[*types.SizedBox[[]struct {
+	sortedArgsAndHeadersPool = synced.NewBatchPool[*types.SizedBox[[]struct {
 		Key   []byte
 		Value []byte
 	}]](func() *types.SizedBox[[]struct {
@@ -206,10 +206,10 @@ func (r *Request) setUp(args *fasthttp.Args, header *fasthttp.RequestHeader) {
 	argsBuf := queryBuffersPool.Get()
 
 	if args.Len() > 0 {
-		sortedArgs := sortedArgsPool.Get()
+		sortedArgs := sortedArgsAndHeadersPool.Get()
 		defer func() {
 			sortedArgs.Value = sortedArgs.Value[:0]
-			sortedArgsPool.Put(sortedArgs)
+			sortedArgsAndHeadersPool.Put(sortedArgs)
 		}()
 
 		args.VisitAll(func(key, value []byte) {
@@ -219,7 +219,7 @@ func (r *Request) setUp(args *fasthttp.Args, header *fasthttp.RequestHeader) {
 			}{key, value})
 		})
 
-		sort.Slice(sortedArgs, func(i, j int) bool {
+		sort.Slice(sortedArgs.Value, func(i, j int) bool {
 			return bytes.Compare(sortedArgs.Value[i].Key, sortedArgs.Value[j].Key) < 0
 		})
 
@@ -245,22 +245,23 @@ func (r *Request) setUp(args *fasthttp.Args, header *fasthttp.RequestHeader) {
 	}()
 
 	if header.Len() > 0 {
-		var sortedHeaders []struct {
-			Key   []byte
-			Value []byte
-		}
+		sortedHeaders := sortedArgsAndHeadersPool.Get()
+		defer func() {
+			sortedHeaders.Value = sortedHeaders.Value[:0]
+			sortedArgsAndHeadersPool.Put(sortedHeaders)
+		}()
 		header.VisitAll(func(key, value []byte) {
-			sortedHeaders = append(sortedHeaders, struct {
+			sortedHeaders.Value = append(sortedHeaders.Value, struct {
 				Key   []byte
 				Value []byte
 			}{key, value})
 		})
 
-		sort.Slice(sortedHeaders, func(i, j int) bool {
-			return bytes.Compare(sortedHeaders[i].Key, sortedHeaders[j].Key) < 0
+		sort.Slice(sortedHeaders.Value, func(i, j int) bool {
+			return bytes.Compare(sortedHeaders.Value[i].Key, sortedHeaders.Value[j].Key) < 0
 		})
 
-		for _, h := range sortedHeaders {
+		for _, h := range sortedHeaders.Value {
 			headersBuf.Value = append(headersBuf.Value, h.Key...)
 			headersBuf.Value = append(headersBuf.Value, ':')
 			headersBuf.Value = append(headersBuf.Value, h.Value...)
@@ -292,10 +293,10 @@ func (r *Request) setUpManually(args map[string][]byte, headers map[string][][]b
 	argsBuf := queryBuffersPool.Get()
 
 	if len(args) > 0 {
-		sortedArgs := sortedArgsPool.Get()
+		sortedArgs := sortedArgsAndHeadersPool.Get()
 		defer func() {
 			sortedArgs.Value = sortedArgs.Value[:0]
-			sortedArgsPool.Put(sortedArgs)
+			sortedArgsAndHeadersPool.Put(sortedArgs)
 		}()
 
 		for key, value := range args {

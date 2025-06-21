@@ -12,7 +12,7 @@ cache:
 
   storage:
     type: "malloc"
-    size: 15000000 # 20 GB of maximum allowed memory for the in-memory cache (in bytes).
+    size: 150000000 # 20 GB of maximum allowed memory for the in-memory cache (in bytes).
 
   refresh:
     ttl: "20m"
@@ -29,7 +29,7 @@ cache:
     - path: "/api/v2/pagedata"
       cache_key:
         query: ['project[id]', 'domain', 'language', 'choice'] # Match query parameters by prefix.
-        headers: ['Accept-Encoding', 'X-Project-ID']           # Match headers by exact value.
+        headers: ['X-Project-ID']           # Match headers by exact value.
       cache_value:
         headers: ['X-Project-ID']                              # Store only when headers match exactly.
 
