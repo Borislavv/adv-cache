@@ -19,7 +19,6 @@ end
 request = function()
     request_count = request_count + 1
 
-    -- Формируем URL
     local q = "choice[name]=betting"
         .. "&choice[choice][name]=betting_live"
         .. "&choice[choice][choice][name]=betting_live_null"
@@ -33,7 +32,6 @@ request = function()
         print("Request #" .. request_count .. ": " .. path)
     end
 
-    -- Инкрементируем счётчики
     match = match + 1
     if match > match_max then
         match = match_min
