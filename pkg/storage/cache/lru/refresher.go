@@ -3,7 +3,6 @@ package lru
 import (
 	"context"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/rate"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
 	"runtime"
 	"strconv"
 	"time"
@@ -78,7 +77,7 @@ func (r *Refresh) refreshNode(node *ShardNode) {
 	defer cancel()
 
 	samples := 0
-	node.shard.Walk(ctx, func(key uint64, resp *model.Response, releaser *sharded.Releaser[*model.Response]) bool {
+	node.shard.Walk(ctx, func(key uint64, resp *model.Response) bool {
 		if samples >= refreshSamples {
 			return false
 		}

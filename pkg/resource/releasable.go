@@ -48,7 +48,7 @@ func (r *ReleasableBody) Release() {
 
 // Releasable defines reference-counted resource management for cache values.
 type Releasable interface {
-	Release()
+	Close() error
 	RefCount() int64
 	IncRefCount() int64
 	DecRefCount() int64

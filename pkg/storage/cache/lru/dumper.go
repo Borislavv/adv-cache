@@ -55,8 +55,8 @@ func (c *Storage) DumpToDir(ctx context.Context, dir string) error {
 	mu := sync.Mutex{}
 
 	c.shardedMap.WalkShards(func(shardKey uint64, shard *sharded.Shard[*model.Response]) {
-		shard.Walk(ctx, func(key uint64, resp *model.Response, releaser *sharded.Releaser[*model.Response]) bool {
-			defer releaser.Release()
+		shard.Walk(ctx, func(key uint64, resp *model.Response) bool {
+			defer resp.Close()
 
 			mu.Lock()
 			defer mu.Unlock()
@@ -137,7 +137,8 @@ func (c *Storage) LoadFromDir(ctx context.Context, dir string) error {
 			continue
 		}
 
-		c.Set(resp).Release()
+		c.Set(resp)
+		_ = resp.Close()
 		dumpEntryPool.Put(entry)
 		success++
 	}

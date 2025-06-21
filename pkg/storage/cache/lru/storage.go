@@ -79,43 +79,43 @@ func NewStorage(
 
 // Get retrieves a response by request and bumps its Storage position.
 // Returns: (response, releaser, found).
-func (c *Storage) Get(req *model.Request) (*model.Response, *sharded.Releaser[*model.Response], bool) {
-	resp, releaser, found := c.shardedMap.Get(req.MapKey(), req.ShardKey())
+func (c *Storage) Get(req *model.Request) (*model.Response, bool) {
+	resp, found := c.shardedMap.Get(req.MapKey(), req.ShardKey())
 	if found {
 		c.touch(resp)
-		return resp, releaser, true
+		return resp, true
 	}
-	return nil, releaser, false
+	return nil, false
 }
 
 // Set inserts or updates a response in the cache, updating Weight usage and Storage position.
-func (c *Storage) Set(new *model.Response) *sharded.Releaser[*model.Response] {
+func (c *Storage) Set(new *model.Response) {
 	key := new.Request().MapKey()
 	shardKey := new.Request().ShardKey()
 
 	// Track access frequency
 	c.tinyLFU.Increment(key)
 
-	existing, releaser, found := c.shardedMap.Get(key, shardKey)
+	existing, found := c.shardedMap.Get(key, shardKey)
 	if found {
 		c.update(existing, new)
-		return releaser
+		return
 	}
 
 	// Admission control: if memory is over threshold, evaluate before inserting
 	if c.shouldEvict() {
 		victim, ok := c.balancer.FindVictim(shardKey)
 		if !ok {
-			return nil
+			return
 		}
 		if victim != nil && !c.tinyLFU.Admit(new, victim) {
 			// New item is less frequent than victim, skip insertion
-			return nil
+			return
 		}
 	}
 
 	// Proceed with insert
-	return c.set(new)
+	c.set(new)
 }
 
 // Del does not guarantee that the item will be deleted at this time because other users may exist.
@@ -135,10 +135,9 @@ func (c *Storage) update(existing, new *model.Response) {
 }
 
 // set inserts a new response, updates Weight usage and registers in balancer.
-func (c *Storage) set(new *model.Response) *sharded.Releaser[*model.Response] {
-	releaser := c.shardedMap.Set(new)
+func (c *Storage) set(new *model.Response) {
+	c.shardedMap.Set(new)
 	c.balancer.Set(new)
-	return releaser
 }
 
 // runLogger emits detailed stats about evictions, Weight, and GC activity every 5 seconds if debugging is enabled.

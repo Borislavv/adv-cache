@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"errors"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/list"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/synced"
@@ -248,7 +249,30 @@ func (r *Response) clear() *Response {
 	return r
 }
 
-func (r *Response) Release() {
+var (
+	respIsNilErr      = errors.New("response is nil")
+	tooManyReadersErr = errors.New("too many readers")
+)
+
+func (r *Response) Close() error {
+	if r == nil {
+		return respIsNilErr
+	}
+	for {
+		// Atomically decrement refCount. If the value is doomed and refCount drops to zero, actually release it.
+		if old := r.RefCount(); r.CASRefCount(old, old-1) {
+			if r.IsDoomed() && old == 1 {
+				r.release()
+				return nil
+			}
+			return tooManyReadersErr
+		} else {
+			continue
+		}
+	}
+}
+
+func (r *Response) release() {
 	r.data.Load().Release()
 	r.request.Load().Release()
 

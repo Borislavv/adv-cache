@@ -3,7 +3,6 @@ package synced
 import (
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/resource"
 	"sync"
-	"sync/atomic"
 )
 
 // BatchPool is a high-throughput generic object pool with batch preallocation.
@@ -13,7 +12,6 @@ import (
 // - Reduce allocation spikes by preallocating objects in large batches.
 // - Provide simple Get/Put API similar to sync.Pool but with better bulk allocation behavior.
 type BatchPool[T resource.Sized] struct {
-	cap       int64
 	pool      *sync.Pool // Underlying sync.Pool for thread-safe pooling
 	allocFunc func() T   // Function to create new T
 }
@@ -25,9 +23,6 @@ func NewBatchPool[T resource.Sized](allocFunc func() T) *BatchPool[T] {
 	bp := &BatchPool[T]{allocFunc: allocFunc}
 	bp.pool = &sync.Pool{
 		New: func() any {
-			// Return one object from the freshly preallocated batch.
-			atomic.AddInt64(&bp.cap, 2)
-			bp.pool.Put(allocFunc()) // put another one for friend
 			return allocFunc()
 		},
 	}
