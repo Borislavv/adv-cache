@@ -106,11 +106,11 @@ func (c *Storage) Set(new *model.Response) *sharded.Releaser[*model.Response] {
 	if c.shouldEvict() {
 		victim, ok := c.balancer.FindVictim(shardKey)
 		if !ok {
-			return releaser
+			return nil
 		}
 		if victim != nil && !c.tinyLFU.Admit(new, victim) {
 			// New item is less frequent than victim, skip insertion
-			return releaser
+			return nil
 		}
 	}
 

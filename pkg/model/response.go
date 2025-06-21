@@ -100,7 +100,7 @@ func (r *Response) ShardKey() uint64 {
 // Returns true if the entry is stale and, with a probability proportional to its staleness, should be refreshed now.
 func (r *Response) ShouldBeRefreshed() bool {
 	// Don't refresh doomed items.
-	if atomic.LoadInt64(&r.isDoomed) != 0 {
+	if r.IsDoomed() {
 		return false
 	}
 

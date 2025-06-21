@@ -71,20 +71,24 @@ func (shard *Shard[V]) Remove(key uint64) (freed int64, isHit bool) {
 	shard.Lock()
 	v, ok := shard.items[key]
 	if ok {
+		rel := NewReleaser(v, shard.releaserPool)
 		delete(shard.items, key)
 		shard.Unlock()
 
-		weight := v.Weight()
-		atomic.AddInt64(&shard.mem, -weight)
-
-		// If all references are gone, call Release; otherwise mark as doomed for future cleanup.
-		if v.MarkAsDoomed() && v.RefCount() == 0 {
-			v.Release()
+		for {
+			if !v.IsDoomed() && !v.MarkAsDoomed() {
+				continue
+			}
+			break
 		}
 
-		return weight, true
+		if freedBytes, isReleased := rel.Release(); isReleased {
+			atomic.AddInt64(&shard.mem, -freedBytes)
+			return freedBytes, true
+		}
+	} else {
+		shard.Unlock()
 	}
-	shard.Unlock()
 
 	return 0, false
 }

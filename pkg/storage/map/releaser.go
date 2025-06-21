@@ -10,9 +10,9 @@ import (
 // Releaser is a wrapper for refCounting and releasing cached values.
 // Returned by Set and Get; must be released when no longer needed.
 type Releaser[V resource.Resource] struct {
-	val   V                               // Resource being tracked
-	relFn func(v V) bool                  // Release function: decrements refCount, may free value
-	pool  *synced.BatchPool[*Releaser[V]] // Pool for recycling this object
+	val   V                                      // Resource being tracked
+	relFn func(v V) (freedMem int64, isHit bool) // Release function: decrements refCount, may free value
+	pool  *synced.BatchPool[*Releaser[V]]        // Pool for recycling this object
 }
 
 func (r *Releaser[V]) Weight() int64 {
@@ -26,15 +26,16 @@ func NewReleaser[V resource.Resource](val V, pool *synced.BatchPool[*Releaser[V]
 	*rel = Releaser[V]{
 		val:  val,
 		pool: pool,
-		relFn: func(value V) bool {
+		relFn: func(value V) (int64, bool) {
 			for {
 				// Atomically decrement refCount. If the value is doomed and refCount drops to zero, actually release it.
 				if old := value.RefCount(); value.CASRefCount(old, old-1) {
-					if old == 1 && value.IsDoomed() {
+					if value.IsDoomed() && old == 1 {
+						weight := value.Weight()
 						value.Release()
-						return true
+						return weight, true
 					}
-					return false
+					return 0, false
 				} else {
 					continue
 				}
@@ -45,12 +46,14 @@ func NewReleaser[V resource.Resource](val V, pool *synced.BatchPool[*Releaser[V]
 }
 
 // Release decrements the refCount and recycles the Releaser itself.
-func (r *Releaser[V]) Release() {
+func (r *Releaser[V]) Release() (freedBytes int64, isHit bool) {
 	if r == nil {
-		return
+		return 0, false
 	}
-	ok := r.relFn(r.val)
-	if ok {
+	freedBytes, isHit = r.relFn(r.val)
+	if isHit {
 		r.pool.Put(r)
+		return freedBytes, isHit
 	}
+	return 0, false
 }
