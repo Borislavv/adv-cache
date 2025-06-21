@@ -138,9 +138,9 @@ func (c *Storage) LoadFromDir(ctx context.Context, dir string) error {
 			continue
 		}
 
-		c.Set(resp)
-		success++
+		c.Set(resp).Release()
 		dumpEntryPool.Put(entry)
+		success++
 	}
 
 	log.Info().Msgf("[dump] restored %d entries, errors: %d (elapsed: %s)", success, failed, time.Since(start))
