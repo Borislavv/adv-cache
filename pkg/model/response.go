@@ -1,8 +1,6 @@
 package model
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/list"
@@ -10,7 +8,6 @@ import (
 	"math"
 	"math/rand/v2"
 	"net/http"
-	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -21,20 +18,9 @@ const gzipThreshold = 1024 // Minimum body size to apply gzip compression
 // -- Internal pools for efficient memory management --
 
 var (
-	DataPool = synced.NewBatchPool[*Data](func() *Data {
-		return new(Data).clear()
-	})
-	ResponsePool = synced.NewBatchPool[*Response](func() *Response {
+	responsesPool = synced.NewBatchPool[*Response](func() *Response {
 		return new(Response).clear().Init()
 	})
-	GzipBufferPool = &sync.Pool{New: func() any { return new(bytes.Buffer) }}
-	GzipWriterPool = &sync.Pool{New: func() any {
-		w, err := gzip.NewWriterLevel(nil, gzip.BestSpeed)
-		if err != nil {
-			panic("failed to Init. gzip writer: " + err.Error())
-		}
-		return w
-	}}
 )
 
 // Response is the main cache object, holding the request, payload, metadata, and list pointers.
@@ -55,7 +41,7 @@ func NewResponse(
 	data *Data, req *Request, cfg *config.Cache,
 	revalidator func(ctx context.Context) (data *Data, err error),
 ) (*Response, error) {
-	return ResponsePool.Get().Init().SetUp(cfg, data, req, revalidator), nil
+	return responsesPool.Get().Init().SetUp(cfg, data, req, revalidator), nil
 }
 
 // Init ensures all pointers are non-nil after pool Get.
@@ -198,7 +184,7 @@ func (r *Response) setUpWeight() int64 {
 				size += len(val)
 			}
 		}
-		size += len(data.body)
+		size += int(data.body.Weight())
 	}
 
 	return int64(size) + r.Request().Weight()
@@ -251,18 +237,18 @@ func (r *Response) ShardListElement() any {
 
 // clear resets the Response for re-use from the pool.
 func (r *Response) clear() *Response {
-	r.revalidator = nil
+	r.weight = 0
 	r.refCount = 0
 	r.isDoomed = 0
+	r.revalidator = nil
 	r.revalidatedAt = 0
-	r.weight = 0
 	r.lruListElem.Store(nil)
 	r.request.Store(nil)
 	r.data.Store(nil)
 	return r
 }
 
-func (r *Response) Release() bool {
+func (r *Response) Release() {
 	r.data.Load().Release()
 	r.request.Load().Release()
 	el := r.lruListElem.Load()
@@ -270,6 +256,5 @@ func (r *Response) Release() bool {
 		el.List().Remove(el)
 	}
 	r.clear()
-	ResponsePool.Put(r)
-	return true
+	responsesPool.Put(r)
 }

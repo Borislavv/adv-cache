@@ -69,7 +69,7 @@ func GenerateRandomResponses(cfg *config.Cache, path []byte, num int) []*model.R
 
 	list := make([]*model.Response, 0, num)
 	for _, req := range GenerateRandomRequests(cfg, path, num) {
-		data := model.NewData(cfg, path, http.StatusOK, headers, []byte(GenerateRandomString()), func() {})
+		data := model.NewRawData(cfg, path, http.StatusOK, headers, []byte(GenerateRandomString()))
 		resp, err := model.NewResponse(
 			data, req, cfg,
 			func(ctx context.Context) (*model.Data, error) {

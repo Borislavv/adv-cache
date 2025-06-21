@@ -38,7 +38,7 @@ func MapShardKey(key uint64) uint64 {
 }
 
 // Set inserts or updates a value in the correct shard. Returns a releaser for ref counting.
-func (smap *Map[V]) Set(value V) *Releaser[V] {
+func (smap *Map[V]) Set(value V) *resource.Releaser[V] {
 	takenMem, releaser := smap.shards[value.ShardKey()].Set(value.MapKey(), value)
 	atomic.AddInt64(&smap.len, 1)
 	atomic.AddInt64(&smap.mem, takenMem)
@@ -47,7 +47,7 @@ func (smap *Map[V]) Set(value V) *Releaser[V] {
 
 // Get fetches a value and its releaser from the correct shard.
 // found==false means the value is absent.
-func (smap *Map[V]) Get(key uint64, shardKey uint64) (V, *Releaser[V], bool) {
+func (smap *Map[V]) Get(key uint64, shardKey uint64) (V, *resource.Releaser[V], bool) {
 	return smap.shards[shardKey].Get(key)
 }
 
@@ -66,7 +66,7 @@ func (smap *Map[V]) Remove(key uint64) (freed int64, isHit bool) {
 }
 
 // Walk applies fn to all key/value pairs in the shard, optionally locking for writing.
-func (shard *Shard[V]) Walk(ctx context.Context, fn func(key uint64, value V, releaser *Releaser[V]) bool, lockRead bool) {
+func (shard *Shard[V]) Walk(ctx context.Context, fn func(key uint64, value V, releaser *resource.Releaser[V]) bool, lockRead bool) {
 	if lockRead {
 		shard.Lock()
 		defer shard.Unlock()
@@ -79,8 +79,7 @@ func (shard *Shard[V]) Walk(ctx context.Context, fn func(key uint64, value V, re
 		case <-ctx.Done():
 			return
 		default:
-			ok := fn(k, v, NewReleaser(v, shard.releaserPool))
-			if !ok {
+			if ok := fn(k, v, resource.NewReleaser(v, shard.releaserPool)); !ok {
 				return
 			}
 		}

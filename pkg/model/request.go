@@ -148,31 +148,37 @@ func NewRequestFromFasthttp(cfg *config.Cache, r *fasthttp.RequestCtx) *Request 
 
 // NewRawRequest - using in dump loading.
 func NewRawRequest(cfg *config.Cache, key, shard uint64, query, path []byte) *Request {
+	argsBuf := queryBuffersPool.Get()
+	argsBuf.Value = append(argsBuf.Value, query...)
+
+	pathBuf := pathBuffersPool.Get()
+	pathBuf.Value = append(pathBuf.Value, path...)
+
 	req := requestsPool.Get()
 	*req = Request{
 		cfg:   cfg,
 		key:   key,
 		shard: shard,
-		args: types.NewSizedBox[[]byte](query, func(s *types.SizedBox[[]byte]) int64 {
-			return int64(len(s.Value))
-		}),
-		path: types.NewSizedBox[[]byte](path, func(s *types.SizedBox[[]byte]) int64 {
-			return int64(len(s.Value))
-		}),
+		args:  argsBuf,
+		path:  pathBuf,
 	}
+
 	return req
 }
 
 // NewTestRequest - using only in tests and benchmarks.
 func NewTestRequest(cfg *config.Cache, path []byte, args map[string][]byte, headers map[string][][]byte) *Request {
+	pathBuf := pathBuffersPool.Get()
+	pathBuf.Value = append(pathBuf.Value, path...)
+
 	req := requestsPool.Get()
 	*req = Request{
-		cfg: cfg,
-		path: types.NewSizedBox[[]byte](path, func(s *types.SizedBox[[]byte]) int64 { // allocation
-			return int64(len(s.Value))
-		}),
+		cfg:  cfg,
+		path: pathBuf,
 	}
+
 	req.setUpManually(args, headers)
+
 	return req
 }
 

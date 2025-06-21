@@ -2,6 +2,7 @@ package lru
 
 import (
 	"context"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/resource"
 	"runtime"
 	"strconv"
 	"time"
@@ -79,43 +80,43 @@ func NewStorage(
 
 // Get retrieves a response by request and bumps its Storage position.
 // Returns: (response, releaser, found).
-func (c *Storage) Get(req *model.Request) (*model.Response, bool) {
-	resp, found := c.shardedMap.Get(req.MapKey(), req.ShardKey())
+func (c *Storage) Get(req *model.Request) (*model.Response, *resource.Releaser[*model.Response], bool) {
+	resp, releaser, found := c.shardedMap.Get(req.MapKey(), req.ShardKey())
 	if found {
 		c.touch(resp)
-		return resp, true
+		return resp, releaser, true
 	}
-	return nil, false
+	return nil, releaser, false
 }
 
 // Set inserts or updates a response in the cache, updating Weight usage and Storage position.
-func (c *Storage) Set(new *model.Response) {
+func (c *Storage) Set(new *model.Response) *resource.Releaser[*model.Response] {
 	key := new.Request().MapKey()
 	shardKey := new.Request().ShardKey()
 
 	// Track access frequency
 	c.tinyLFU.Increment(key)
 
-	existing, found := c.shardedMap.Get(key, shardKey)
+	existing, releaser, found := c.shardedMap.Get(key, shardKey)
 	if found {
 		c.update(existing, new)
-		return
+		return releaser
 	}
 
 	// Admission control: if memory is over threshold, evaluate before inserting
 	if c.shouldEvict() {
 		victim, ok := c.balancer.FindVictim(shardKey)
 		if !ok {
-			return
+			return releaser
 		}
 		if victim != nil && !c.tinyLFU.Admit(new, victim) {
 			// New item is less frequent than victim, skip insertion
-			return
+			return releaser
 		}
 	}
 
 	// Proceed with insert
-	c.set(new)
+	return c.set(new)
 }
 
 // Del does not guarantee that the item will be deleted at this time because other users may exist.
@@ -135,9 +136,10 @@ func (c *Storage) update(existing, new *model.Response) {
 }
 
 // set inserts a new response, updates Weight usage and registers in balancer.
-func (c *Storage) set(new *model.Response) {
-	c.shardedMap.Set(new)
+func (c *Storage) set(new *model.Response) *resource.Releaser[*model.Response] {
+	releaser := c.shardedMap.Set(new)
 	c.balancer.Set(new)
+	return releaser
 }
 
 // runLogger emits detailed stats about evictions, Weight, and GC activity every 5 seconds if debugging is enabled.

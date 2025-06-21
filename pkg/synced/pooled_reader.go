@@ -14,7 +14,7 @@ type PooledReader interface {
 	// - bode:   byte slice with the entire response body (may alias an internal buffer)
 	// - free:   function to call when you are done with bode (to return buffer to pool)
 	// - err:    any error from reading
-	Read(resp *http.Response) (bode []byte, free resource.ReleaseFunc, err error)
+	Read(resp *http.Response) (body *resource.ReleasableBody, err error)
 }
 
 // PooledResponseReader reads HTTP response bodies into pooled buffers for reuse,
@@ -40,18 +40,18 @@ func NewPooledResponseReader() *PooledResponseReader {
 // Read reads the HTTP response body into a pooled buffer and returns the bytes.
 // IMPORTANT: The returned bode slice aliases a pooled buffer and must not be used after free() is called.
 // Data race or use-after-free is possible if bode is accessed after calling free().
-func (r *PooledResponseReader) Read(resp *http.Response) (bode []byte, free resource.ReleaseFunc, err error) {
+func (r *PooledResponseReader) Read(resp *http.Response) (body *resource.ReleasableBody, err error) {
 	buf := r.pool.Get()
-	freeFn := func() {
+	defer func() {
 		buf.Value.Reset()
 		r.pool.Put(buf)
-	}
+	}()
 
 	// Defensive: ensure buffer is empty
 	_, err = buf.Value.ReadFrom(resp.Body)
 	if err != nil {
-		return nil, freeFn, err
+		return nil, err
 	}
 
-	return buf.Value.Bytes(), freeFn, nil
+	return resource.AcquireBody().Append(buf.Value.Bytes()), nil
 }

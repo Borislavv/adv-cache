@@ -82,10 +82,10 @@ func (s *Backend) requestExternalBackend(ctx context.Context, req *model.Request
 	}
 	defer func() { _ = response.Body.Close() }()
 
-	slBytes, release, err := s.reader.Read(response)
+	body, err := s.reader.Read(response)
 	if err != nil {
 		return nil, err
 	}
 
-	return model.NewData(s.cfg, req.Path(), response.StatusCode, response.Header, slBytes, release), nil
+	return model.NewData(s.cfg, req.Path(), response.StatusCode, response.Header, body), nil
 }

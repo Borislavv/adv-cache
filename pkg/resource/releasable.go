@@ -1,8 +1,52 @@
 package resource
 
+import (
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/synced"
+	"unsafe"
+)
+
+const defaultBodyLength = 1024
+
+var bodyPool = synced.NewBatchPool[*ReleasableBody](func() *ReleasableBody {
+	return &ReleasableBody{
+		p: make([]byte, 0, defaultBodyLength),
+	}
+})
+
+type ReleasableBody struct {
+	p []byte
+}
+
+func AcquireBody() *ReleasableBody {
+	return bodyPool.Get()
+}
+
+// copy, don't use the same value
+func (r *ReleasableBody) Bytes() []byte {
+	return r.p
+}
+
+func (r *ReleasableBody) Weight() int64 {
+	return int64(cap(r.p)) + int64(unsafe.Sizeof(*r))
+}
+
+func (r *ReleasableBody) Reset() {
+	r.p = r.p[:0]
+}
+
+func (r *ReleasableBody) Append(p []byte) *ReleasableBody {
+	r.p = append(r.p, p...)
+	return r
+}
+
+func (r *ReleasableBody) Release() {
+	r.Reset()
+	bodyPool.Put(r)
+}
+
 // Releasable defines reference-counted resource management for cache values.
 type Releasable interface {
-	Release() bool
+	Release()
 	RefCount() int64
 	IncRefCount() int64
 	DecRefCount() int64
