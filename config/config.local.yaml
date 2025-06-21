@@ -16,6 +16,7 @@ cache:
 
   refresh:
     ttl: "20m"
+    error_ttl: "5m"
     beta: 0.5 # Controls randomness in refresh timing to avoid thundering herd.
     backend_url: "https://seo-master.lux.kube.xbet.lan"
 
