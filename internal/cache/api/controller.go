@@ -173,7 +173,6 @@ func (c *CacheController) runLogger(ctx context.Context) {
 				c.logAndReset()
 			default:
 				runtime.Gosched()
-				time.Sleep(time.Millisecond)
 			}
 		}
 	}()
