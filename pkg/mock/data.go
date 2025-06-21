@@ -30,7 +30,7 @@ func GenerateRandomRequests(cfg *config.Cache, path []byte, num int) []*model.Re
 				if i >= num {
 					return list
 				}
-				req := model.NewRequest(
+				req := model.NewTestRequest(
 					cfg,
 					path,
 					map[string][]byte{

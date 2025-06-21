@@ -6,13 +6,6 @@ import (
 	"sync/atomic"
 )
 
-// PreallocateBatchSize is a sensible default for how many objects are preallocated in a single batch.
-// It's used for both initial and on-demand pool growth.
-const (
-	InitPreallocateCoefficient = 4
-	PreallocateBatchSize       = 8
-)
-
 // BatchPool is a high-throughput generic object pool with batch preallocation.
 //
 // The main goal is to:

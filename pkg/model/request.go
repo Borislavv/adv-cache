@@ -15,34 +15,107 @@ import (
 )
 
 const (
+	defaultBufLen    = 56
 	defaultPathLen   = 128
+	defaultNumArgs   = 10
 	defaultQueryLen  = 512
 	defaultKeyBufLen = 1024
 )
 
 var (
-	hasherPool         = &sync.Pool{New: func() any { return xxh3.New() }}
-	requestBuffersPool = synced.NewBatchPool[*Request](func() *Request {
-		return new(Request).clear()
+	hasherPool   = &sync.Pool{New: func() any { return xxh3.New() }}
+	requestsPool = synced.NewBatchPool[*Request](func() *Request {
+		return new(Request)
 	})
-	requestQueryBuffersPool = synced.NewBatchPool[*types.SizedBox[[]byte]](func() *types.SizedBox[[]byte] {
+	queryBuffersPool = synced.NewBatchPool[*types.SizedBox[[]byte]](func() *types.SizedBox[[]byte] {
 		return types.NewSizedBox[[]byte](make([]byte, 0, defaultQueryLen), func(s *types.SizedBox[[]byte]) int64 {
 			return int64(len(s.Value))
 		})
 	})
-	requestHeaderBuffersPool = synced.NewBatchPool[*types.SizedBox[[]byte]](func() *types.SizedBox[[]byte] {
+	headerBuffersPool = synced.NewBatchPool[*types.SizedBox[[]byte]](func() *types.SizedBox[[]byte] {
 		return types.NewSizedBox[[]byte](make([]byte, 0, defaultQueryLen), func(s *types.SizedBox[[]byte]) int64 {
 			return int64(len(s.Value))
 		})
 	})
-	requestKeyBufferPool = synced.NewBatchPool[*types.SizedBox[[]byte]](func() *types.SizedBox[[]byte] {
+	keyBufferPool = synced.NewBatchPool[*types.SizedBox[[]byte]](func() *types.SizedBox[[]byte] {
 		return types.NewSizedBox[[]byte](make([]byte, 0, defaultKeyBufLen), func(s *types.SizedBox[[]byte]) int64 {
 			return int64(len(s.Value))
 		})
 	})
-	requestQueryPathBuffersPool = synced.NewBatchPool[*types.SizedBox[[]byte]](func() *types.SizedBox[[]byte] {
+	pathBuffersPool = synced.NewBatchPool[*types.SizedBox[[]byte]](func() *types.SizedBox[[]byte] {
 		return types.NewSizedBox[[]byte](make([]byte, 0, defaultPathLen), func(s *types.SizedBox[[]byte]) int64 {
 			return int64(len(s.Value))
+		})
+	})
+	sortedArgsPool = synced.NewBatchPool[*types.SizedBox[[]struct {
+		Key   []byte
+		Value []byte
+	}]](func() *types.SizedBox[[]struct {
+		Key   []byte
+		Value []byte
+	}] {
+		return types.NewSizedBox[[]struct {
+			Key   []byte
+			Value []byte
+		}](make([]struct {
+			Key   []byte
+			Value []byte
+		}, 0, defaultNumArgs), func(s *types.SizedBox[[]struct {
+			Key   []byte
+			Value []byte
+		}]) int64 {
+			return int64(len(s.Value))
+		})
+	})
+	sortedHeadersPool = synced.NewBatchPool[*types.SizedBox[[]struct {
+		Key   []byte
+		Value []byte
+	}]](func() *types.SizedBox[[]struct {
+		Key   []byte
+		Value []byte
+	}] {
+		return types.NewSizedBox[[]struct {
+			Key   []byte
+			Value []byte
+		}](make([]struct {
+			Key   []byte
+			Value []byte
+		}, 0, defaultNumArgs), func(s *types.SizedBox[[]struct {
+			Key   []byte
+			Value []byte
+		}]) int64 {
+			return int64(len(s.Value))
+		})
+	})
+	filterBuffersPool = synced.NewBatchPool[*types.SizedBox[*bytes.Buffer]](func() *types.SizedBox[*bytes.Buffer] {
+		buf := new(bytes.Buffer)
+		buf.Grow(defaultQueryLen)
+		return types.NewSizedBox[*bytes.Buffer](buf, func(s *types.SizedBox[*bytes.Buffer]) int64 {
+			return int64(s.Value.Cap())
+		})
+	})
+	keyValueBufferPool = synced.NewBatchPool[*types.SizedBox[[]byte]](func() *types.SizedBox[[]byte] {
+		return types.NewSizedBox[[]byte](make([]byte, 0, defaultBufLen), func(s *types.SizedBox[[]byte]) int64 {
+			return int64(len(s.Value))
+		})
+	})
+	filteredSlicesPool = synced.NewBatchPool[*types.SizedBox[[][2]*types.SizedBox[[]byte]]](func() *types.SizedBox[[][2]*types.SizedBox[[]byte]] {
+		return types.NewSizedBox[[][2]*types.SizedBox[[]byte]](make([][2]*types.SizedBox[[]byte], 0, defaultBufLen), func(s *types.SizedBox[[][2]*types.SizedBox[[]byte]]) int64 {
+			w := 0
+			for _, v := range s.Value {
+				w += cap(v[0].Value)
+				w += cap(v[1].Value)
+			}
+			return int64(w)
+		})
+	})
+	allowedQueryHeadersPool = synced.NewBatchPool[*types.SizedBox[[][]byte]](func() *types.SizedBox[[][]byte] {
+		return types.NewSizedBox[[][]byte](make([][]byte, 0, defaultNumArgs), func(s *types.SizedBox[[][]byte]) int64 {
+			w := int(unsafe.Sizeof(*s) + unsafe.Sizeof(s.Value))
+			for _, v := range s.Value {
+				w += len(v)
+			}
+			return int64(w)
 		})
 	})
 )
@@ -55,14 +128,14 @@ type Request struct {
 	path  *types.SizedBox[[]byte]
 }
 
+// NewRequestFromFasthttp - using in HOT PATH!
 func NewRequestFromFasthttp(cfg *config.Cache, r *fasthttp.RequestCtx) *Request {
 	sanitizeRequest(cfg, r)
 
-	path := requestQueryPathBuffersPool.Get()
-	path.Value = path.Value[:0]
+	path := pathBuffersPool.Get()
 	path.Value = append(path.Value, r.Path()...)
 
-	req := requestBuffersPool.Get()
+	req := requestsPool.Get()
 	*req = Request{
 		cfg:  cfg,
 		path: path,
@@ -73,9 +146,10 @@ func NewRequestFromFasthttp(cfg *config.Cache, r *fasthttp.RequestCtx) *Request 
 	return req
 }
 
+// NewRawRequest - using in dump loading.
 func NewRawRequest(cfg *config.Cache, key, shard uint64, query, path []byte) *Request {
-
-	return &Request{
+	req := requestsPool.Get()
+	*req = Request{
 		cfg:   cfg,
 		key:   key,
 		shard: shard,
@@ -86,23 +160,28 @@ func NewRawRequest(cfg *config.Cache, key, shard uint64, query, path []byte) *Re
 			return int64(len(s.Value))
 		}),
 	}
+	return req
 }
 
-func NewRequest(cfg *config.Cache, path []byte, args map[string][]byte, headers map[string][][]byte) *Request {
-	req := &Request{
-		cfg:  cfg,
-		path: path,
+// NewTestRequest - using only in tests and benchmarks.
+func NewTestRequest(cfg *config.Cache, path []byte, args map[string][]byte, headers map[string][][]byte) *Request {
+	req := requestsPool.Get()
+	*req = Request{
+		cfg: cfg,
+		path: types.NewSizedBox[[]byte](path, func(s *types.SizedBox[[]byte]) int64 { // allocation
+			return int64(len(s.Value))
+		}),
 	}
 	req.setUpManually(args, headers)
 	return req
 }
 
 func (r *Request) ToQuery() []byte {
-	return r.args
+	return r.args.Value
 }
 
 func (r *Request) Path() []byte {
-	return r.path
+	return r.path.Value
 }
 
 func (r *Request) MapKey() uint64 {
@@ -118,53 +197,45 @@ func (r *Request) Weight() int64 {
 }
 
 func (r *Request) setUp(args *fasthttp.Args, header *fasthttp.RequestHeader) {
-	argsBuf := requestQueryBuffersPool.Get()
+	argsBuf := queryBuffersPool.Get()
 
 	if args.Len() > 0 {
-		var sortedArgs []struct {
-			Key   []byte
-			Value []byte
-		}
+		sortedArgs := sortedArgsPool.Get()
+		defer func() {
+			sortedArgs.Value = sortedArgs.Value[:0]
+			sortedArgsPool.Put(sortedArgs)
+		}()
+
 		args.VisitAll(func(key, value []byte) {
-			k := make([]byte, len(key))
-			v := make([]byte, len(value))
-			copy(k, key)
-			copy(v, value)
-			sortedArgs = append(sortedArgs, struct {
+			sortedArgs.Value = append(sortedArgs.Value, struct {
 				Key   []byte
 				Value []byte
-			}{k, v})
+			}{key, value})
 		})
 
 		sort.Slice(sortedArgs, func(i, j int) bool {
-			return bytes.Compare(sortedArgs[i].Key, sortedArgs[j].Key) < 0
+			return bytes.Compare(sortedArgs.Value[i].Key, sortedArgs.Value[j].Key) < 0
 		})
 
-		argsLength := 1 // символ '?'
-		for _, p := range sortedArgs {
-			argsLength += len(p.Key) + len(p.Value) + 2 // key=value&
+		argsBuf.Value = append(argsBuf.Value, '?')
+		for _, arg := range sortedArgs.Value {
+			argsBuf.Value = append(argsBuf.Value, arg.Key...)
+			argsBuf.Value = append(argsBuf.Value, '=')
+			argsBuf.Value = append(argsBuf.Value, arg.Value...)
+			argsBuf.Value = append(argsBuf.Value, '&')
 		}
-
-		argsBuf = make([]byte, 0, argsLength)
-		argsBuf = append(argsBuf, '?')
-		for _, p := range sortedArgs {
-			argsBuf = append(argsBuf, p.Key...)
-			argsBuf = append(argsBuf, '=')
-			argsBuf = append(argsBuf, p.Value...)
-			argsBuf = append(argsBuf, '&')
-		}
-		if len(argsBuf) > 1 {
-			argsBuf = argsBuf[:len(argsBuf)-1] // убрать последний '&'
+		if len(argsBuf.Value) > 1 {
+			argsBuf.Value = argsBuf.Value[:len(argsBuf.Value)-1] // убрать последний '&'
 		} else {
-			argsBuf = argsBuf[:0]
+			argsBuf.Value = argsBuf.Value[:0]
 		}
 	}
 	r.args = argsBuf
 
-	headersBuf := requestHeaderBuffersPool.Get()
+	headersBuf := headerBuffersPool.Get()
 	defer func() {
 		headersBuf.Value = headersBuf.Value[:0]
-		requestHeaderBuffersPool.Put(headersBuf)
+		headerBuffersPool.Put(headersBuf)
 	}()
 
 	if header.Len() > 0 {
@@ -173,104 +244,137 @@ func (r *Request) setUp(args *fasthttp.Args, header *fasthttp.RequestHeader) {
 			Value []byte
 		}
 		header.VisitAll(func(key, value []byte) {
-			k := make([]byte, len(key))
-			v := make([]byte, len(value))
-			copy(k, key)
-			copy(v, value)
 			sortedHeaders = append(sortedHeaders, struct {
 				Key   []byte
 				Value []byte
-			}{k, v})
+			}{key, value})
 		})
 
 		sort.Slice(sortedHeaders, func(i, j int) bool {
 			return bytes.Compare(sortedHeaders[i].Key, sortedHeaders[j].Key) < 0
 		})
 
-		headersLength := 0
 		for _, h := range sortedHeaders {
-			headersLength += len(h.Key) + len(h.Value) + 2 // key:value\n
+			headersBuf.Value = append(headersBuf.Value, h.Key...)
+			headersBuf.Value = append(headersBuf.Value, ':')
+			headersBuf.Value = append(headersBuf.Value, h.Value...)
+			headersBuf.Value = append(headersBuf.Value, '\n')
 		}
-
-		headersBuf = make([]byte, 0, headersLength)
-		for _, h := range sortedHeaders {
-			headersBuf = append(headersBuf, h.Key...)
-			headersBuf = append(headersBuf, ':')
-			headersBuf = append(headersBuf, h.Value...)
-			headersBuf = append(headersBuf, '\n')
-		}
-		if len(headersBuf) > 0 {
-			headersBuf = headersBuf[:len(headersBuf)-1] // убрать последний '\n'
+		if len(headersBuf.Value) > 0 {
+			headersBuf.Value = headersBuf.Value[:len(headersBuf.Value)-1] // убрать последний '\n'
 		} else {
-			headersBuf = headersBuf[:0]
+			headersBuf.Value = headersBuf.Value[:0]
 		}
 	}
 
-	bufLen := len(argsBuf) + len(headersBuf) + len(path) + 1
-	buf := make([]byte, 0, bufLen)
-	if bufLen > 1 {
-		buf = append(buf, path...)
-		buf = append(buf, argsBuf...)
-		buf = append(buf, '\n')
-		buf = append(buf, headersBuf...)
-	}
+	buf := keyBufferPool.Get()
+	defer func() {
+		buf.Value = buf.Value[:0]
+		keyBufferPool.Put(buf)
+	}()
+
+	buf.Value = append(buf.Value, r.path.Value...)
+	buf.Value = append(buf.Value, argsBuf.Value...)
+	buf.Value = append(buf.Value, '\n')
+	buf.Value = append(buf.Value, headersBuf.Value...)
 
 	r.key = hash(buf.Value)
 	r.shard = sharded.MapShardKey(r.key)
 }
 
 func (r *Request) setUpManually(args map[string][]byte, headers map[string][][]byte) {
-	argsLength := 1
-	for key, value := range args {
-		argsLength += len(key) + len(value) + 2
-	}
+	argsBuf := queryBuffersPool.Get()
 
-	queryBuf := make([]byte, 0, argsLength)
-	queryBuf = append(queryBuf, []byte("?")...)
-	for key, value := range args {
-		queryBuf = append(queryBuf, key...)
-		queryBuf = append(queryBuf, []byte("=")...)
-		queryBuf = append(queryBuf, value...)
-		queryBuf = append(queryBuf, []byte("&")...)
-	}
-	if len(queryBuf) > 1 {
-		queryBuf = queryBuf[:len(queryBuf)-1] // remove the last & char
-	} else {
-		queryBuf = queryBuf[:0] // no parameters
-	}
+	if len(args) > 0 {
+		sortedArgs := sortedArgsPool.Get()
+		defer func() {
+			sortedArgs.Value = sortedArgs.Value[:0]
+			sortedArgsPool.Put(sortedArgs)
+		}()
 
-	headersLength := 0
-	for key, values := range headers {
-		for _, value := range values {
-			headersLength += len(key) + len(value) + 2
+		for key, value := range args {
+			sortedArgs.Value = append(sortedArgs.Value, struct {
+				Key   []byte
+				Value []byte
+			}{
+				Key:   []byte(key), // allocation: at now this method does not use in hot path
+				Value: value,
+			})
+		}
+
+		sort.Slice(sortedArgs.Value, func(i, j int) bool {
+			return bytes.Compare(sortedArgs.Value[i].Key, sortedArgs.Value[j].Key) < 0
+		})
+
+		argsBuf.Value = append(argsBuf.Value, '?')
+		for _, arg := range sortedArgs.Value {
+			argsBuf.Value = append(argsBuf.Value, arg.Key...)
+			argsBuf.Value = append(argsBuf.Value, '=')
+			argsBuf.Value = append(argsBuf.Value, arg.Value...)
+			argsBuf.Value = append(argsBuf.Value, '&')
+		}
+		if len(argsBuf.Value) > 1 {
+			argsBuf.Value = argsBuf.Value[:len(argsBuf.Value)-1]
+		} else {
+			argsBuf.Value = argsBuf.Value[:0]
+		}
+	}
+	r.args = argsBuf
+
+	headersBuf := headerBuffersPool.Get()
+	defer func() {
+		headersBuf.Value = headersBuf.Value[:0]
+		headerBuffersPool.Put(headersBuf)
+	}()
+
+	if len(headers) > 0 {
+		sortedHeaders := sortedHeadersPool.Get()
+		defer func() {
+			sortedHeaders.Value = sortedHeaders.Value[:0]
+			sortedHeadersPool.Put(sortedHeaders)
+		}()
+
+		for key, values := range headers {
+			for _, value := range values {
+				sortedHeaders.Value = append(sortedHeaders.Value, struct {
+					Key   []byte
+					Value []byte
+				}{
+					Key:   []byte(key),
+					Value: value,
+				})
+			}
+		}
+
+		sort.Slice(sortedHeaders.Value, func(i, j int) bool {
+			return bytes.Compare(sortedHeaders.Value[i].Key, sortedHeaders.Value[j].Key) < 0
+		})
+
+		for _, h := range sortedHeaders.Value {
+			headersBuf.Value = append(headersBuf.Value, h.Key...)
+			headersBuf.Value = append(headersBuf.Value, ':')
+			headersBuf.Value = append(headersBuf.Value, h.Value...)
+			headersBuf.Value = append(headersBuf.Value, '\n')
+		}
+		if len(headersBuf.Value) > 0 {
+			headersBuf.Value = headersBuf.Value[:len(headersBuf.Value)-1]
+		} else {
+			headersBuf.Value = headersBuf.Value[:0]
 		}
 	}
 
-	headersBuf := make([]byte, 0, headersLength)
-	for key, values := range headers {
-		for _, value := range values {
-			headersBuf = append(headersBuf, key...)
-			headersBuf = append(headersBuf, []byte(":")...)
-			headersBuf = append(headersBuf, value...)
-			headersBuf = append(headersBuf, []byte("\n")...)
-		}
-	}
-	if len(headersBuf) > 0 {
-		headersBuf = headersBuf[:len(headersBuf)-1] // remove the last \n char
-	} else {
-		headersBuf = headersBuf[:0] // no headers
-	}
+	buf := keyBufferPool.Get()
+	defer func() {
+		buf.Value = buf.Value[:0]
+		keyBufferPool.Put(buf)
+	}()
 
-	bufLen := len(queryBuf) + len(headersBuf) + 1
-	buf := make([]byte, 0, bufLen)
-	if bufLen > 1 {
-		buf = append(buf, queryBuf...)
-		buf = append(buf, []byte("\n")...)
-		buf = append(buf, headersBuf...)
-	}
+	buf.Value = append(buf.Value, r.path.Value...)
+	buf.Value = append(buf.Value, argsBuf.Value...)
+	buf.Value = append(buf.Value, '\n')
+	buf.Value = append(buf.Value, headersBuf.Value...)
 
-	r.args = queryBuf
-	r.key = hash(buf)
+	r.key = hash(buf.Value)
 	r.shard = sharded.MapShardKey(r.key)
 }
 
@@ -292,68 +396,86 @@ func sanitizeRequest(cfg *config.Cache, ctx *fasthttp.RequestCtx) {
 	filterKeyHeadersInPlace(ctx, allowedHeaders)
 }
 
-func getKeyAllowed(cfg *config.Cache, path []byte) (queries [][]byte, headers [][]byte) {
-	queries = make([][]byte, 0, 14)
-	headers = make([][]byte, 0, 14)
+func getKeyAllowed(cfg *config.Cache, path []byte) (queries *types.SizedBox[[][]byte], headers *types.SizedBox[[][]byte]) {
+	queries = allowedQueryHeadersPool.Get()
+	headers = allowedQueryHeadersPool.Get()
 	for _, rule := range cfg.Cache.Rules {
 		if bytes.HasPrefix(path, rule.PathBytes) {
 			for _, param := range rule.CacheKey.QueryBytes {
-				queries = append(queries, param)
+				queries.Value = append(queries.Value, param)
 			}
 			for _, header := range rule.CacheKey.HeadersBytes {
-				headers = append(headers, header)
+				headers.Value = append(headers.Value, header)
 			}
 		}
 	}
 	return queries, headers
 }
 
-var bufferPool = &sync.Pool{
-	New: func() interface{} {
-		return new(bytes.Buffer)
-	},
-}
+func filterKeyQueriesInPlace(ctx *fasthttp.RequestCtx, allowed *types.SizedBox[[][]byte]) {
+	defer func() {
+		for key, _ := range allowed.Value {
+			allowed.Value[key] = allowed.Value[key][:0]
+		}
+		allowed.Value = allowed.Value[:0]
+		allowedQueryHeadersPool.Put(allowed)
+	}()
 
-func filterKeyQueriesInPlace(ctx *fasthttp.RequestCtx, allowed [][]byte) {
 	original := ctx.QueryArgs()
-	buf := bufferPool.Get().(*bytes.Buffer)
-	buf.Reset()
+	buf := filterBuffersPool.Get()
+	defer func() {
+		buf.Value.Reset()
+		filterBuffersPool.Put(buf)
+	}()
 
 	original.VisitAll(func(k, v []byte) {
-		for _, ak := range allowed {
+		for _, ak := range allowed.Value {
 			if bytes.HasPrefix(k, ak) {
-				buf.Write(k)
-				buf.WriteByte('=')
-				buf.Write(v)
-				buf.WriteByte('&')
+				buf.Value.Write(k)
+				buf.Value.WriteByte('=')
+				buf.Value.Write(v)
+				buf.Value.WriteByte('&')
 				break
 			}
 		}
 	})
 
-	if buf.Len() > 0 {
-		buf.Truncate(buf.Len() - 1) // удалить последний &
-		ctx.URI().SetQueryStringBytes(buf.Bytes())
+	if buf.Value.Len() > 0 {
+		buf.Value.Truncate(buf.Value.Len() - 1) // remove the last &
+		ctx.URI().SetQueryStringBytes(buf.Value.Bytes())
 	} else {
-		ctx.URI().SetQueryStringBytes(nil) // удалить query
+		ctx.URI().SetQueryStringBytes(nil) // remove query
 	}
-
-	bufferPool.Put(buf)
 }
 
-func filterKeyHeadersInPlace(ctx *fasthttp.RequestCtx, allowed [][]byte) {
+func filterKeyHeadersInPlace(ctx *fasthttp.RequestCtx, allowed *types.SizedBox[[][]byte]) {
+	defer func() {
+		for key, _ := range allowed.Value {
+			allowed.Value[key] = allowed.Value[key][:0]
+		}
+		allowed.Value = allowed.Value[:0]
+		allowedQueryHeadersPool.Put(allowed)
+	}()
+
 	headers := &ctx.Request.Header
 
-	var filtered [][2][]byte
+	var filteredSlice *types.SizedBox[[][2]*types.SizedBox[[]byte]]
 	headers.VisitAll(func(k, v []byte) {
-		for _, ak := range allowed {
+		for _, ak := range allowed.Value {
 			if bytes.EqualFold(k, ak) {
 				// allocate a new slice because the origin slice valid until request is alive,
 				// further this "value" (slice) will be reused for new data be fasthttp (owner).
 				// Don't remove allocation or will have UNDEFINED BEHAVIOR!
-				kCopy := append([]byte(nil), k...)
-				vCopy := append([]byte(nil), v...)
-				filtered = append(filtered, [2][]byte{kCopy, vCopy})
+
+				keyCopied := keyValueBufferPool.Get()
+				keyCopied.Value = append(keyCopied.Value, k...)
+
+				valueCopied := keyValueBufferPool.Get()
+				valueCopied.Value = append(valueCopied.Value, v...)
+
+				filteredSlice = filteredSlicesPool.Get()
+				filteredSlice.Value = append(filteredSlice.Value, [2]*types.SizedBox[[]byte]{keyCopied, valueCopied})
+
 				break
 			}
 		}
@@ -363,9 +485,17 @@ func filterKeyHeadersInPlace(ctx *fasthttp.RequestCtx, allowed [][]byte) {
 	headers.Reset()
 
 	// Setting up only allowed
-	for _, kv := range filtered {
-		headers.SetBytesKV(kv[0], kv[1])
+	for _, filtered := range filteredSlice.Value {
+		headers.SetBytesKV(filtered[0].Value, filtered[1].Value)
+
+		filtered[0].Value = filtered[0].Value[:0]
+		keyValueBufferPool.Put(filtered[0])
+
+		filtered[1].Value = filtered[1].Value[:0]
+		keyValueBufferPool.Put(filtered[1])
 	}
+	filteredSlice.Value = filteredSlice.Value[:0]
+	filteredSlicesPool.Put(filteredSlice)
 }
 
 // clear resets the Request to zero (except for buffer capacity).
@@ -379,9 +509,12 @@ func (r *Request) clear() *Request {
 
 // Release releases and resets the request (and any underlying buffer/tag slices) for reuse.
 func (r *Request) Release() {
-	requestQueryBuffersPool.Put(r.args)     // release args buffer
-	requestQueryPathBuffersPool.Put(r.path) // release args path buffer
+	r.args.Value = r.args.Value[:0] // reset slice len
+	queryBuffersPool.Put(r.args)    // release args buffer
 
-	r.clear()           // clear itself request
-	RequestsPool.Put(r) // release itself request
+	r.path.Value = r.path.Value[:0] // reset slice len
+	pathBuffersPool.Put(r.path)     // release args path buffer
+
+	r.clear()           // clear itself request (set up zero-values)
+	requestsPool.Put(r) // release itself request
 }
