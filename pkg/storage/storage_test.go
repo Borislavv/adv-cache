@@ -23,7 +23,7 @@ func init() {
 		Cache: config.CacheBox{
 			Enabled: true,
 			Preallocate: config.Preallocation{
-				PerShard: 8196,
+				PerShard: 8,
 			},
 			Eviction: config.Eviction{
 				Policy:    "lru",
