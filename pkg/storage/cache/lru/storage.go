@@ -98,7 +98,7 @@ func (c *Storage) Set(new *model.Response) {
 
 	existing, found := c.shardedMap.Get(key, shardKey)
 	if found {
-		c.update(existing, new)
+		c.update(existing)
 		return
 	}
 
@@ -129,8 +129,7 @@ func (c *Storage) touch(existing *model.Response) {
 }
 
 // update refreshes Weight accounting and Storage position for an updated entry.
-func (c *Storage) update(existing, new *model.Response) {
-	c.shardedMap.Update(existing, new)
+func (c *Storage) update(existing *model.Response) {
 	c.balancer.Update(existing)
 }
 

@@ -34,7 +34,7 @@ func NewApp(ctx context.Context, cfg *config.Config, probe liveness.Prober) (*Ca
 	ctx, cancel := context.WithCancel(ctx)
 
 	// Setup sharded map for high-concurrency cache storage.
-	shardedMap := sharded.NewMap[*model.Response](cfg.Cache.Cache.Preallocate.PerShard)
+	shardedMap := sharded.NewMap[*model.Response](ctx, cfg.Cache.Cache.Preallocate.PerShard)
 	backend := repository.NewBackend(cfg.Cache)
 	balancer := lru.NewBalancer(ctx, shardedMap)
 	refresher := lru.NewRefresher(ctx, cfg.Cache, balancer)

@@ -1,7 +1,7 @@
 -- sequential_url.lua
 
 -- Диапазоны
-local sport_min, sport_max = 1, 1
+local sport_min, sport_max = 1, 100
 local championship_min, championship_max = 1, 100
 local match_min, match_max = 1, 100
 

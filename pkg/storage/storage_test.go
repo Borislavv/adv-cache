@@ -57,7 +57,7 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	shardedMap := sharded.NewMap[*model.Response](cfg.Cache.Preallocate.PerShard)
+	shardedMap := sharded.NewMap[*model.Response](ctx, cfg.Cache.Preallocate.PerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
 	refresher := lru.NewRefresher(ctx, cfg, balancer)
 	backend := repository.NewBackend(cfg)
@@ -89,7 +89,7 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	shardedMap := sharded.NewMap[*model.Response](cfg.Cache.Preallocate.PerShard)
+	shardedMap := sharded.NewMap[*model.Response](ctx, cfg.Cache.Preallocate.PerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
 	refresher := lru.NewRefresher(ctx, cfg, balancer)
 	backend := repository.NewBackend(cfg)
@@ -118,7 +118,7 @@ func BenchmarkGetAllocs(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	shardedMap := sharded.NewMap[*model.Response](cfg.Cache.Preallocate.PerShard)
+	shardedMap := sharded.NewMap[*model.Response](ctx, cfg.Cache.Preallocate.PerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
 	refresher := lru.NewRefresher(ctx, cfg, balancer)
 	backend := repository.NewBackend(cfg)
@@ -141,7 +141,7 @@ func BenchmarkSetAllocs(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	shardedMap := sharded.NewMap[*model.Response](cfg.Cache.Preallocate.PerShard)
+	shardedMap := sharded.NewMap[*model.Response](ctx, cfg.Cache.Preallocate.PerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
 	refresher := lru.NewRefresher(ctx, cfg, balancer)
 	backend := repository.NewBackend(cfg)

@@ -1,11 +1,9 @@
 package list
 
 import (
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/types"
 	"sync"
 	"sync/atomic"
-	"unsafe"
-
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/types"
 )
 
 // Element is a node in the doubly linked list that holds a value of type T.
@@ -34,7 +32,7 @@ func (e *Element[T]) Value() T {
 }
 
 func (e *Element[T]) Weight() int64 {
-	return int64(unsafe.Sizeof(*e))
+	return e.value.Weight()
 }
 
 // List is a generic doubly linked list with optional thread safety.

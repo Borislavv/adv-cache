@@ -2,12 +2,10 @@ package lru
 
 import (
 	"context"
-	"math/rand/v2"
-	"unsafe"
-
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/list"
 	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
+	"math/rand/v2"
 )
 
 // ShardNode represents a single shard's Storage and accounting info.
@@ -20,7 +18,7 @@ type ShardNode struct {
 
 // Weight returns an approximate Weight usage of this ShardNode structure.
 func (s *ShardNode) Weight() int64 {
-	return int64(unsafe.Sizeof(*s))
+	return s.shard.Weight()
 }
 
 type Balancer interface {
