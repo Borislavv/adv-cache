@@ -138,7 +138,8 @@ LIVENESS_PROBE_TIMEOUT="5s"
 ### 👊 Advanced cache vs. Ristretto
 <img width="1372" alt="image" src="https://github.com/user-attachments/assets/f75bcb71-47a5-46c0-8670-2bc1d8a5e970" />
 
-Note: benchmark has 1000 operations per iteration (results must be divided by 1000).
+**Note: benchmark has 1000 operations per iteration (results must be divided by 1000).**
+
 **See test by path for get more details: /pkg/storage/{ristretto_test|storage_test}.go** 
 
 ## 👤 Author & Maintainer
