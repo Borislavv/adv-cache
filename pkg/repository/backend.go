@@ -65,10 +65,9 @@ func (s *Backend) requestExternalBackend(ctx context.Context, req *model.Request
 	query := req.ToQuery()
 
 	// Efficiently concatenate base URL and query.
-	queryBuf := make([]byte, 0, len(url)+len(query))
-	for _, rn := range url {
-		queryBuf = append(queryBuf, byte(rn))
-	}
+	queryBuf := make([]byte, 0, len(url)+len(req.Path())+len(query))
+	queryBuf = append(queryBuf, url...)
+	queryBuf = append(queryBuf, req.Path()...)
 	queryBuf = append(queryBuf, query...)
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, string(queryBuf), nil)

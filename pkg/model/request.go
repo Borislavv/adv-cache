@@ -6,6 +6,7 @@ import (
 	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
 	"github.com/valyala/fasthttp"
 	"github.com/zeebo/xxh3"
+	"sort"
 	"sync"
 	"unsafe"
 )
@@ -26,7 +27,7 @@ func NewRequestFromFasthttp(cfg *config.Cache, r *fasthttp.RequestCtx) *Request 
 		cfg:  cfg,
 		path: r.Path(),
 	}
-	req.setUp(r.QueryArgs(), &r.Request.Header)
+	req.setUp(r.Path(), r.QueryArgs(), &r.Request.Header)
 	return req
 }
 
@@ -69,60 +70,94 @@ func (r *Request) Weight() int64 {
 	return int64(unsafe.Sizeof(*r)) + int64(len(r.query))
 }
 
-func (r *Request) setUp(args *fasthttp.Args, header *fasthttp.RequestHeader) {
+func (r *Request) setUp(path []byte, args *fasthttp.Args, header *fasthttp.RequestHeader) {
 	var argsBuf []byte
 	if args.Len() > 0 {
-		argsLength := 1
+		var sortedArgs []struct {
+			Key   []byte
+			Value []byte
+		}
 		args.VisitAll(func(key, value []byte) {
-			argsLength += len(key) + len(value) + 2
+			k := make([]byte, len(key))
+			v := make([]byte, len(value))
+			copy(k, key)
+			copy(v, value)
+			sortedArgs = append(sortedArgs, struct {
+				Key   []byte
+				Value []byte
+			}{k, v})
 		})
 
-		argsBuf = make([]byte, 0, argsLength)
-		argsBuf = append(argsBuf, []byte("?")...)
-		args.VisitAll(func(key, value []byte) {
-			copiedValue := make([]byte, len(value))
-			// allocate a new slice because the origin slice valid only during request is alive,
-			// further this "value" slice will be reused for new data be fasthttp (owner).
-			// Don't remove allocation or will have UNDEFINED BEHAVIOR!
-			copy(copiedValue, value)
-			argsBuf = append(argsBuf, key...)
-			argsBuf = append(argsBuf, []byte("=")...)
-			argsBuf = append(argsBuf, value...)
-			argsBuf = append(argsBuf, []byte("&")...)
+		sort.Slice(sortedArgs, func(i, j int) bool {
+			return bytes.Compare(sortedArgs[i].Key, sortedArgs[j].Key) < 0
 		})
+
+		argsLength := 1 // символ '?'
+		for _, p := range sortedArgs {
+			argsLength += len(p.Key) + len(p.Value) + 2 // key=value&
+		}
+
+		argsBuf = make([]byte, 0, argsLength)
+		argsBuf = append(argsBuf, '?')
+		for _, p := range sortedArgs {
+			argsBuf = append(argsBuf, p.Key...)
+			argsBuf = append(argsBuf, '=')
+			argsBuf = append(argsBuf, p.Value...)
+			argsBuf = append(argsBuf, '&')
+		}
 		if len(argsBuf) > 1 {
-			argsBuf = argsBuf[:len(argsBuf)-1] // remove the last & char
+			argsBuf = argsBuf[:len(argsBuf)-1] // убрать последний '&'
 		} else {
-			argsBuf = argsBuf[:0] // no parameters
+			argsBuf = argsBuf[:0]
 		}
 	}
 
 	var headersBuf []byte
 	if header.Len() > 0 {
-		headersLength := 0
+		var sortedHeaders []struct {
+			Key   []byte
+			Value []byte
+		}
 		header.VisitAll(func(key, value []byte) {
-			headersLength += len(key) + len(value) + 2
+			k := make([]byte, len(key))
+			v := make([]byte, len(value))
+			copy(k, key)
+			copy(v, value)
+			sortedHeaders = append(sortedHeaders, struct {
+				Key   []byte
+				Value []byte
+			}{k, v})
 		})
 
-		headersBuf = make([]byte, 0, headersLength)
-		header.VisitAll(func(key, value []byte) {
-			headersBuf = append(headersBuf, key...)
-			headersBuf = append(headersBuf, []byte(":")...)
-			headersBuf = append(headersBuf, value...)
-			headersBuf = append(headersBuf, []byte("\n")...)
+		sort.Slice(sortedHeaders, func(i, j int) bool {
+			return bytes.Compare(sortedHeaders[i].Key, sortedHeaders[j].Key) < 0
 		})
+
+		headersLength := 0
+		for _, h := range sortedHeaders {
+			headersLength += len(h.Key) + len(h.Value) + 2 // key:value\n
+		}
+
+		headersBuf = make([]byte, 0, headersLength)
+		for _, h := range sortedHeaders {
+			headersBuf = append(headersBuf, h.Key...)
+			headersBuf = append(headersBuf, ':')
+			headersBuf = append(headersBuf, h.Value...)
+			headersBuf = append(headersBuf, '\n')
+		}
 		if len(headersBuf) > 0 {
-			headersBuf = headersBuf[:len(headersBuf)-1] // remove the last \n char
+			headersBuf = headersBuf[:len(headersBuf)-1] // убрать последний '\n'
 		} else {
-			headersBuf = headersBuf[:0] // no headers
+			headersBuf = headersBuf[:0]
 		}
 	}
 
-	bufLen := len(argsBuf) + len(headersBuf) + 1
+	bufLen := len(argsBuf) + len(headersBuf) + len(path) + 1
 	buf := make([]byte, 0, bufLen)
 	if bufLen > 1 {
+		buf = append(buf, path...)
 		buf = append(buf, argsBuf...)
-		buf = append(buf, []byte("\n")...)
+		buf = append(buf, '\n')
 		buf = append(buf, headersBuf...)
 	}
 
@@ -220,20 +255,37 @@ func getKeyAllowed(cfg *config.Cache, path []byte) (queries [][]byte, headers []
 	return queries, headers
 }
 
-func filterKeyQueriesInPlace(ctx *fasthttp.RequestCtx, allowed [][]byte) {
-	args := ctx.QueryArgs()
-	result := fasthttp.AcquireArgs()
+var bufferPool = &sync.Pool{
+	New: func() interface{} {
+		return new(bytes.Buffer)
+	},
+}
 
-	args.VisitAll(func(k, v []byte) {
+func filterKeyQueriesInPlace(ctx *fasthttp.RequestCtx, allowed [][]byte) {
+	original := ctx.QueryArgs()
+	buf := bufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+
+	original.VisitAll(func(k, v []byte) {
 		for _, ak := range allowed {
 			if bytes.HasPrefix(k, ak) {
-				result.AddBytesKV(k, v)
+				buf.Write(k)
+				buf.WriteByte('=')
+				buf.Write(v)
+				buf.WriteByte('&')
 				break
 			}
 		}
 	})
 
-	ctx.URI().SetQueryString(result.String())
+	if buf.Len() > 0 {
+		buf.Truncate(buf.Len() - 1) // удалить последний &
+		ctx.URI().SetQueryStringBytes(buf.Bytes())
+	} else {
+		ctx.URI().SetQueryStringBytes(nil) // удалить query
+	}
+
+	bufferPool.Put(buf)
 }
 
 func filterKeyHeadersInPlace(ctx *fasthttp.RequestCtx, allowed [][]byte) {

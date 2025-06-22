@@ -1,122 +1,133 @@
 package metrics
 
 import (
-	"errors"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/prometheus/metrics/keyword"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/prometheus/metrics/validator"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/rs/zerolog/log"
-)
+	"bytes"
+	"strconv"
+	"sync"
+	"time"
+	"unsafe"
 
-var MetricRegisterErrorMessage = "failed to register metric counter"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/prometheus/metrics/keyword"
+	"github.com/VictoriaMetrics/metrics"
+)
 
 type Meter interface {
 	IncTotal(path string, method string, status string)
 	IncStatus(path string, method string, status string)
-	NewResponseTimeTimer(path string, method string) *prometheus.Timer
-	FlushResponseTimeTimer(t *prometheus.Timer)
+	NewResponseTimeTimer(path string, method string) *Timer
+	FlushResponseTimeTimer(t *Timer)
 }
 
-type Metrics struct {
-	totalRequestsCounter    *prometheus.CounterVec
-	totalResponsesCounter   *prometheus.CounterVec
-	responseStatusesCounter *prometheus.CounterVec
-	responseTimeMsCounter   *prometheus.HistogramVec
-}
+type Metrics struct{}
 
 func New() (*Metrics, error) {
-	m := &Metrics{
-		totalRequestsCounter: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: keyword.TotalHttpRequestsMetricName,
-				Help: "Number of all requests.",
-			},
-			[]string{"path", "method"},
-		),
-		totalResponsesCounter: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: keyword.TotalHttpResponsesMetricName,
-				Help: "Number of all responses.",
-			},
-			[]string{"path", "method", "status"},
-		),
-		responseStatusesCounter: prometheus.NewCounterVec(
-			prometheus.CounterOpts{
-				Name: keyword.HttpResponseStatusesMetricName,
-				Help: "Status of HTTP response",
-			},
-			[]string{"path", "method", "status"},
-		),
-		responseTimeMsCounter: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Name: keyword.HttpResponseTimeMsMetricName,
-			Help: "Duration of HTTP requests.",
-		}, []string{"path", "method"}),
-	}
-
-	if err := prometheus.Register(m.totalRequestsCounter); err != nil {
-		log.Err(err).Msg(MetricRegisterErrorMessage)
-		return nil, errors.New(MetricRegisterErrorMessage)
-	}
-	if err := prometheus.Register(m.totalResponsesCounter); err != nil {
-		log.Err(err).Msg(MetricRegisterErrorMessage)
-		return nil, errors.New(MetricRegisterErrorMessage)
-	}
-	if err := prometheus.Register(m.responseStatusesCounter); err != nil {
-		log.Err(err).Msg(MetricRegisterErrorMessage)
-		return nil, errors.New(MetricRegisterErrorMessage)
-	}
-	if err := prometheus.Register(m.responseTimeMsCounter); err != nil {
-		log.Err(err).Msg(MetricRegisterErrorMessage)
-		return nil, errors.New(MetricRegisterErrorMessage)
-	}
-
-	return m, nil
+	return &Metrics{}, nil
 }
 
-// IncTotal method is increments request/response total counters and depends on
-// *status* argument (numeric or empty string available).
-// If the *status* argument is empty string then will be used request_counter,
-// in other way will be used response_counter.
-func (m *Metrics) IncTotal(path string, method string, status string) {
+var statuses [600]string
+
+func init() {
+	for i := 100; i <= 599; i++ {
+		statuses[i] = strconv.Itoa(i)
+	}
+}
+
+func (m *Metrics) IncTotal(path, method, status string) {
 	if status != "" {
-		if err := validator.ValidateStrStatusCode(status); err != nil {
-			panic(err)
-		}
-		m.totalResponsesCounter.With(
-			prometheus.Labels{
-				"path":   path,
-				"method": method,
-				"status": status,
-			},
-		).Inc()
+		buf := getBuf()
+		defer clearAndPutBuf(buf)
+
+		*buf = append(*buf, keyword.TotalHttpResponsesMetricName...)
+		*buf = append(*buf, `{path="`...)
+		*buf = append(*buf, path...)
+		*buf = append(*buf, `",method="`...)
+		*buf = append(*buf, method...)
+		*buf = append(*buf, `",status="`...)
+		*buf = append(*buf, status...)
+		*buf = append(*buf, `"}`...)
+
+		metrics.GetOrCreateCounter(unsafe.String(&(*buf)[0], len(*buf))).Inc()
 		return
 	}
-	m.totalRequestsCounter.With(
-		prometheus.Labels{
-			"path":   path,
-			"method": method,
-		},
-	).Inc()
+
+	buf := getBuf()
+	defer clearAndPutBuf(buf)
+
+	*buf = append(*buf, keyword.TotalHttpRequestsMetricName...)
+	*buf = append(*buf, `{path="`...)
+	*buf = append(*buf, path...)
+	*buf = append(*buf, `",method="`...)
+	*buf = append(*buf, method...)
+	*buf = append(*buf, `"}`...)
+
+	metrics.GetOrCreateCounter(unsafe.String(&(*buf)[0], len(*buf))).Inc()
 }
 
-func (m *Metrics) IncStatus(path string, method string, status string) {
-	if err := validator.ValidateStrStatusCode(status); err != nil {
-		panic(err)
-	}
+func (m *Metrics) IncStatus(path, method, status string) {
+	buf := getBuf()
+	defer clearAndPutBuf(buf)
 
-	m.responseStatusesCounter.With(
-		prometheus.Labels{
-			"path":   path,
-			"method": method,
-			"status": status,
-		},
-	).Inc()
+	*buf = append(*buf, keyword.HttpResponseStatusesMetricName...)
+	*buf = append(*buf, `{path="`...)
+	*buf = append(*buf, path...)
+	*buf = append(*buf, `",method="`...)
+	*buf = append(*buf, method...)
+	*buf = append(*buf, `",status="`...)
+	*buf = append(*buf, status...)
+	*buf = append(*buf, `"}`...)
+
+	metrics.GetOrCreateCounter(unsafe.String(&(*buf)[0], len(*buf))).Inc()
 }
 
-func (m *Metrics) NewResponseTimeTimer(path string, method string) *prometheus.Timer {
-	return prometheus.NewTimer(m.responseTimeMsCounter.WithLabelValues(path, method))
+// Timer — пул-ориентированный трекер времени
+type Timer struct {
+	start time.Time
+	buf   *bytes.Buffer
 }
 
-func (m *Metrics) FlushResponseTimeTimer(t *prometheus.Timer) {
-	t.ObserveDuration()
+var timerPool = sync.Pool{
+	New: func() any {
+		return &Timer{
+			buf: bytes.NewBuffer(make([]byte, 0, 128)),
+		}
+	},
+}
+
+func (m *Metrics) NewResponseTimeTimer(path, method string) *Timer {
+	t := timerPool.Get().(*Timer)
+	t.start = time.Now()
+	t.buf.Reset()
+
+	t.buf.WriteString(keyword.HttpResponseTimeMsMetricName)
+	t.buf.WriteString(`{path="`)
+	t.buf.WriteString(path)
+	t.buf.WriteString(`",method="`)
+	t.buf.WriteString(method)
+	t.buf.WriteString(`"}`)
+
+	return t
+}
+
+func (m *Metrics) FlushResponseTimeTimer(t *Timer) {
+	durationMs := float64(time.Since(t.start).Milliseconds())
+	metrics.GetOrCreateHistogram(unsafe.String(&t.buf.Bytes()[0], t.buf.Len())).Update(durationMs)
+	timerPool.Put(t)
+}
+
+// ===== []byte pooling =====
+
+var bufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, 256)
+		return &b
+	},
+}
+
+func getBuf() *[]byte {
+	return bufPool.Get().(*[]byte)
+}
+
+func clearAndPutBuf(b *[]byte) {
+	*b = (*b)[:0]
+	bufPool.Put(b)
 }

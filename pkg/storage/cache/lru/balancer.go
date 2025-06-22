@@ -2,12 +2,10 @@ package lru
 
 import (
 	"context"
-	"math/rand/v2"
-	"unsafe"
-
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/list"
 	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
+	"math/rand/v2"
 )
 
 // ShardNode represents a single shard's Storage and accounting info.
@@ -20,7 +18,7 @@ type ShardNode struct {
 
 // Weight returns an approximate Weight usage of this ShardNode structure.
 func (s *ShardNode) Weight() int64 {
-	return int64(unsafe.Sizeof(*s))
+	return s.shard.Weight()
 }
 
 type Balancer interface {
@@ -32,6 +30,7 @@ type Balancer interface {
 	Update(existing *model.Response)
 	Move(shardKey uint64, el *list.Element[*model.Response])
 	MostLoadedSampled(offset int) (*ShardNode, bool)
+	FindVictim(shardKey uint64) (*model.Response, bool)
 }
 
 // Balance maintains per-shard Storage lists and provides efficient selection of loaded shards for eviction.
@@ -102,4 +101,22 @@ func (b *Balance) MostLoadedSampled(offset int) (*ShardNode, bool) {
 		return nil, false
 	}
 	return el.Value(), ok
+}
+
+func (b *Balance) FindVictim(shardKey uint64) (*model.Response, bool) {
+	shardKeyInt64 := int64(shardKey)
+	if el := b.shards[shardKeyInt64].lruList.Back(); el != nil {
+		return el.Value(), true
+	}
+	if int64(len(b.shards)) > shardKeyInt64+1 {
+		if el := b.shards[shardKeyInt64+1].lruList.Back(); el != nil {
+			return el.Value(), true
+		}
+	}
+	if shardKeyInt64-1 > 0 {
+		if el := b.shards[shardKeyInt64-1].lruList.Back(); el != nil {
+			return el.Value(), true
+		}
+	}
+	return nil, false
 }

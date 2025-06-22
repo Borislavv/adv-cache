@@ -1,11 +1,9 @@
 package list
 
 import (
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/types"
 	"sync"
 	"sync/atomic"
-	"unsafe"
-
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/types"
 )
 
 // Element is a node in the doubly linked list that holds a value of type T.
@@ -34,7 +32,7 @@ func (e *Element[T]) Value() T {
 }
 
 func (e *Element[T]) Weight() int64 {
-	return int64(unsafe.Sizeof(*e))
+	return e.value.Weight()
 }
 
 // List is a generic doubly linked list with optional thread safety.
@@ -117,6 +115,17 @@ func (l *List[T]) PushBack(v T) *Element[T] {
 	defer l.mu.Unlock()
 
 	return l.insertValue(v, l.root.prev)
+}
+
+// Back returns the last element in the list or nil if the list is empty.
+func (l *List[T]) Back() *Element[T] {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	if l.len == 0 {
+		return nil
+	}
+	return l.root.prev
 }
 
 // MoveToFront moves e to the front of the list without removing it from memory or touching the pool.

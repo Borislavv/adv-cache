@@ -12,6 +12,7 @@ type Shard[V Value] struct {
 	items         map[uint64]V // Actual storage: key -> Value
 	id            uint64       // Shard ID (index)
 	mem           int64        // Weight usage in bytes (atomic)
+	len           int64        // Length as int64 for use it as atomic
 }
 
 // NewShard creates a new shard with its own lock, value map, and releaser pool.
@@ -33,15 +34,27 @@ func (shard *Shard[V]) Weight() int64 {
 	return atomic.LoadInt64(&shard.mem)
 }
 
+func (shard *Shard[V]) Len() int64 {
+	return atomic.LoadInt64(&shard.len)
+}
+
 // Set inserts or updates a value by key, resets refCount, and updates counters.
 // Returns a releaser for the inserted value.
 func (shard *Shard[V]) Set(key uint64, value V) (takenMem int64) {
 	shard.Lock()
+	var memDiff int64
+	found, ok := shard.items[key]
+	if ok {
+		memDiff = value.Weight() - found.Weight()
+	} else {
+		memDiff = value.Weight()
+	}
 	shard.items[key] = value
 	shard.Unlock()
 
 	takenMem = value.Weight()
-	atomic.AddInt64(&shard.mem, takenMem)
+	atomic.AddInt64(&shard.len, 1)
+	atomic.AddInt64(&shard.mem, memDiff)
 
 	// Return a releaser for this value (for the user to release later).
 	return takenMem
@@ -66,6 +79,7 @@ func (shard *Shard[V]) Remove(key uint64) (freed int64, isHit bool) {
 		shard.Unlock()
 
 		weight := v.Weight()
+		atomic.AddInt64(&shard.len, -1)
 		atomic.AddInt64(&shard.mem, -weight)
 
 		return weight, true

@@ -1,0 +1,42 @@
+cache:
+  enabled: true
+
+  preallocate:
+    num_shards: 2048 # Fixed constant (see `NumOfShards` in source code). Defines the number of independent shards.
+    per_shard: 8196  # Initial capacity of each shard map. Without further allocations, this supports ~16,785,408 keys total.
+    # Note: this is an approximate upper bound and depends heavily on the quality of the hashing function.
+
+  eviction:
+    policy: "lru"
+    threshold: 0.9 # Eviction is triggered when total memory usage reaches 90% of the configured storage size.
+
+  storage:
+    type: "malloc"
+    size: 21474836480 # 20 GB allocated for in-memory cache storage (in bytes).
+
+  refresh:
+    ttl: "24h"
+    rate: 1000,
+    error_ttl: "30m"
+    beta: 0.4 # Used to randomize refresh timing to reduce simultaneous backend requests.
+    backend_url: "https://google.com"
+
+  persistence:
+    is_enabled: true
+    dump_dir: "public/dump"
+    dump_name: "cache.dump.gz"
+
+  rules:
+    - path: "/api/v1/user"
+      cache_key:
+        query: ['param1', 'param2', 'param3', 'param4']         # Query parameters used to build the cache key.
+        headers: ['Accept-Encoding', 'X-Custom-ID']             # Request headers used to build the cache key.
+      cache_value:
+        headers: ['Cache-Control', 'X-Custom-ID']               # Response headers saved along with the cached body.
+
+    - path: "/api/v1/data"
+      cache_key:
+        query: ['param1', 'param2', 'param3', 'param4', 'param5'] # Query parameters used to build the cache key.
+        headers: ['Accept-Encoding', 'X-Custom-ID']               # Request headers used to build the cache key.
+      cache_value:
+        headers: ['Cache-Control', 'X-Custom-ID']                 # Response headers saved along with the cached body.

@@ -2,44 +2,69 @@ package storage
 
 import (
 	"context"
+	"runtime"
 	"testing"
 	"time"
-
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/repository"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/cache/lru"
 
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/mock"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/cache"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/repository"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/cache/lfu"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/cache/lru"
 	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
+	"github.com/rs/zerolog"
 )
 
-// BenchmarkReadFromStorage1000TimesPerIter benchmarks parallel cache reads with profile collection.
-// Each iteration does 1000 Get() calls with different requests.
+var cfg *config.Cache
+
+func init() {
+	cfg = &config.Cache{
+		Cache: config.CacheBox{
+			Enabled: true,
+			Preallocate: config.Preallocation{
+				PerShard: 8,
+			},
+			Eviction: config.Eviction{
+				Policy:    "lru",
+				Threshold: 0.9,
+			},
+			Refresh: config.Refresh{
+				TTL:        time.Hour,
+				ErrorTTL:   time.Minute * 10,
+				Beta:       0.4,
+				MinStale:   time.Minute * 40,
+				BackendURL: "https://seo-master.lux.kube.xbet.lan",
+			},
+			Storage: config.Storage{
+				Type: "malloc",
+				Size: 1024 * 1024 * 5, // 5 MB
+			},
+		},
+	}
+
+	zerolog.SetGlobalLevel(zerolog.ErrorLevel)
+}
+
+func reportMemAndAdvancedCache(b *testing.B, usageMem int64) {
+	var mem runtime.MemStats
+	runtime.ReadMemStats(&mem)
+	b.ReportMetric(float64(mem.Alloc)/1024/1024, "allocsMB")
+	b.ReportMetric(float64(usageMem)/1024/1024, "advancedCacheMB")
+}
+
 func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cfg := &config.CacheBox{
-		AppEnv:                    "dev",
-		AppDebug:                  false,
-		BackendUrl:                "https://seo-master.lux.kube.xbet.lan/api/v2/pagedata",
-		RevalidateBeta:            0.3,
-		RevalidateInterval:        time.Hour,
-		InitStorageLengthPerShard: 768,
-		EvictionAlgo:              string(cache.LRU),
-		MemoryFillThreshold:       0.95,
-		MemoryLimit:               1024 * 1024 * 1024, // 3GB
-	}
-
-	shardedMap := sharded.NewMap[*model.Response](cfg.InitStorageLengthPerShard)
+	shardedMap := sharded.NewMap[*model.Response](ctx, cfg.Cache.Preallocate.PerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
 	refresher := lru.NewRefresher(ctx, cfg, balancer)
 	backend := repository.NewBackend(cfg)
-	db := New(ctx, cfg, balancer, refresher, backend, shardedMap)
+	tinyLFU := lfu.NewTinyLFU(ctx)
+	db := New(ctx, cfg, balancer, refresher, backend, tinyLFU, shardedMap)
 
-	responses := mock.GenerateRandomResponses(cfg, b.N+1)
+	responses := mock.GenerateRandomResponses(cfg, path, b.N+1)
 	for _, resp := range responses {
 		db.Set(resp)
 	}
@@ -56,33 +81,22 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 		}
 	})
 	b.StopTimer()
+
+	reportMemAndAdvancedCache(b, shardedMap.Mem())
 }
 
-// BenchmarkWriteIntoStorage1000TimesPerIter benchmarks parallel cache writes with profile collection.
-// Each iteration does 1000 Set() calls.
 func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cfg := &config.CacheBox{
-		AppEnv:                    "dev",
-		AppDebug:                  false,
-		BackendUrl:                "https://seo-master.lux.kube.xbet.lan/api/v2/pagedata",
-		RevalidateBeta:            0.3,
-		RevalidateInterval:        time.Hour,
-		InitStorageLengthPerShard: 768,
-		EvictionAlgo:              string(cache.LRU),
-		MemoryFillThreshold:       0.95,
-		MemoryLimit:               1024 * 1024 * 1024, // 3GB
-	}
-
-	shardedMap := sharded.NewMap[*model.Response](cfg.InitStorageLengthPerShard)
+	shardedMap := sharded.NewMap[*model.Response](ctx, cfg.Cache.Preallocate.PerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
 	refresher := lru.NewRefresher(ctx, cfg, balancer)
 	backend := repository.NewBackend(cfg)
-	db := New(ctx, cfg, balancer, refresher, backend, shardedMap)
+	tinyLFU := lfu.NewTinyLFU(ctx)
+	db := New(ctx, cfg, balancer, refresher, backend, tinyLFU, shardedMap)
 
-	responses := mock.GenerateRandomResponses(cfg, b.N+1)
+	responses := mock.GenerateRandomResponses(cfg, path, b.N+1)
 	length := len(responses)
 
 	b.ResetTimer()
@@ -96,30 +110,22 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 		}
 	})
 	b.StopTimer()
+
+	reportMemAndAdvancedCache(b, shardedMap.Mem())
 }
 
-// BenchmarkGetAllocs benchmarks allocation count per Get() call.
 func BenchmarkGetAllocs(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cfg := &config.CacheBox{
-		BackendUrl:                "https://seo-master.lux.kube.xbet.lan/api/v2/pagedata",
-		RevalidateBeta:            0.3,
-		RevalidateInterval:        time.Hour,
-		InitStorageLengthPerShard: 256,
-		EvictionAlgo:              string(cache.LRU),
-		MemoryFillThreshold:       0.95,
-		MemoryLimit:               1024 * 1024 * 256, // 1MB
-	}
-
-	shardedMap := sharded.NewMap[*model.Response](cfg.InitStorageLengthPerShard)
+	shardedMap := sharded.NewMap[*model.Response](ctx, cfg.Cache.Preallocate.PerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
 	refresher := lru.NewRefresher(ctx, cfg, balancer)
 	backend := repository.NewBackend(cfg)
-	db := New(ctx, cfg, balancer, refresher, backend, shardedMap)
+	tinyLFU := lfu.NewTinyLFU(ctx)
+	db := New(ctx, cfg, balancer, refresher, backend, tinyLFU, shardedMap)
 
-	resp := mock.GenerateRandomResponses(cfg, 1)[0]
+	resp := mock.GenerateRandomResponses(cfg, path, 1)[0]
 	db.Set(resp)
 	req := resp.Request()
 
@@ -127,33 +133,27 @@ func BenchmarkGetAllocs(b *testing.B) {
 		db.Get(req)
 	})
 	b.ReportMetric(allocs, "allocs/op")
+
+	reportMemAndAdvancedCache(b, shardedMap.Mem())
 }
 
-// BenchmarkSetAllocs benchmarks allocation count per Set() call.
 func BenchmarkSetAllocs(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cfg := &config.CacheBox{
-		BackendUrl:                "https://seo-master.lux.kube.xbet.lan/api/v2/pagedata",
-		RevalidateBeta:            0.3,
-		RevalidateInterval:        time.Hour,
-		InitStorageLengthPerShard: 256,
-		EvictionAlgo:              string(cache.LRU),
-		MemoryFillThreshold:       0.95,
-		MemoryLimit:               1024 * 1024 * 256, // 1MB
-	}
-
-	shardedMap := sharded.NewMap[*model.Response](cfg.InitStorageLengthPerShard)
+	shardedMap := sharded.NewMap[*model.Response](ctx, cfg.Cache.Preallocate.PerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
 	refresher := lru.NewRefresher(ctx, cfg, balancer)
 	backend := repository.NewBackend(cfg)
-	db := New(ctx, cfg, balancer, refresher, backend, shardedMap)
+	tinyLFU := lfu.NewTinyLFU(ctx)
+	db := New(ctx, cfg, balancer, refresher, backend, tinyLFU, shardedMap)
 
-	resp := mock.GenerateRandomResponses(cfg, 1)[0]
+	resp := mock.GenerateRandomResponses(cfg, path, 1)[0]
 
 	allocs := testing.AllocsPerRun(100_000, func() {
 		db.Set(resp)
 	})
 	b.ReportMetric(allocs, "allocs/op")
+
+	reportMemAndAdvancedCache(b, shardedMap.Mem())
 }

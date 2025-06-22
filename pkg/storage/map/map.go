@@ -2,10 +2,12 @@ package sharded
 
 import (
 	"context"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/types"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/utils"
+	"github.com/rs/zerolog/log"
 	"sync"
 	"sync/atomic"
-
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/types"
+	"time"
 )
 
 const NumOfShards uint64 = 2048 // Total number of shards (power of 2 for fast hashing)
@@ -18,17 +20,19 @@ type Value interface {
 
 // Map is a sharded concurrent map for high-performance caches.
 type Map[V Value] struct {
+	ctx    context.Context
 	len    int64
 	mem    int64
 	shards [NumOfShards]*Shard[V]
 }
 
 // NewMap creates a new sharded map with preallocated shards and a default per-shard map capacity.
-func NewMap[V Value](defaultLen int) *Map[V] {
-	m := &Map[V]{}
+func NewMap[V Value](ctx context.Context, defaultLen int) *Map[V] {
+	m := &Map[V]{ctx: ctx}
 	for id := uint64(0); id < NumOfShards; id++ {
 		m.shards[id] = NewShard[V](id, defaultLen)
 	}
+	m.runMemRefresher()
 	return m
 }
 
@@ -39,9 +43,7 @@ func MapShardKey(key uint64) uint64 {
 
 // Set inserts or updates a value in the correct shard. Returns a releaser for ref counting.
 func (smap *Map[V]) Set(value V) {
-	takenMem := smap.shards[value.ShardKey()].Set(value.MapKey(), value)
-	atomic.AddInt64(&smap.len, 1)
-	atomic.AddInt64(&smap.mem, takenMem)
+	smap.shards[value.ShardKey()].Set(value.MapKey(), value)
 }
 
 // Get fetches a value and its releaser from the correct shard.
@@ -50,18 +52,9 @@ func (smap *Map[V]) Get(key uint64, shardKey uint64) (value V, found bool) {
 	return smap.shards[shardKey].Get(key)
 }
 
-func (smap *Map[V]) Update(old, new V) {
-	atomic.AddInt64(&smap.mem, new.Weight()-old.Weight())
-}
-
 // Remove deletes a value by key, returning how much memory was freed and a pointer to its LRU/list element.
 func (smap *Map[V]) Remove(key uint64) (freed int64, isHit bool) {
-	freed, isHit = smap.Shard(key).Remove(key)
-	if isHit {
-		atomic.AddInt64(&smap.len, -1)
-		atomic.AddInt64(&smap.mem, -freed)
-	}
-	return freed, isHit
+	return smap.Shard(key).Remove(key)
 }
 
 // Walk applies fn to all key/value pairs in the shard, optionally locking for writing.
@@ -112,4 +105,36 @@ func (smap *Map[V]) Len() int64 {
 
 func (smap *Map[V]) Mem() int64 {
 	return atomic.LoadInt64(&smap.mem)
+}
+
+func (smap *Map[V]) RealMem() int64 {
+	mem := int64(0)
+	for _, shard := range smap.shards {
+		mem += shard.Weight()
+	}
+	atomic.StoreInt64(&smap.mem, mem)
+	return mem
+}
+
+func (smap *Map[V]) runMemRefresher() {
+	go func() {
+		log.Info().Msg("[storage] memory refresher has been launched (refresh each 100ms)")
+		t := utils.NewTicker(smap.ctx, time.Millisecond*100)
+		for {
+			select {
+			case <-smap.ctx.Done():
+				log.Info().Msg("[storage] memory refresher has been closed")
+				return
+			case <-t:
+				mem := int64(0)
+				length := int64(0)
+				for _, shard := range smap.shards {
+					mem += shard.Weight()
+					length += shard.Len()
+				}
+				atomic.StoreInt64(&smap.mem, mem)
+				atomic.StoreInt64(&smap.len, length)
+			}
+		}
+	}()
 }
