@@ -1,4 +1,4 @@
-**High-Performance Golang HTTP Cache Plugin for Traefik & Kubernetes**
+**High-Performance Golang HTTP Cache **
 
 > **Read: \~15 ns/op | Write: \~45 ns/op | RPS: 150k**
 > **Cache-as-a-Service**: Sharded in-memory HTTP cache middleware with TinyLFU-enhanced LRU eviction, background refresh, Prometheus metrics, and disk persistence.
@@ -122,26 +122,27 @@ cache:
 ## 🛠️ Quick Start
 
 ```bash
-git clone https://github.com/Borislavv/traefik-http-cache-plugin.git
-cd traefik-http-cache-plugin
-go build -o traefik-cache
+git clone https://github.com/Borislavv/advanced-cache.git
+cd advanced-cache
+go build -o advcache
 
 # Run with envs:
-APP_ENV="prod" \
-BACKEND_URL="https://calcification-sunshine.com" \
-REVALIDATE_BETA=0.4 \
-REVALIDATE_INTERVAL="10m" \
-INIT_STORAGE_LEN_PER_SHARD=2048 \
-EVICTION_ALGO="LRU" \
-MEMORY_FILL_THRESHOLD=0.95 \
-MEMORY_LIMIT=1000000000 \
-FASTHTTP_SERVER_NAME="star.fast" \
-FASTHTTP_SERVER_PORT=":8010" \
-FASTHTTP_SERVER_SHUTDOWN_TIMEOUT="5s" \
-FASTHTTP_SERVER_REQUEST_TIMEOUT="10s" \
-IS_PROMETHEUS_METRICS_ENABLED="true" \
-LIVENESS_PROBE_TIMEOUT="5s" \
-./traefik-cache
+APP_ENV="prod" 
+BACKEND_URL="https://calcification-sunshine.com" 
+REVALIDATE_BETA=0.4 
+REVALIDATE_INTERVAL="10m" 
+INIT_STORAGE_LEN_PER_SHARD=2048 
+EVICTION_ALGO="LRU" 
+MEMORY_FILL_THRESHOLD=0.95 
+MEMORY_LIMIT=1000000000 
+FASTHTTP_SERVER_NAME="star.fast" 
+FASTHTTP_SERVER_PORT=":8010" 
+FASTHTTP_SERVER_SHUTDOWN_TIMEOUT="5s" 
+FASTHTTP_SERVER_REQUEST_TIMEOUT="10s" 
+IS_PROMETHEUS_METRICS_ENABLED="true" 
+LIVENESS_PROBE_TIMEOUT="5s" 
+
+./advcache
 ```
 
 ---
