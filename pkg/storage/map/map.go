@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/types"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/utils"
+	"github.com/rs/zerolog/log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -117,10 +118,13 @@ func (smap *Map[V]) RealMem() int64 {
 
 func (smap *Map[V]) runMemRefresher() {
 	go func() {
-		t := utils.NewTicker(smap.ctx, time.Millisecond*25)
+		log.Info().Msg("[storage] memory refresher has been launched (refresh each 100ms)")
+		t := utils.NewTicker(smap.ctx, time.Millisecond*100)
 		for {
 			select {
 			case <-smap.ctx.Done():
+				log.Info().Msg("[storage] memory refresher has been closed")
+				return
 			case <-t:
 				mem := int64(0)
 				length := int64(0)
