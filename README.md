@@ -1,4 +1,4 @@
-**High-Performance Golang HTTP Cache **
+**High-Performance Golang HTTP Cache**
 
 > **Read: \~15 ns/op | Write: \~45 ns/op | RPS: 150k**
 > **Cache-as-a-Service**: Sharded in-memory HTTP cache middleware with TinyLFU-enhanced LRU eviction, background refresh, Prometheus metrics, and disk persistence.
