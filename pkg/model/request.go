@@ -22,12 +22,14 @@ type Request struct {
 }
 
 func NewRequestFromFasthttp(cfg *config.Cache, r *fasthttp.RequestCtx) *Request {
-	sanitizeRequest(cfg, r)
+	path := make([]byte, len(r.Path()))
+	copy(path, r.Path())
+	sanitizeRequest(cfg, path, r)
 	req := &Request{
 		cfg:  cfg,
-		path: r.Path(),
+		path: path,
 	}
-	req.setUp(r.Path(), r.QueryArgs(), &r.Request.Header)
+	req.setUp(path, r.QueryArgs(), &r.Request.Header)
 	return req
 }
 
@@ -73,10 +75,13 @@ func (r *Request) Weight() int64 {
 func (r *Request) setUp(path []byte, args *fasthttp.Args, header *fasthttp.RequestHeader) {
 	var argsBuf []byte
 	if args.Len() > 0 {
-		var sortedArgs []struct {
+		argsLength := 1 // символ '?'
+
+		var sortedArgs = make([]struct {
 			Key   []byte
 			Value []byte
-		}
+		}, 0, args.Len())
+
 		args.VisitAll(func(key, value []byte) {
 			k := make([]byte, len(key))
 			v := make([]byte, len(value))
@@ -86,16 +91,12 @@ func (r *Request) setUp(path []byte, args *fasthttp.Args, header *fasthttp.Reque
 				Key   []byte
 				Value []byte
 			}{k, v})
+			argsLength += len(k) + len(v) + 2 // key=value&
 		})
 
 		sort.Slice(sortedArgs, func(i, j int) bool {
 			return bytes.Compare(sortedArgs[i].Key, sortedArgs[j].Key) < 0
 		})
-
-		argsLength := 1 // символ '?'
-		for _, p := range sortedArgs {
-			argsLength += len(p.Key) + len(p.Value) + 2 // key=value&
-		}
 
 		argsBuf = make([]byte, 0, argsLength)
 		argsBuf = append(argsBuf, '?')
@@ -114,10 +115,13 @@ func (r *Request) setUp(path []byte, args *fasthttp.Args, header *fasthttp.Reque
 
 	var headersBuf []byte
 	if header.Len() > 0 {
-		var sortedHeaders []struct {
+		headersLength := 0
+
+		var sortedHeaders = make([]struct {
 			Key   []byte
 			Value []byte
-		}
+		}, 0, header.Len())
+
 		header.VisitAll(func(key, value []byte) {
 			k := make([]byte, len(key))
 			v := make([]byte, len(value))
@@ -127,16 +131,12 @@ func (r *Request) setUp(path []byte, args *fasthttp.Args, header *fasthttp.Reque
 				Key   []byte
 				Value []byte
 			}{k, v})
+			headersLength += len(k) + len(v) + 2
 		})
 
 		sort.Slice(sortedHeaders, func(i, j int) bool {
 			return bytes.Compare(sortedHeaders[i].Key, sortedHeaders[j].Key) < 0
 		})
-
-		headersLength := 0
-		for _, h := range sortedHeaders {
-			headersLength += len(h.Key) + len(h.Value) + 2 // key:value\n
-		}
 
 		headersBuf = make([]byte, 0, headersLength)
 		for _, h := range sortedHeaders {
@@ -233,15 +233,15 @@ func hash(buf []byte) uint64 {
 	return hasher.Sum64()
 }
 
-func sanitizeRequest(cfg *config.Cache, ctx *fasthttp.RequestCtx) {
-	allowedQueries, allowedHeaders := getKeyAllowed(cfg, ctx.Path())
+func sanitizeRequest(cfg *config.Cache, path []byte, ctx *fasthttp.RequestCtx) {
+	allowedQueries, allowedHeaders := getKeyAllowed(cfg, path)
 	filterKeyQueriesInPlace(ctx, allowedQueries)
 	filterKeyHeadersInPlace(ctx, allowedHeaders)
 }
 
 func getKeyAllowed(cfg *config.Cache, path []byte) (queries [][]byte, headers [][]byte) {
-	queries = make([][]byte, 0, 14)
-	headers = make([][]byte, 0, 14)
+	queries = make([][]byte, 0, 8)
+	headers = make([][]byte, 0, 8)
 	for _, rule := range cfg.Cache.Rules {
 		if bytes.HasPrefix(path, rule.PathBytes) {
 			for _, param := range rule.CacheKey.QueryBytes {
@@ -255,43 +255,33 @@ func getKeyAllowed(cfg *config.Cache, path []byte) (queries [][]byte, headers []
 	return queries, headers
 }
 
-var bufferPool = &sync.Pool{
-	New: func() interface{} {
-		return new(bytes.Buffer)
-	},
-}
-
 func filterKeyQueriesInPlace(ctx *fasthttp.RequestCtx, allowed [][]byte) {
-	original := ctx.QueryArgs()
-	buf := bufferPool.Get().(*bytes.Buffer)
-	buf.Reset()
+	buf := make([]byte, 0, len(ctx.URI().QueryString()))
 
-	original.VisitAll(func(k, v []byte) {
+	ctx.QueryArgs().VisitAll(func(k, v []byte) {
 		for _, ak := range allowed {
 			if bytes.HasPrefix(k, ak) {
-				buf.Write(k)
-				buf.WriteByte('=')
-				buf.Write(v)
-				buf.WriteByte('&')
+				buf = append(buf, k...)
+				buf = append(buf, '=')
+				buf = append(buf, v...)
+				buf = append(buf, '&')
 				break
 			}
 		}
 	})
 
-	if buf.Len() > 0 {
-		buf.Truncate(buf.Len() - 1) // удалить последний &
-		ctx.URI().SetQueryStringBytes(buf.Bytes())
+	if len(buf) > 0 {
+		buf = buf[:len(buf)-1] // remove the last &
+		ctx.URI().SetQueryStringBytes(buf)
 	} else {
 		ctx.URI().SetQueryStringBytes(nil) // удалить query
 	}
-
-	bufferPool.Put(buf)
 }
 
 func filterKeyHeadersInPlace(ctx *fasthttp.RequestCtx, allowed [][]byte) {
 	headers := &ctx.Request.Header
 
-	var filtered [][2][]byte
+	var filtered = make([][2][]byte, 0, len(allowed))
 	headers.VisitAll(func(k, v []byte) {
 		for _, ak := range allowed {
 			if bytes.EqualFold(k, ak) {
