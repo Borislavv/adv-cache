@@ -16,15 +16,19 @@ cache:
 
   refresh:
     ttl: "10m"
-    rate: 1000,
+    rate: 1000
     error_ttl: "2m"
     beta: 0.4 # Controls randomness in refresh timing to avoid thundering herd.
     backend_url: "https://seo-master.lux.kube.xbet.lan"
 
   persistence:
-    is_enabled: true
-    dump_dir: "public/dump"
-    dump_name: "cache.dump.gz"
+    dump:
+      enabled: true
+      format: "gzip" # gzip or raw json
+      dump_dir: "public/dump"
+      dump_name: "cache.dump.gz"
+      rotate_policy: "ring" # fixed, ring
+      max_files: 7
 
   rules:
     - path: "/api/v2/pagedata"

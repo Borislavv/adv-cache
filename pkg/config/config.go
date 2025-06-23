@@ -21,11 +21,25 @@ type Cache struct {
 
 type CacheBox struct {
 	Enabled     bool          `yaml:"enabled"`
+	Persistence Persistence   `yaml:"persistence"`
 	Preallocate Preallocation `yaml:"preallocate"`
 	Eviction    Eviction      `yaml:"eviction"`
 	Refresh     Refresh       `yaml:"refresh"`
 	Storage     Storage       `yaml:"storage"`
-	Rules       []*CacheRule  `yaml:"rules"`
+	Rules       []*Rule       `yaml:"rules"`
+}
+
+type Dump struct {
+	IsEnabled    bool   `yaml:"enabled"`
+	Format       string `yaml:"format"` // gzip or raw
+	Dir          string `yaml:"dump_dir"`
+	Name         string `yaml:"dump_name"`
+	MaxFiles     int    `yaml:"max_files"`
+	RotatePolicy string `yaml:"rotate_policy"` // fixed or ring
+}
+
+type Persistence struct {
+	Dump Dump `yaml:"dump"`
 }
 
 type Preallocation struct {
@@ -33,7 +47,7 @@ type Preallocation struct {
 }
 
 type Eviction struct {
-	Policy    string  `yaml:"policy"`    // at now, it's only "lru" with works
+	Policy    string  `yaml:"policy"`    // at now, it's only "lru" + TinyLFU
 	Threshold float64 `yaml:"threshold"` // 0.9 means 90%
 }
 
@@ -47,6 +61,7 @@ type Refresh struct {
 	TTL time.Duration `yaml:"ttl"` // e.g. "1d" (responses with 200 status code)
 	// ErrorTTL - error refresh TTL (max time life of response item with non 200 status code in cache without refreshing).
 	ErrorTTL time.Duration `yaml:"error_ttl"` // e.g. "1h" (responses with non 200 status code)
+	Rate     int           `yaml:"rate"`
 	// beta определяет коэффициент, используемый для вычисления случайного момента обновления кэша.
 	// Чем выше beta, тем чаще кэш будет обновляться до истечения TTL.
 	// Формула взята из подхода "stochastic cache expiration" (см. Google Staleness paper):
@@ -58,21 +73,21 @@ type Refresh struct {
 	BackendURL string        `yaml:"backend_url"`
 }
 
-type CacheRule struct {
+type Rule struct {
 	Path       string `yaml:"path"`
 	PathBytes  []byte
-	CacheKey   CacheKey   `yaml:"cache_key"`
-	CacheValue CacheValue `yaml:"cache_value"`
+	CacheKey   Key   `yaml:"cache_key"`
+	CacheValue Value `yaml:"cache_value"`
 }
 
-type CacheKey struct {
+type Key struct {
 	Query        []string `yaml:"query"` // Параметры, которые будут участвовать в ключе кэширования
 	QueryBytes   [][]byte
 	Headers      []string `yaml:"headers"` // Хедеры, которые будут участвовать в ключе кэширования
 	HeadersBytes [][]byte
 }
 
-type CacheValue struct {
+type Value struct {
 	Headers      []string `yaml:"headers"` // Хедеры ответа, которые будут сохранены в кэше вместе с body
 	HeadersBytes [][]byte
 }
