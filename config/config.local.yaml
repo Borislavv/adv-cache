@@ -22,9 +22,13 @@ cache:
     backend_url: "https://seo-master.lux.kube.xbet.lan"
 
   persistence:
-    is_enabled: true
-    dump_dir: "public/dump"
-    dump_name: "cache.dump.gz"
+    dump:
+      is_enabled: true
+      format: "gzip" # Now is just info param, does not affect behavior.
+      dump_dir: "public/dump"
+      dump_name: "cache.dump.gz"
+      rotate_policy: "ring" # never, ring
+      max_files: 7
 
   rules:
     - path: "/api/v2/pagedata"

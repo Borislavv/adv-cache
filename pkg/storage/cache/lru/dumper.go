@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
 	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
@@ -18,6 +19,8 @@ import (
 )
 
 const dumpFileName = "cache.dump.gz"
+
+var dumpIsNotEnabledErr = errors.New("persistence mode is not enabled")
 
 var dumpEntryPool = sync.Pool{
 	New: func() any { return new(dumpEntry) },
@@ -34,9 +37,13 @@ type dumpEntry struct {
 	ShardKey   uint64      `json:"shardKey"`
 }
 
-func (c *Storage) DumpToDir(ctx context.Context, dir string) error {
+func (c *Storage) DumpToDir(ctx context.Context) error {
+	if !c.cfg.Cache.Persistence.Dump.IsEnabled {
+		return dumpIsNotEnabledErr
+	}
+
 	start := time.Now()
-	filename := filepath.Join(dir, dumpFileName)
+	filename := filepath.Join(c.cfg.Cache.Persistence.Dump.Dir, c.cfg.Cache.Persistence.Dump.Name)
 
 	f, err := os.Create(filename)
 	if err != nil {
@@ -50,7 +57,7 @@ func (c *Storage) DumpToDir(ctx context.Context, dir string) error {
 	bw := bufio.NewWriterSize(gz, 64*1024*1024) // 64MB
 	defer func() { _ = bw.Flush() }()
 
-	var success, errors int32
+	var successNum, errorsNum int32
 	enc := json.NewEncoder(bw)
 	mu := sync.Mutex{}
 
@@ -73,9 +80,9 @@ func (c *Storage) DumpToDir(ctx context.Context, dir string) error {
 
 			if err = enc.Encode(e); err != nil {
 				log.Err(err).Msg("[dump] entry encode error")
-				atomic.AddInt32(&errors, 1)
+				atomic.AddInt32(&errorsNum, 1)
 			} else {
-				atomic.AddInt32(&success, 1)
+				atomic.AddInt32(&successNum, 1)
 			}
 
 			// Clean and put back to pool
@@ -85,16 +92,20 @@ func (c *Storage) DumpToDir(ctx context.Context, dir string) error {
 		}, true)
 	})
 
-	log.Info().Msgf("[dump] finished writing %d entries, errors: %d (elapsed: %s)", success, errors, time.Since(start))
-	if errors > 0 {
-		return fmt.Errorf("completed with %d errors", errors)
+	log.Info().Msgf("[dump] finished writing %d entries, errorsNum: %d (elapsed: %s)", successNum, errorsNum, time.Since(start))
+	if errorsNum > 0 {
+		return fmt.Errorf("completed with %d errorsNum", errorsNum)
 	}
 	return nil
 }
 
-func (c *Storage) LoadFromDir(ctx context.Context, dir string) error {
+func (c *Storage) LoadFromDir(ctx context.Context) error {
+	if !c.cfg.Cache.Persistence.Dump.IsEnabled {
+		return dumpIsNotEnabledErr
+	}
+
 	start := time.Now()
-	filename := filepath.Join(dir, dumpFileName)
+	filename := filepath.Join(c.cfg.Cache.Persistence.Dump.Dir, c.cfg.Cache.Persistence.Dump.Name)
 
 	f, err := os.Open(filename)
 	if err != nil {

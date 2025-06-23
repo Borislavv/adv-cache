@@ -49,7 +49,7 @@ func NewRefresher(ctx context.Context, cfg *config.Cache, balancer Balancer) *Re
 		cfg:                cfg,
 		balancer:           balancer,
 		shardRateLimiter:   rate.NewLimiter(ctx, shardRateLimit, shardRateLimitBurst),
-		refreshRateLimiter: rate.NewLimiter(ctx, refreshRateLimit, refreshRateLimitBurst),
+		refreshRateLimiter: rate.NewLimiter(ctx, cfg.Cache.Refresh.Rate, cfg.Cache.Refresh.Rate/10),
 	}
 }
 
