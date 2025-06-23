@@ -22,7 +22,7 @@ request = function()
         .. "&choice[choice][choice][choice][choice][name]=betting_live_null_" .. sport .. "_" .. championship
         .. "&choice[choice][choice][choice][choice][choice][name]=betting_live_null_" .. sport .. "_" .. championship .. "_" .. match
 
-    local path = "/api/v2/pagedata?language=en&domain=melbet-djibouti.com&timezone=3&project[id]=62&stream=homepage&" .. q
+    local path = "/api/v2/user?language=en&domain=google.com&timezone=3&project[id]=62&stream=homepage&" .. q
 
     -- Увеличиваем счётчик итераций
     iter = iter + 1

@@ -19,7 +19,7 @@ cache:
     rate: 1000
     error_ttl: "2m"
     beta: 0.4 # Controls randomness in refresh timing to avoid thundering herd.
-    backend_url: "https://seo-master.lux.kube.xbet.lan"
+    backend_url: "https://google.com"
 
   persistence:
     dump:
