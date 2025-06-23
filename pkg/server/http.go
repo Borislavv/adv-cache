@@ -101,5 +101,15 @@ func (s *HTTP) mergeMiddlewares(
 }
 
 func (s *HTTP) initServer(r *router.Router, middlewares []middleware.HttpMiddleware) {
-	s.server = &fasthttp.Server{Handler: s.wrapMiddlewaresOverRouterHandler(r.Handler, middlewares)}
+	s.server = &fasthttp.Server{
+		GetOnly:                       true,
+		ReduceMemoryUsage:             true,
+		DisablePreParseMultipartForm:  true,
+		DisableHeaderNamesNormalizing: true,
+		CloseOnShutdown:               true,
+		Concurrency:                   1_000_000,
+		Handler:                       s.wrapMiddlewaresOverRouterHandler(r.Handler, middlewares),
+		ReadBufferSize:                4 * 1024, // 4K alignment
+		WriteBufferSize:               4 * 1024, // 4K alignment
+	}
 }
