@@ -6,20 +6,19 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-var watermarkHeaderKey = []byte("X-Fasthttp-Watermark")
-
 type WatermarkMiddleware struct {
-	ctx        context.Context
-	serverName []byte
+	ctx    context.Context
+	config fasthttpconfig.Configurator
 }
 
 func NewWatermarkMiddleware(ctx context.Context, config fasthttpconfig.Configurator) *WatermarkMiddleware {
-	return &WatermarkMiddleware{ctx: ctx, serverName: []byte(config.GetHttpServerName())}
+	return &WatermarkMiddleware{ctx: ctx, config: config}
 }
 
 func (m *WatermarkMiddleware) Middleware(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 	return func(ctx *fasthttp.RequestCtx) {
-		ctx.Response.Header.SetCanonical(watermarkHeaderKey, m.serverName)
+		ctx.Response.Header.Add("X-Server-Name", m.config.GetHttpServerName())
+
 		next(ctx)
 	}
 }

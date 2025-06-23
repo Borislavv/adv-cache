@@ -37,8 +37,6 @@ var (
 	}`)
 	messagePlaceholder = []byte("${message}")
 	zeroLiteral        = "0"
-
-	hdrLastModified = []byte("Last-Modified")
 )
 
 // Buffered channel for request durations (used only if debug enabled)
@@ -77,6 +75,10 @@ func NewCacheController(
 func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 	var from = time.Now()
 
+	// Extract application context from request, fallback to base context.
+	ctx, cancel := context.WithCancel(c.ctx)
+	defer cancel()
+
 	// Parse request parameters.
 	req := model.NewRequestFromFasthttp(c.cfg.Cache, r)
 
@@ -84,7 +86,7 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 	resp, found := c.cache.Get(req)
 	if !found {
 		// On cache miss, get data from upstream backend and save in cache.
-		computed, err := c.backend.Fetch(c.ctx, req)
+		computed, err := c.backend.Fetch(ctx, req)
 		if err != nil {
 			c.respondThatServiceIsTemporaryUnavailable(err, r)
 			return
@@ -101,9 +103,9 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 			r.Response.Header.Add(key, value)
 		}
 	}
+	// Add revalidation time as Last-Modified
+	r.Response.Header.Add("Last-Modified", resp.RevalidatedAt().Format(http.TimeFormat))
 
-	// Set up Last-Modified header
-	r.Response.Header.SetBytesKV(hdrLastModified, resp.RevalidatedAt().AppendFormat(nil, http.TimeFormat))
 	if _, err := serverutils.Write(data.Body(), r); err != nil {
 		c.respondThatServiceIsTemporaryUnavailable(err, r)
 		return
@@ -127,6 +129,16 @@ func (c *CacheController) respondThatServiceIsTemporaryUnavailable(err error, ct
 	}
 }
 
+// respondThatTheRequestIsBad returns 400 and logs the error.
+func (c *CacheController) respondThatTheRequestIsBad(err error, ctx *fasthttp.RequestCtx) {
+	log.Err(err).Msg("[cache-controller] bad request: " + err.Error()) // Don't move it down due to error will be rewritten.
+
+	ctx.SetStatusCode(fasthttp.StatusBadRequest)
+	if _, err = serverutils.Write(c.resolveMessagePlaceholder(badRequestResponseBytes, err), ctx); err != nil {
+		log.Err(err).Msg("failed to write into *fasthttp.RequestCtx")
+	}
+}
+
 // resolveMessagePlaceholder substitutes ${message} in template with escaped error message.
 func (c *CacheController) resolveMessagePlaceholder(msg []byte, err error) []byte {
 	escaped, _ := json.Marshal(err.Error())
@@ -136,6 +148,15 @@ func (c *CacheController) resolveMessagePlaceholder(msg []byte, err error) []byt
 // AddRoute attaches controller's route(s) to the provided router.
 func (c *CacheController) AddRoute(router *router.Router) {
 	router.GET(CacheGetPath, c.Index)
+}
+
+// stat is an internal structure for windowed request statistics (for debug logging).
+type stat struct {
+	label    string
+	divider  int // window size in seconds
+	tickerCh <-chan time.Time
+	count    int
+	total    time.Duration
 }
 
 // runLogger runs a goroutine to periodically log RPS and avg duration per window, if debug enabled.
