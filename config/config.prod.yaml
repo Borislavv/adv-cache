@@ -16,15 +16,19 @@ cache:
 
   refresh:
     ttl: "24h"
-    rate: 1000,
+    rate: 1000
     error_ttl: "30m"
     beta: 0.4 # Used to randomize refresh timing to reduce simultaneous backend requests.
     backend_url: "https://google.com"
 
   persistence:
-    is_enabled: true
-    dump_dir: "public/dump"
-    dump_name: "cache.dump.gz"
+    dump:
+      enabled: true
+      format: "gzip" # gzip or raw json
+      dump_dir: "public/dump"
+      dump_name: "cache.dump.gz"
+      rotate_policy: "ring" # fixed, ring
+      max_files: 7
 
   rules:
     - path: "/api/v1/user"

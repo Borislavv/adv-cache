@@ -31,10 +31,11 @@ type CacheBox struct {
 
 type Dump struct {
 	IsEnabled    bool   `yaml:"enabled"`
+	Format       string `yaml:"format"` // gzip or raw
 	Dir          string `yaml:"dump_dir"`
 	Name         string `yaml:"dump_name"`
 	MaxFiles     int    `yaml:"max_files"`
-	RotatePolicy string `yaml:"rotate_policy"`
+	RotatePolicy string `yaml:"rotate_policy"` // fixed or ring
 }
 
 type Persistence struct {

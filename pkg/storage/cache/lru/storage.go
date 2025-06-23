@@ -193,7 +193,7 @@ func (c *Storage) runLogger() {
 }
 
 func (c *Storage) loadDumpIfExists() {
-	if err := c.LoadFromDir(c.ctx, dumpDir); err != nil {
+	if err := c.LoadFromDir(c.ctx); err != nil {
 		log.Warn().Msg("failed to load dump: " + err.Error())
 	}
 }
@@ -203,7 +203,7 @@ func (c *Storage) Stop() {
 	dumpCtx, dumpCancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer dumpCancel()
 
-	if err := c.DumpToDir(dumpCtx, dumpDir); err != nil {
+	if err := c.DumpToDir(dumpCtx); err != nil {
 		log.Err(err).Msg("failed to dump cache")
 	}
 }

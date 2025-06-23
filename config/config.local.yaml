@@ -16,18 +16,18 @@ cache:
 
   refresh:
     ttl: "20m"
-    rate: 1000,
+    rate: 1000
     error_ttl: "5m"
     beta: 0.5 # Controls randomness in refresh timing to avoid thundering herd.
     backend_url: "https://seo-master.lux.kube.xbet.lan"
 
   persistence:
     dump:
-      is_enabled: true
-      format: "gzip" # Now is just info param, does not affect behavior.
+      enabled: true
+      format: "raw" # gzip or raw json
       dump_dir: "public/dump"
       dump_name: "cache.dump.gz"
-      rotate_policy: "ring" # never, ring
+      rotate_policy: "ring" # fixed, ring
       max_files: 7
 
   rules:
