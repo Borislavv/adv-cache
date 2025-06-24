@@ -7,10 +7,7 @@ import (
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
 	"net/http"
-	"time"
 )
-
-const requestTimeout = time.Second * 10
 
 // Backender defines the interface for a repository that provides SEO page data.
 type Backender interface {
@@ -58,7 +55,7 @@ func (s *Backend) RevalidatorMaker(req *model.Request) func(ctx context.Context)
 // Returns a Data object suitable for caching.
 func (s *Backend) requestExternalBackend(ctx context.Context, req *model.Request) (*model.Data, error) {
 	// Apply a hard timeout for the HTTP request.
-	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, s.cfg.Cache.Refresh.Timeout)
 	defer cancel()
 
 	url := s.cfg.Cache.Refresh.BackendURL
