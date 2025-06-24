@@ -16,7 +16,7 @@ cache:
 
   refresh:
     ttl: "10m"
-    rate: 1000
+    rate: 1024
     error_ttl: "2m"
     beta: 0.4 # Controls randomness in refresh timing to avoid thundering herd.
     backend_url: "https://google.com"

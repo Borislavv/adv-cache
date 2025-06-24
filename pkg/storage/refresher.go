@@ -15,9 +15,9 @@ import (
 )
 
 const (
-	shardRateLimit      = 64 // Global limiter: maximum concurrent refreshes across all shards
-	shardRateLimitBurst = 16 // Global limiter: maximum parallel requests.
-	refreshSamples      = 16 // Number of items to sample per shard per refreshItem tick
+	shardRateLimitPerSecond = 128 // Global limiter: maximum concurrent refreshes across all shards
+	shardRateLimitBurst     = 8   // Global limiter: maximum parallel requests.
+	samplesPerShard         = 256 // Number of items to sample per shard per refreshItem tick
 )
 
 var (
@@ -33,21 +33,19 @@ type Refresher interface {
 // It periodically samples random shards and randomly selects "cold" entries
 // (from the end of each shard's Storage list) to refreshItem if necessary.
 type Refresh struct {
-	ctx                context.Context
-	cfg                *config.Cache
-	balancer           lru.Balancer
-	shardRateLimiter   *rate.Limiter
-	refreshRateLimiter *rate.Limiter
+	ctx              context.Context
+	cfg              *config.Cache
+	balancer         lru.Balancer
+	shardRateLimiter *rate.Limiter
 }
 
 // NewRefresher constructs a Refresh.
 func NewRefresher(ctx context.Context, cfg *config.Cache, balancer lru.Balancer) *Refresh {
 	return &Refresh{
-		ctx:                ctx,
-		cfg:                cfg,
-		balancer:           balancer,
-		shardRateLimiter:   rate.NewLimiter(ctx, shardRateLimit, shardRateLimitBurst),
-		refreshRateLimiter: rate.NewLimiter(ctx, cfg.Cache.Refresh.Rate, cfg.Cache.Refresh.Rate/10),
+		ctx:              ctx,
+		cfg:              cfg,
+		balancer:         balancer,
+		shardRateLimiter: rate.NewLimiter(ctx, shardRateLimitPerSecond, shardRateLimitBurst),
 	}
 }
 
@@ -57,35 +55,39 @@ func NewRefresher(ctx context.Context, cfg *config.Cache, balancer lru.Balancer)
 func (r *Refresh) Run() {
 	go func() {
 		r.runLogger()
+		semaphore := make(chan struct{}, r.cfg.Cache.Refresh.Rate)
 		for {
 			select {
 			case <-r.ctx.Done():
 				return
-			case <-r.shardRateLimiter.Chan(): // Throttling (64 per second)
-				r.refreshNode(r.balancer.RandShardNode())
+			case <-r.shardRateLimiter.Chan(): // Throttling (1 per second)
+				if len(semaphore) < cap(semaphore) {
+					r.refreshNode(semaphore, r.balancer.RandShardNode())
+					continue
+				}
+				time.Sleep(time.Millisecond * 100)
 			}
 		}
 	}()
 }
 
-// refreshNode selects up to refreshSamples entries from the end of the given shard's Storage list.
+// refreshNode selects up to samplesPerShard entries from the end of the given shard's Storage list.
 // For each candidate, if ShouldBeRefreshed() returns true and shardRateLimiter limiting allows, triggers an asynchronous refreshItem.
-func (r *Refresh) refreshNode(node *lru.ShardNode) {
-	ctx, cancel := context.WithTimeout(r.ctx, time.Second)
-	defer cancel()
-
+func (r *Refresh) refreshNode(semaphore chan struct{}, node *lru.ShardNode) {
 	samples := 0
-	node.Shard.Walk(ctx, func(u uint64, resp *model.Response) bool {
-		if samples >= refreshSamples {
+	node.Shard.Walk(r.ctx, func(u uint64, resp *model.Response) bool {
+		if samples >= samplesPerShard {
 			return false
 		}
+		samples++
 		if resp.ShouldBeRefreshed() {
 			select {
-			case <-ctx.Done():
+			case <-r.ctx.Done():
 				return false
-			case <-r.refreshRateLimiter.Chan(): // Throttling (1024 per second)
-				go r.refreshItem(resp)
-				samples++
+			default: // Throttling (1000 per second be default)
+				if !r.refreshItem(semaphore, resp) {
+					return false
+				}
 			}
 		}
 		return true
@@ -94,12 +96,23 @@ func (r *Refresh) refreshNode(node *lru.ShardNode) {
 
 // refreshItem attempts to refreshItem the given response via Revalidate.
 // If successful, increments the refreshItem metric (in debug mode); otherwise increments the error metric.
-func (r *Refresh) refreshItem(resp *model.Response) {
-	if err := resp.Revalidate(r.ctx); err != nil {
-		refreshErroredNumCh <- struct{}{}
-		return
+func (r *Refresh) refreshItem(semaphore chan struct{}, resp *model.Response) bool {
+	select {
+	case <-r.ctx.Done():
+		return false
+	case semaphore <- struct{}{}:
+		go func() {
+			defer func() { <-semaphore }()
+			if err := resp.Revalidate(r.ctx); err != nil {
+				refreshErroredNumCh <- struct{}{}
+				return
+			}
+			refreshSuccessNumCh <- struct{}{}
+		}()
+		return true
+	default:
+		return false
 	}
-	refreshSuccessNumCh <- struct{}{}
 }
 
 // runLogger periodically logs the number of successful and failed refreshItem attempts.
