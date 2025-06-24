@@ -6,14 +6,19 @@ import (
 	"github.com/Borislavv/traefik-http-cache-plugin/internal/cache/server"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/k8s/probe/liveness"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/prometheus/metrics"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/repository"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/shutdown"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/cache/lfu"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/cache/lru"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/lfu"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/lru"
 	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/utils"
 	"github.com/rs/zerolog/log"
+	"time"
 )
+
+var MetricsInitFailedErrorMessage = "[server] init. prometheus metrics failed"
 
 // App defines the cache application lifecycle interface.
 type App interface {
@@ -22,39 +27,60 @@ type App interface {
 
 // Cache encapsulates the entire cache application state, including HTTP server, config, and probes.
 type Cache struct {
-	cfg    *config.Config     // Application configuration
-	ctx    context.Context    // Application context for cancellation and shutdown
-	cancel context.CancelFunc // Cancel function for ctx
-	probe  liveness.Prober    // Liveness probe integration
-	server server.Http        // HTTP server (implements business logic and API)
+	cfg        *config.Config
+	ctx        context.Context
+	cancel     context.CancelFunc
+	probe      liveness.Prober
+	server     server.Http
+	metrics    metrics.Meter
+	db         storage.Storage
+	dumper     lru.Dumper
+	balancer   lru.Balancer
+	evictor    storage.Evictor
+	refresher  storage.Refresher
+	backend    repository.Backender
+	shardedMap *sharded.Map[*model.Response]
 }
 
-// NewApp builds a new Cache app, wiring together storage, repo, reader, and server.
+// NewApp builds a new Cache app, wiring together db, repo, reader, and server.
 func NewApp(ctx context.Context, cfg *config.Config, probe liveness.Prober) (*Cache, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
-	// Setup sharded map for high-concurrency cache storage.
+	// Setup sharded map for high-concurrency cache db.
 	shardedMap := sharded.NewMap[*model.Response](ctx, cfg.Cache.Cache.Preallocate.PerShard)
 	backend := repository.NewBackend(cfg.Cache)
 	balancer := lru.NewBalancer(ctx, shardedMap)
-	refresher := lru.NewRefresher(ctx, cfg.Cache, balancer)
+	refresher := storage.NewRefresher(ctx, cfg.Cache, balancer)
 	tinyLFU := lfu.NewTinyLFU(ctx)
-	db := storage.New(ctx, cfg.Cache, balancer, refresher, backend, tinyLFU, shardedMap)
+	db := lru.NewStorage(ctx, cfg.Cache, balancer, backend, tinyLFU, shardedMap)
+	dumper := lru.NewDumper(cfg.Cache, shardedMap, db, backend)
+	evictor := storage.NewEvictor(ctx, cfg.Cache, db, balancer)
+	meter := metrics.New()
+
+	c := &Cache{
+		ctx:        ctx,
+		cancel:     cancel,
+		cfg:        cfg,
+		probe:      probe,
+		db:         db,
+		dumper:     dumper,
+		evictor:    evictor,
+		metrics:    meter,
+		backend:    backend,
+		balancer:   balancer,
+		refresher:  refresher,
+		shardedMap: shardedMap,
+	}
 
 	// Compose the HTTP server (API, metrics and so on)
-	srv, err := server.New(ctx, cfg, db, backend, probe)
+	srv, err := server.New(ctx, cfg, db, backend, probe, meter)
 	if err != nil {
 		cancel()
 		return nil, err
 	}
+	c.server = srv
 
-	return &Cache{
-		ctx:    ctx,
-		cancel: cancel,
-		cfg:    cfg,
-		probe:  probe,
-		server: srv,
-	}, nil
+	return c.run(), nil
 }
 
 // Start runs the cache server and liveness probe, and handles graceful shutdown.
@@ -72,7 +98,7 @@ func (c *Cache) Start(gc shutdown.Gracefuller) {
 	go func() {
 		defer close(waitCh)
 		c.probe.Watch(c) // Call first due to it does not block the green-thread
-		c.server.Start() // Blocks the green-thread
+		c.server.Start() // Blocks the green-thread until the server will be stopped
 	}()
 
 	log.Info().Msg("[app] cache has been started")
@@ -80,10 +106,49 @@ func (c *Cache) Start(gc shutdown.Gracefuller) {
 	<-waitCh // Wait until the server exits
 }
 
+func (c *Cache) metricsWriter() {
+	go func() {
+		t := utils.NewTicker(c.ctx, time.Second)
+		for {
+			select {
+			case <-c.ctx.Done():
+				return
+			case <-t:
+				memUsage, length := c.db.Stat()
+				c.metrics.SetCacheLength(length)
+				c.metrics.SetCacheMemory(memUsage)
+			}
+		}
+	}()
+}
+
+func (c *Cache) run() *Cache {
+	go c.metricsWriter()
+
+	c.db.Run()
+	c.evictor.Run()
+	c.refresher.Run()
+
+	if err := c.dumper.Load(c.ctx); err != nil {
+		log.Warn().Msg("[dump] failed to load dump: " + err.Error())
+	}
+
+	return c
+}
+
 // stop cancels the main application context and logs shutdown.
 func (c *Cache) stop() {
 	log.Info().Msg("[app] stopping cache")
-	c.cancel()
+	defer c.cancel()
+
+	// spawn a new one with limit for k8s timeout before the service will be received SIGKILL
+	ctx, cancel := context.WithTimeout(context.Background(), 9*time.Second)
+	defer cancel()
+
+	if err := c.dumper.Dump(ctx); err != nil {
+		log.Err(err).Msg("[dump] failed to dump cache")
+	}
+
 	log.Info().Msg("[app] cache has been stopped")
 }
 
