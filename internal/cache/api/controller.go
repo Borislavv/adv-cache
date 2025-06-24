@@ -148,15 +148,13 @@ func (c *CacheController) runLogger(ctx context.Context) {
 				return
 			case <-t:
 				c.logAndReset()
-			default:
 				runtime.Gosched()
-				time.Sleep(time.Millisecond)
 			}
 		}
 	}()
 }
 
-// logAndReset prints and resets stat counters for a given window (5s, 1m, etc).
+// logAndReset prints and resets stat counters for a given window (5s).
 func (c *CacheController) logAndReset() {
 	const secs int64 = 5
 
@@ -167,19 +165,24 @@ func (c *CacheController) logAndReset() {
 		rps = strconv.Itoa(int(cnt / secs))
 	)
 
-	if cnt > 0 {
-		avg = (dur / time.Duration(cnt)).String()
-	} else {
-		avg = zeroLiteral
+	if cnt <= 0 {
+		return
 	}
 
-	log.
-		Info().
-		//Str("target", "cache-controller").
-		//Str("period", s.label).
-		//Str("rps", rps).
-		//Str("avgDuration", avg).
-		Msgf("[cache-controller][5s] served %d requests (rps: %s, avgDuration: %s)", cnt, rps, avg)
+	avg = (dur / time.Duration(cnt)).String()
+
+	logEvent := log.Info()
+
+	if c.cfg.IsProd() {
+		logEvent.
+			Str("target", "controller").
+			Str("rps", rps).
+			Str("served", strconv.Itoa(int(cnt))).
+			Str("periodMs", "5000").
+			Str("avgDuration", avg)
+	}
+
+	logEvent.Msgf("[controller][5s] served %d requests (rps: %s, avgDuration: %s)", cnt, rps, avg)
 
 	count.Store(0)
 	duration.Store(0)
