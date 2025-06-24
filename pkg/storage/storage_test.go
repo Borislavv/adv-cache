@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/lfu"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/lru"
 	"runtime"
 	"testing"
 	"time"
@@ -10,8 +12,6 @@ import (
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/mock"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/repository"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/cache/lfu"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/cache/lru"
 	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
 	"github.com/rs/zerolog"
 )
@@ -59,7 +59,7 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 
 	shardedMap := sharded.NewMap[*model.Response](ctx, cfg.Cache.Preallocate.PerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
-	refresher := lru.NewRefresher(ctx, cfg, balancer)
+	refresher := NewRefresher(ctx, cfg, balancer)
 	backend := repository.NewBackend(cfg)
 	tinyLFU := lfu.NewTinyLFU(ctx)
 	db := New(ctx, cfg, balancer, refresher, backend, tinyLFU, shardedMap)
@@ -91,7 +91,7 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 
 	shardedMap := sharded.NewMap[*model.Response](ctx, cfg.Cache.Preallocate.PerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
-	refresher := lru.NewRefresher(ctx, cfg, balancer)
+	refresher := NewRefresher(ctx, cfg, balancer)
 	backend := repository.NewBackend(cfg)
 	tinyLFU := lfu.NewTinyLFU(ctx)
 	db := New(ctx, cfg, balancer, refresher, backend, tinyLFU, shardedMap)
@@ -120,7 +120,7 @@ func BenchmarkGetAllocs(b *testing.B) {
 
 	shardedMap := sharded.NewMap[*model.Response](ctx, cfg.Cache.Preallocate.PerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
-	refresher := lru.NewRefresher(ctx, cfg, balancer)
+	refresher := NewRefresher(ctx, cfg, balancer)
 	backend := repository.NewBackend(cfg)
 	tinyLFU := lfu.NewTinyLFU(ctx)
 	db := New(ctx, cfg, balancer, refresher, backend, tinyLFU, shardedMap)
@@ -143,7 +143,7 @@ func BenchmarkSetAllocs(b *testing.B) {
 
 	shardedMap := sharded.NewMap[*model.Response](ctx, cfg.Cache.Preallocate.PerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
-	refresher := lru.NewRefresher(ctx, cfg, balancer)
+	refresher := NewRefresher(ctx, cfg, balancer)
 	backend := repository.NewBackend(cfg)
 	tinyLFU := lfu.NewTinyLFU(ctx)
 	db := New(ctx, cfg, balancer, refresher, backend, tinyLFU, shardedMap)
