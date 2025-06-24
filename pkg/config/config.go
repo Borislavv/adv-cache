@@ -19,7 +19,24 @@ type Cache struct {
 	Cache CacheBox `yaml:"cache"`
 }
 
+func (c *Cache) IsProd() bool {
+	return c.Cache.Env == Prod
+}
+
+func (c *Cache) IsDev() bool {
+	return c.Cache.Env == Dev
+}
+
+func (c *Cache) IsTest() bool {
+	return c.Cache.Env == Test
+}
+
+type Env struct {
+	Value string `yaml:"value"`
+}
+
 type CacheBox struct {
+	Env         string        `yaml:"env"`
 	Enabled     bool          `yaml:"enabled"`
 	Persistence Persistence   `yaml:"persistence"`
 	Preallocate Preallocation `yaml:"preallocate"`
@@ -70,6 +87,7 @@ type Refresh struct {
 	// beta: "0.4"
 	Beta       float64       `yaml:"beta"`      // between 0 and 1
 	MinStale   time.Duration `yaml:"min_stale"` // computed=time.Duration(float64(TTL/ErrorTTL) * Beta)
+	Timeout    time.Duration `yaml:"timeout"`   // computed=time.Duration(float64(TTL/ErrorTTL) * Beta)
 	BackendURL string        `yaml:"backend_url"`
 }
 
@@ -93,9 +111,9 @@ type Value struct {
 }
 
 const (
-	configPath      = "/config/config.prod.yaml"
-	configPathLocal = "/config/config.local.yaml"
-	configPathTest  = "/../../config/config.test.yaml"
+	configPath     = "/config/config.prod.yaml"
+	configPathDev  = "/config/config.dev.yaml"
+	configPathTest = "/../../config/config.test.yaml"
 )
 
 func LoadConfig() (*Cache, error) {
@@ -106,7 +124,7 @@ func LoadConfig() (*Cache, error) {
 	case env == Prod:
 		path = configPath
 	case env == Dev:
-		path = configPathLocal
+		path = configPathDev
 	case env == Test:
 		path = configPathTest
 	default:
@@ -136,6 +154,7 @@ func LoadConfig() (*Cache, error) {
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("unmarshal yaml from %s: %w", path, err)
 	}
+	cfg.Cache.Env = env
 
 	for k, rule := range cfg.Cache.Rules {
 		cfg.Cache.Rules[k].PathBytes = []byte(rule.Path)

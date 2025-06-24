@@ -3,7 +3,7 @@ cache:
 
   preallocate:
     num_shards: 2048 # Fixed constant (see `NumOfShards` in code). Controls the number of sharded maps.
-    per_shard: 768  # Preallocated map size per shard. Without resizing, this supports ~16,785,408 keys in total.
+    per_shard: 2048  # Preallocated map size per shard. Without resizing, this supports ~16,785,408 keys in total.
     # Note: this is an upper-bound estimate and may vary depending on hash distribution quality.
 
   eviction:
@@ -19,12 +19,13 @@ cache:
     rate: 1000
     error_ttl: "5m"
     beta: 0.5 # Controls randomness in refresh timing to avoid thundering herd.
-    backend_url: "http://google.com"
+    backend_url: "https://seo-master.lux.kube.xbet.lan"
+    timeout: "3s" # Timeout for requests to backend
 
   persistence:
     dump:
       enabled: true
-      format: "raw" # gzip or raw json
+      format: "gzip" # gzip or raw json
       dump_dir: "public/dump"
       dump_name: "cache.dump.gz"
       rotate_policy: "ring" # fixed, ring

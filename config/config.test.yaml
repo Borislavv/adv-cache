@@ -20,6 +20,7 @@ cache:
     error_ttl: "2m"
     beta: 0.4 # Controls randomness in refresh timing to avoid thundering herd.
     backend_url: "https://google.com"
+    timeout: "3s" # Timeout for requests to backend
 
   persistence:
     dump:
