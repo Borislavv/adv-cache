@@ -40,7 +40,7 @@ func (m *ForwardIDsMiddleware) Middleware(next fasthttp.RequestHandler) fasthttp
 		// extract request context
 		reqCtx, ok := ctx.UserValue(keyword.CtxKey).(context.Context)
 		if !ok {
-			log.Warn().Msg("[fasthttp] context.Context is not exists into the fasthttp.RequestCtx " +
+			log.Warn().Msg("[server] context.Context is not exists into the fasthttp.RequestCtx " +
 				"(unable to forward x-request-id and x-request-guid)")
 			next(ctx)
 			return
