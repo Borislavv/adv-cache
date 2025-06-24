@@ -19,10 +19,8 @@ import (
 	"sync/atomic"
 )
 
-// Error messages used for server and metrics initialization.
 var (
-	InitFailedErrorMessage        = "[server] init. failed"
-	MetricsInitFailedErrorMessage = "[server] init. prometheus metrics failed"
+	InitFailedErrorMessage = "[server] init. failed"
 )
 
 // Http interface exposes methods for starting and liveness probing.
@@ -33,9 +31,7 @@ type Http interface {
 
 // HttpServer implements Http, wraps all dependencies required for running the HTTP server.
 type HttpServer struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-
+	ctx           context.Context
 	cfg           *config.Config
 	db            storage.Storage
 	backend       repository.Backender
@@ -53,31 +49,18 @@ func New(
 	db storage.Storage,
 	backend repository.Backender,
 	probe liveness.Prober,
+	meter metrics.Meter,
 ) (*HttpServer, error) {
 	var err error
 
-	// Create cancellable context for graceful shutdown.
-	ctx, cancel := context.WithCancel(ctx)
-	defer func() {
-		if err != nil {
-			cancel()
-		}
-	}()
-
 	srv := &HttpServer{
 		ctx:           ctx,
-		cancel:        cancel,
 		cfg:           cfg,
 		db:            db,
 		backend:       backend,
 		probe:         probe,
+		metrics:       meter,
 		isServerAlive: &atomic.Bool{},
-	}
-
-	// Initialize Metrics or other metrics.
-	if err = srv.initMetrics(); err != nil {
-		log.Err(err).Msg(MetricsInitFailedErrorMessage)
-		return nil, errors.New(MetricsInitFailedErrorMessage)
 	}
 
 	// Initialize HTTP server with all controllers and middlewares.
@@ -91,8 +74,6 @@ func New(
 
 // Start runs the HTTP server in a goroutine and waits for it to finish.
 func (s *HttpServer) Start() {
-	defer s.stop()
-
 	waitCh := make(chan struct{})
 
 	go func() {
@@ -103,12 +84,6 @@ func (s *HttpServer) Start() {
 	}()
 
 	<-waitCh
-}
-
-// stop cancels the context, signaling shutdown to all server goroutines.
-func (s *HttpServer) stop() {
-	s.cancel()
-	s.db.Stop()
 }
 
 // IsAlive returns true if the server is marked as alive.
@@ -129,32 +104,10 @@ func (s *HttpServer) spawnServer(wg *sync.WaitGroup) {
 	}()
 }
 
-// initCtx allows updating/replacing the server's context and cancel func.
-func (s *HttpServer) initCtx(ctx context.Context) {
-	ctx, cancel := context.WithCancel(ctx)
-	s.ctx = ctx
-	s.cancel = cancel
-}
-
-// initMetrics initializes Metrics (or custom) metrics registry and binds it to the server.
-func (s *HttpServer) initMetrics() error {
-	prometheusMetrics, err := metrics.New()
-	if err != nil {
-		log.Err(err).Msg(MetricsInitFailedErrorMessage)
-		return errors.New(MetricsInitFailedErrorMessage)
-	}
-	s.metrics = prometheusMetrics
-	return nil
-}
-
 // initServer creates the HTTP server instance, sets up controllers and middlewares, and stores the result.
 func (s *HttpServer) initServer() error {
-	ctx, cancel := context.WithCancel(s.ctx)
-	s.cancel = cancel
-
 	// Compose server with controllers and middlewares.
-	if server, err := httpserver.New(ctx, s.cfg.Server, s.controllers(), s.middlewares()); err != nil {
-		cancel()
+	if server, err := httpserver.New(s.ctx, s.cfg.Server, s.controllers(), s.middlewares()); err != nil {
 		log.Err(err).Msg(InitFailedErrorMessage)
 		return errors.New(InitFailedErrorMessage)
 	} else {

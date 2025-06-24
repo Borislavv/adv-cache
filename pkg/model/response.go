@@ -5,7 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/list"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/list"
 	"math"
 	"math/rand/v2"
 	"net/http"
