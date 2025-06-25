@@ -16,11 +16,12 @@ cache:
 
   refresh:
     ttl: "2m"
-    rate: 1024
+    rate: 1000 # Rate limiting reqs to backend per second.
+    scan_rate: 10000 # Rate limiting of num scans items per second.
     error_ttl: "5m"
     beta: 0.5 # Controls randomness in refresh timing to avoid thundering herd.
     backend_url: "https://seo-master.lux.kube.xbet.lan"
-    timeout: "3s" # Timeout for requests to backend
+    timeout: "5s" # Timeout for requests to backend.
 
   persistence:
     dump:

@@ -16,6 +16,15 @@ type ShardNode struct {
 	Shard       *sharded.Shard[*model.Response] // Reference to the actual Shard (map + sync)
 }
 
+func (s *ShardNode) RandItem(ctx context.Context) *model.Response {
+	var resp *model.Response
+	s.Shard.Walk(ctx, func(u uint64, response *model.Response) bool {
+		resp = response
+		return false
+	}, false)
+	return resp
+}
+
 // Weight returns an approximate Weight usage of this ShardNode structure.
 func (s *ShardNode) Weight() int64 {
 	return s.Shard.Weight()
@@ -28,7 +37,7 @@ func (s *ShardNode) LruList() *list2.List[*model.Response] {
 type Balancer interface {
 	Rebalance()
 	Shards() [sharded.NumOfShards]*ShardNode
-	RandShardNode() *ShardNode
+	RandNode() *ShardNode
 	Register(shard *sharded.Shard[*model.Response])
 	Set(resp *model.Response)
 	Update(existing *model.Response)
@@ -67,8 +76,8 @@ func (b *Balance) Shards() [sharded.NumOfShards]*ShardNode {
 	return b.shards
 }
 
-// RandShardNode returns a random ShardNode for sampling (e.g., for background refreshers).
-func (b *Balance) RandShardNode() *ShardNode {
+// RandNode returns a random ShardNode for sampling (e.g., for background refreshers).
+func (b *Balance) RandNode() *ShardNode {
 	return b.shards[rand.Uint64N(sharded.NumOfShards)]
 }
 

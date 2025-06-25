@@ -106,7 +106,7 @@ func (c *Cache) Start(gc shutdown.Gracefuller) {
 	<-waitCh // Wait until the server exits
 }
 
-func (c *Cache) metricsWriter() {
+func (c *Cache) runMetricsWriter() {
 	go func() {
 		t := utils.NewTicker(c.ctx, time.Second)
 		for {
@@ -123,15 +123,14 @@ func (c *Cache) metricsWriter() {
 }
 
 func (c *Cache) run() *Cache {
-	go c.metricsWriter()
+	if err := c.dumper.Load(c.ctx); err != nil {
+		log.Warn().Msg("[dump] failed to load dump: " + err.Error())
+	}
 
 	c.db.Run()
 	c.evictor.Run()
 	c.refresher.Run()
-
-	if err := c.dumper.Load(c.ctx); err != nil {
-		log.Warn().Msg("[dump] failed to load dump: " + err.Error())
-	}
+	c.runMetricsWriter()
 
 	return c
 }

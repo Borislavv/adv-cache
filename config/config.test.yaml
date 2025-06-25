@@ -16,11 +16,12 @@ cache:
 
   refresh:
     ttl: "10m"
-    rate: 1024
+    rate: 1000 # Rate limiting reqs to backend per second.
+    scan_rate: 10000 # Rate limiting of num scans items per second.
     error_ttl: "2m"
     beta: 0.4 # Controls randomness in refresh timing to avoid thundering herd.
     backend_url: "https://google.com"
-    timeout: "3s" # Timeout for requests to backend
+    timeout: "5s" # Timeout for requests to backend
 
   persistence:
     dump:

@@ -78,7 +78,8 @@ type Refresh struct {
 	TTL time.Duration `yaml:"ttl"` // e.g. "1d" (responses with 200 status code)
 	// ErrorTTL - error refresh TTL (max time life of response item with non 200 status code in cache without refreshing).
 	ErrorTTL time.Duration `yaml:"error_ttl"` // e.g. "1h" (responses with non 200 status code)
-	Rate     int           `yaml:"rate"`
+	Rate     int           `yaml:"rate"`      // Rate limiting to external backend.
+	ScanRate int           `yaml:"scan_rate"` // Rate limiting of num scans items per second.
 	// beta определяет коэффициент, используемый для вычисления случайного момента обновления кэша.
 	// Чем выше beta, тем чаще кэш будет обновляться до истечения TTL.
 	// Формула взята из подхода "stochastic cache expiration" (см. Google Staleness paper):
