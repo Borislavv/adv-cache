@@ -1,4 +1,4 @@
-package lru
+package storage
 
 import (
 	"bufio"
@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
 	"github.com/Borislavv/traefik-http-cache-plugin/pkg/repository"
+	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/lru"
 	"io"
 	"net/http"
 	"os"
@@ -56,14 +57,14 @@ type Dumper interface {
 type Dump struct {
 	cfg        *config.Cache
 	shardedMap *sharded.Map[*model.Response] // Sharded storage for cache entries
-	storage    *Storage
+	storage    *lru.Storage
 	backend    repository.Backender
 }
 
 func NewDumper(
 	cfg *config.Cache,
 	shardedMap *sharded.Map[*model.Response],
-	storage *Storage,
+	storage *lru.Storage,
 	backend repository.Backender,
 ) *Dump {
 	return &Dump{
