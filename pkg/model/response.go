@@ -104,6 +104,10 @@ func (r *Response) ShardKey() uint64 {
 // ShouldBeRefreshed implements probabilistic refresh logic ("beta" algorithm).
 // Returns true if the entry is stale and, with a probability proportional to its staleness, should be refreshed now.
 func (r *Response) ShouldBeRefreshed() bool {
+	if r == nil {
+		return false
+	}
+
 	var (
 		beta          float64
 		interval      time.Duration

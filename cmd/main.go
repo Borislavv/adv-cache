@@ -77,7 +77,7 @@ func main() {
 
 	// Setup gracefulShutdown shutdown handler (SIGTERM, SIGINT, etc).
 	gracefulShutdown := shutdown.NewGraceful(ctx, cancel)
-	gracefulShutdown.SetGracefulTimeout(time.Millisecond * 9000) // 9.0s
+	gracefulShutdown.SetGracefulTimeout(time.Second * 300) // 9.0s
 
 	// Initialize liveness probe for Kubernetes/Cloud health checks.
 	probe := liveness.NewProbe(cfg.LivenessTimeout())

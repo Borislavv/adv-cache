@@ -1,6 +1,5 @@
 package middleware
 
-//
 //import (
 //	"bytes"
 //	"context"
@@ -41,7 +40,7 @@ package middleware
 //		MemoryLimit:               1024 * 1024 * 256,
 //		RevalidateBeta:            0.4,
 //		RevalidateInterval:        time.Minute * 30,
-//		BackendUrl:                    "https://seo-master.lux.kube.xbet.lan/api/v2/pagedata",
+//		BackendUrl:                "https://seo-master.lux.kube.xbet.lan/api/v2/pagedata",
 //	}
 //}
 //
@@ -56,7 +55,7 @@ package middleware
 //
 //func New(ctx context.Context, next http.Handler, config *Cache, name string) http.Handler {
 //	cacheCfg := &cfg.Cache{
-//		BackendUrl:                    config.BackendUrl,
+//		BackendUrl:                config.BackendUrl,
 //		RevalidateBeta:            config.RevalidateBeta,
 //		RevalidateInterval:        config.RevalidateInterval,
 //		InitStorageLengthPerShard: config.InitStorageLengthPerShard,

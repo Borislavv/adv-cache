@@ -83,7 +83,7 @@ func (d *Dump) Dump(ctx context.Context) error {
 	}
 	start := time.Now()
 	// Ensure directory exists
-	if err := os.MkdirAll(cfg.Dir, 0o755); err != nil {
+	if err := os.MkdirAll(cfg.Dir, 0755); err != nil {
 		return fmt.Errorf("create dump dir: %w", err)
 	}
 

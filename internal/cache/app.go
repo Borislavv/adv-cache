@@ -18,8 +18,6 @@ import (
 	"time"
 )
 
-var MetricsInitFailedErrorMessage = "[server] init. prometheus metrics failed"
-
 // App defines the cache application lifecycle interface.
 type App interface {
 	Start()
@@ -34,7 +32,7 @@ type Cache struct {
 	server     server.Http
 	metrics    metrics.Meter
 	db         storage.Storage
-	dumper     lru.Dumper
+	dumper     storage.Dumper
 	balancer   lru.Balancer
 	evictor    storage.Evictor
 	refresher  storage.Refresher
@@ -53,7 +51,7 @@ func NewApp(ctx context.Context, cfg *config.Config, probe liveness.Prober) (*Ca
 	refresher := storage.NewRefresher(ctx, cfg.Cache, balancer)
 	tinyLFU := lfu.NewTinyLFU(ctx)
 	db := lru.NewStorage(ctx, cfg.Cache, balancer, backend, tinyLFU, shardedMap)
-	dumper := lru.NewDumper(cfg.Cache, shardedMap, db, backend)
+	dumper := storage.NewDumper(cfg.Cache, shardedMap, db, backend)
 	evictor := storage.NewEvictor(ctx, cfg.Cache, db, balancer)
 	meter := metrics.New()
 
@@ -132,6 +130,13 @@ func (c *Cache) run() *Cache {
 	c.refresher.Run()
 	c.runMetricsWriter()
 
+	//go func() {
+	//	for _, resp := range mock.GenerateRandomResponses(c.cfg.Cache, []byte("/api/v2/pagedata"), 1_000_000) {
+	//		fmt.Println(string(resp.Request().ToQuery()))
+	//		c.db.Set(resp)
+	//	}
+	//}()
+
 	return c
 }
 
@@ -141,7 +146,7 @@ func (c *Cache) stop() {
 	defer c.cancel()
 
 	// spawn a new one with limit for k8s timeout before the service will be received SIGKILL
-	ctx, cancel := context.WithTimeout(context.Background(), 9*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 
 	if err := c.dumper.Dump(ctx); err != nil {

@@ -59,10 +59,9 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 
 	shardedMap := sharded.NewMap[*model.Response](ctx, cfg.Cache.Preallocate.PerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
-	refresher := NewRefresher(ctx, cfg, balancer)
 	backend := repository.NewBackend(cfg)
 	tinyLFU := lfu.NewTinyLFU(ctx)
-	db := New(ctx, cfg, balancer, refresher, backend, tinyLFU, shardedMap)
+	db := lru.NewStorage(ctx, cfg, balancer, backend, tinyLFU, shardedMap)
 
 	responses := mock.GenerateRandomResponses(cfg, path, b.N+1)
 	for _, resp := range responses {
@@ -91,10 +90,9 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 
 	shardedMap := sharded.NewMap[*model.Response](ctx, cfg.Cache.Preallocate.PerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
-	refresher := NewRefresher(ctx, cfg, balancer)
 	backend := repository.NewBackend(cfg)
 	tinyLFU := lfu.NewTinyLFU(ctx)
-	db := New(ctx, cfg, balancer, refresher, backend, tinyLFU, shardedMap)
+	db := lru.NewStorage(ctx, cfg, balancer, backend, tinyLFU, shardedMap)
 
 	responses := mock.GenerateRandomResponses(cfg, path, b.N+1)
 	length := len(responses)
@@ -120,10 +118,9 @@ func BenchmarkGetAllocs(b *testing.B) {
 
 	shardedMap := sharded.NewMap[*model.Response](ctx, cfg.Cache.Preallocate.PerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
-	refresher := NewRefresher(ctx, cfg, balancer)
 	backend := repository.NewBackend(cfg)
 	tinyLFU := lfu.NewTinyLFU(ctx)
-	db := New(ctx, cfg, balancer, refresher, backend, tinyLFU, shardedMap)
+	db := lru.NewStorage(ctx, cfg, balancer, backend, tinyLFU, shardedMap)
 
 	resp := mock.GenerateRandomResponses(cfg, path, 1)[0]
 	db.Set(resp)
@@ -143,10 +140,9 @@ func BenchmarkSetAllocs(b *testing.B) {
 
 	shardedMap := sharded.NewMap[*model.Response](ctx, cfg.Cache.Preallocate.PerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
-	refresher := NewRefresher(ctx, cfg, balancer)
 	backend := repository.NewBackend(cfg)
 	tinyLFU := lfu.NewTinyLFU(ctx)
-	db := New(ctx, cfg, balancer, refresher, backend, tinyLFU, shardedMap)
+	db := lru.NewStorage(ctx, cfg, balancer, backend, tinyLFU, shardedMap)
 
 	resp := mock.GenerateRandomResponses(cfg, path, 1)[0]
 
