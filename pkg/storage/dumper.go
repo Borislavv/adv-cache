@@ -7,9 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/repository"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/lru"
+	"github.com/Borislavv/advanced-cache/pkg/config"
+	"github.com/Borislavv/advanced-cache/pkg/repository"
+	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
 	"io"
 	"net/http"
 	"os"
@@ -19,8 +19,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
-	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
+	"github.com/Borislavv/advanced-cache/pkg/model"
+	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
 	"github.com/rs/zerolog/log"
 )
 

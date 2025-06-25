@@ -1,10 +1,10 @@
 package config
 
 import (
-	cacheConfig "github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/k8s/probe/liveness"
-	prometheusconifg "github.com/Borislavv/traefik-http-cache-plugin/pkg/prometheus/metrics/config"
-	fasthttpconfig "github.com/Borislavv/traefik-http-cache-plugin/pkg/server/config"
+	cacheConfig "github.com/Borislavv/advanced-cache/pkg/config"
+	"github.com/Borislavv/advanced-cache/pkg/k8s/probe/liveness"
+	prometheusconifg "github.com/Borislavv/advanced-cache/pkg/prometheus/metrics/config"
+	fasthttpconfig "github.com/Borislavv/advanced-cache/pkg/server/config"
 )
 
 type Config struct {

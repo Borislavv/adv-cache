@@ -2,17 +2,17 @@ package storage
 
 import (
 	"context"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/lfu"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/lru"
+	"github.com/Borislavv/advanced-cache/pkg/storage/lfu"
+	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
 	"runtime"
 	"testing"
 	"time"
 
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/mock"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/repository"
-	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
+	"github.com/Borislavv/advanced-cache/pkg/config"
+	"github.com/Borislavv/advanced-cache/pkg/mock"
+	"github.com/Borislavv/advanced-cache/pkg/model"
+	"github.com/Borislavv/advanced-cache/pkg/repository"
+	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
 	"github.com/rs/zerolog"
 )
 

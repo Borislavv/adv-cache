@@ -2,11 +2,11 @@ package main
 
 import (
 	"context"
-	"github.com/Borislavv/traefik-http-cache-plugin/internal/cache"
-	"github.com/Borislavv/traefik-http-cache-plugin/internal/cache/config"
-	config2 "github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/k8s/probe/liveness"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/shutdown"
+	"github.com/Borislavv/advanced-cache/internal/cache"
+	"github.com/Borislavv/advanced-cache/internal/cache/config"
+	config2 "github.com/Borislavv/advanced-cache/pkg/config"
+	"github.com/Borislavv/advanced-cache/pkg/k8s/probe/liveness"
+	"github.com/Borislavv/advanced-cache/pkg/shutdown"
 	"github.com/joho/godotenv"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/viper"

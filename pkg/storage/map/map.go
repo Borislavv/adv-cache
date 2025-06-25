@@ -2,8 +2,8 @@ package sharded
 
 import (
 	"context"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/types"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/utils"
+	"github.com/Borislavv/advanced-cache/pkg/types"
+	"github.com/Borislavv/advanced-cache/pkg/utils"
 	"github.com/rs/zerolog/log"
 	"runtime"
 	"sync"

@@ -2,16 +2,16 @@ package lru
 
 import (
 	"context"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/lfu"
+	"github.com/Borislavv/advanced-cache/pkg/storage/lfu"
 	"runtime"
 	"strconv"
 	"time"
 
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/repository"
-	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/utils"
+	"github.com/Borislavv/advanced-cache/pkg/config"
+	"github.com/Borislavv/advanced-cache/pkg/model"
+	"github.com/Borislavv/advanced-cache/pkg/repository"
+	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
+	"github.com/Borislavv/advanced-cache/pkg/utils"
 	"github.com/rs/zerolog/log"
 )
 

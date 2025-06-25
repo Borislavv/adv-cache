@@ -1,4 +1,4 @@
-module github.com/Borislavv/traefik-http-cache-plugin
+module github.com/Borislavv/advanced-cache
 
 go 1.23.2
 

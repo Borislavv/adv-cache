@@ -3,9 +3,9 @@ package httpserver
 import (
 	"context"
 	"errors"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/server/config"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/server/controller"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/server/middleware"
+	"github.com/Borislavv/advanced-cache/pkg/server/config"
+	"github.com/Borislavv/advanced-cache/pkg/server/controller"
+	"github.com/Borislavv/advanced-cache/pkg/server/middleware"
 	"github.com/fasthttp/router"
 	"github.com/rs/zerolog/log"
 	"github.com/valyala/fasthttp"

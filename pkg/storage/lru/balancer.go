@@ -2,9 +2,9 @@ package lru
 
 import (
 	"context"
-	list2 "github.com/Borislavv/traefik-http-cache-plugin/pkg/list"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
-	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
+	list2 "github.com/Borislavv/advanced-cache/pkg/list"
+	"github.com/Borislavv/advanced-cache/pkg/model"
+	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
 	"math/rand/v2"
 )
 

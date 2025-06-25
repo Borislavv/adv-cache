@@ -1,7 +1,7 @@
 package list
 
 import (
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/types"
+	"github.com/Borislavv/advanced-cache/pkg/types"
 	"sync"
 	"sync/atomic"
 )

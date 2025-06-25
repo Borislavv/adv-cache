@@ -2,9 +2,9 @@ package mock
 
 import (
 	"context"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
-	localesandlanguages "github.com/Borislavv/traefik-http-cache-plugin/pkg/locale"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
+	"github.com/Borislavv/advanced-cache/pkg/config"
+	localesandlanguages "github.com/Borislavv/advanced-cache/pkg/locale"
+	"github.com/Borislavv/advanced-cache/pkg/model"
 	"math/rand"
 	"net/http"
 	"strconv"

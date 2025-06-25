@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/mock"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
+	"github.com/Borislavv/advanced-cache/pkg/config"
+	"github.com/Borislavv/advanced-cache/pkg/mock"
+	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/dgraph-io/ristretto"
 )
 

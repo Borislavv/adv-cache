@@ -2,8 +2,8 @@ package lfu
 
 import (
 	"context"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/buffer"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
+	"github.com/Borislavv/advanced-cache/pkg/buffer"
+	"github.com/Borislavv/advanced-cache/pkg/model"
 	"time"
 )
 

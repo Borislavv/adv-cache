@@ -2,7 +2,7 @@ package middleware
 
 import (
 	"context"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/prometheus/metrics"
+	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
 	"github.com/valyala/fasthttp"
 	"runtime"
 	"strconv"

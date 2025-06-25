@@ -20,11 +20,13 @@ cache:
     size: 15000000000 # 20 GB of maximum allowed memory for the in-memory cache (in bytes).
 
   refresh:
-    ttl: "20m"
-    error_ttl: "5m"
+    ttl: "1h"
+    error_ttl: "15m"
     rate: 1000 # Rate limiting reqs to backend per second.
     scan_rate: 10000 # Rate limiting of num scans items per second.
     beta: 0.5 # Controls randomness in refresh timing to avoid thundering herd (from 0 to 1).
+    backend_url: "https://seo-master.lux.kube.xbet.lan"
+    timeout: "10s" # Timeout for requests to backend.
 
   persistence:
     dump:

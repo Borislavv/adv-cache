@@ -1,7 +1,7 @@
 package metrics
 
 import (
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/prometheus/metrics/keyword"
+	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics/keyword"
 	"github.com/VictoriaMetrics/metrics"
 	"strconv"
 	"time"

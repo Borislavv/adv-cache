@@ -2,8 +2,8 @@ package model
 
 import (
 	"bytes"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
-	sharded "github.com/Borislavv/traefik-http-cache-plugin/pkg/storage/map"
+	"github.com/Borislavv/advanced-cache/pkg/config"
+	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
 	"github.com/valyala/fasthttp"
 	"github.com/zeebo/xxh3"
 	"sort"

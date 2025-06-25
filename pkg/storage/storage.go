@@ -1,7 +1,7 @@
 package storage
 
 import (
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/model"
+	"github.com/Borislavv/advanced-cache/pkg/model"
 )
 
 // Storage is a generic interface for cache storages.

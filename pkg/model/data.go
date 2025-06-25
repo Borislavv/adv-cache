@@ -3,7 +3,7 @@ package model
 import (
 	"bytes"
 	"compress/gzip"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/config"
+	"github.com/Borislavv/advanced-cache/pkg/config"
 	"net/http"
 	"unsafe"
 )

@@ -2,8 +2,8 @@ package middleware
 
 import (
 	"context"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/server/config"
-	"github.com/Borislavv/traefik-http-cache-plugin/pkg/server/keyword"
+	"github.com/Borislavv/advanced-cache/pkg/server/config"
+	"github.com/Borislavv/advanced-cache/pkg/server/keyword"
 	"github.com/rs/zerolog/log"
 	"github.com/savsgio/gotils/uuid"
 	"github.com/valyala/fasthttp"
