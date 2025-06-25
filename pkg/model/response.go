@@ -105,11 +105,30 @@ func (r *Response) ShardKey() uint64 {
 // Returns true if the entry is stale and, with a probability proportional to its staleness, should be refreshed now.
 func (r *Response) ShouldBeRefreshed() bool {
 	var (
-		beta          = r.cfg.Cache.Refresh.Beta
-		interval      = r.cfg.Cache.Refresh.TTL
-		minStale      = r.cfg.Cache.Refresh.MinStale
+		beta          float64
+		interval      time.Duration
+		minStale      time.Duration
 		revalidatedAt = atomic.LoadInt64(&r.revalidatedAt)
 	)
+
+	req := r.request.Load()
+	if req.rule != nil {
+		beta = req.rule.Beta
+		interval = req.rule.TTL
+		minStale = req.rule.MinStale
+	}
+
+	const eps = 1e-9
+	if math.Abs(beta) < eps { // safe check that float64 is zero
+		beta = r.cfg.Cache.Refresh.Beta
+	}
+
+	if interval == 0 {
+		interval = r.cfg.Cache.Refresh.TTL
+	}
+	if minStale == 0 {
+		minStale = r.cfg.Cache.Refresh.MinStale
+	}
 
 	if r.data.Load().statusCode != http.StatusOK {
 		interval = interval / 10 // On stale will be used 10% of origin interval.

@@ -14,7 +14,7 @@ import (
 var hasherPool = &sync.Pool{New: func() any { return xxh3.New() }}
 
 type Request struct {
-	cfg   *config.Cache
+	rule  *config.Rule // possibly nil pointer (be careful)
 	key   uint64
 	shard uint64
 	query []byte
@@ -22,31 +22,34 @@ type Request struct {
 }
 
 func NewRequestFromFasthttp(cfg *config.Cache, r *fasthttp.RequestCtx) *Request {
-	path := make([]byte, len(r.Path()))
-	copy(path, r.Path())
-	sanitizeRequest(cfg, path, r)
-	req := &Request{
-		cfg:  cfg,
-		path: path,
+	path := append([]byte(nil), r.Path()...)
+
+	req := &Request{path: path}
+
+	rule := matchRule(cfg, path)
+	if rule != nil {
+		req.rule = rule
+		sanitizeRequest(rule, r)
 	}
+
 	req.setUp(path, r.QueryArgs(), &r.Request.Header)
 	return req
 }
 
 func NewRawRequest(cfg *config.Cache, key, shard uint64, query, path []byte) *Request {
-	return &Request{
-		cfg:   cfg,
-		key:   key,
-		shard: shard,
-		query: query,
-		path:  path,
+	req := &Request{key: key, shard: shard, query: query, path: path}
+	rule := matchRule(cfg, path)
+	if rule != nil {
+		req.rule = rule
 	}
+	return req
 }
 
 func NewRequest(cfg *config.Cache, path []byte, args map[string][]byte, headers map[string][][]byte) *Request {
-	req := &Request{
-		cfg:  cfg,
-		path: path,
+	req := &Request{path: path}
+	rule := matchRule(cfg, path)
+	if rule != nil {
+		req.rule = rule
 	}
 	req.setUpManually(args, headers)
 	return req
@@ -233,26 +236,18 @@ func hash(buf []byte) uint64 {
 	return hasher.Sum64()
 }
 
-func sanitizeRequest(cfg *config.Cache, path []byte, ctx *fasthttp.RequestCtx) {
-	allowedQueries, allowedHeaders := getKeyAllowed(cfg, path)
-	filterKeyQueriesInPlace(ctx, allowedQueries)
-	filterKeyHeadersInPlace(ctx, allowedHeaders)
+func sanitizeRequest(rule *config.Rule, ctx *fasthttp.RequestCtx) {
+	filterKeyQueriesInPlace(ctx, rule.CacheKey.QueryBytes)
+	filterKeyHeadersInPlace(ctx, rule.CacheKey.HeadersBytes)
 }
 
-func getKeyAllowed(cfg *config.Cache, path []byte) (queries [][]byte, headers [][]byte) {
-	queries = make([][]byte, 0, 8)
-	headers = make([][]byte, 0, 8)
+func matchRule(cfg *config.Cache, path []byte) *config.Rule {
 	for _, rule := range cfg.Cache.Rules {
 		if bytes.HasPrefix(path, rule.PathBytes) {
-			for _, param := range rule.CacheKey.QueryBytes {
-				queries = append(queries, param)
-			}
-			for _, header := range rule.CacheKey.HeadersBytes {
-				headers = append(headers, header)
-			}
+			return rule
 		}
 	}
-	return queries, headers
+	return nil
 }
 
 func filterKeyQueriesInPlace(ctx *fasthttp.RequestCtx, allowed [][]byte) {

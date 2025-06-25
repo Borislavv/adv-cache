@@ -95,8 +95,12 @@ type Refresh struct {
 type Rule struct {
 	Path       string `yaml:"path"`
 	PathBytes  []byte
-	CacheKey   Key   `yaml:"cache_key"`
-	CacheValue Value `yaml:"cache_value"`
+	TTL        time.Duration `yaml:"ttl"`       // TTL for this rule.
+	ErrorTTL   time.Duration `yaml:"error_ttl"` // ErrorTTL for this rule.
+	Beta       float64       `yaml:"beta"`      // between 0 and 1
+	MinStale   time.Duration `yaml:"min_stale"` // computed=time.Duration(float64(TTL/ErrorTTL) * Beta)
+	CacheKey   Key           `yaml:"cache_key"`
+	CacheValue Value         `yaml:"cache_value"`
 }
 
 type Key struct {
@@ -168,6 +172,7 @@ func LoadConfig() (*Cache, error) {
 		for _, param := range rule.CacheValue.Headers {
 			cfg.Cache.Rules[k].CacheValue.HeadersBytes = append(cfg.Cache.Rules[k].CacheValue.HeadersBytes, []byte(param))
 		}
+		cfg.Cache.Rules[k].MinStale = time.Duration(float64(rule.TTL) * rule.Beta)
 	}
 
 	cfg.Cache.Refresh.MinStale = time.Duration(float64(cfg.Cache.Refresh.TTL) * cfg.Cache.Refresh.Beta)
