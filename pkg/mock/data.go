@@ -32,24 +32,25 @@ func GenerateRandomRequests(cfg *config.Cache, path []byte, num int) []*model.Re
 				req := model.NewRequest(
 					cfg,
 					path,
-					map[string][]byte{
-						"project[id]":    []byte(strconv.Itoa(projectID)),
-						"domain":         []byte("1x001.com"),
-						"language":       []byte(lng),
-						"choice[name]":   []byte("betting"),
-						"choice[choice]": []byte("choice[choice][name]=betting_live&choice[choice][choice][name]=betting_live_null&choice[choice][choice][choice][name]=betting_live_null_" + strconv.Itoa(projectID) + "&choice[choice][choice][choice][choice][name]=betting_live_null_" + strconv.Itoa(projectID) + "_" + strconv.Itoa(projectID) + "&choice[choice][choice][choice][choice][choice][name]=betting_live_null_" + strconv.Itoa(projectID) + "_" + strconv.Itoa(projectID) + "_" + strconv.Itoa(i) + "&choice[choice][choice][choice][choice][choice][choice]=null"),
+					[][2][]byte{
+						{[]byte("project[id]"), []byte(strconv.Itoa(projectID))},
+						{[]byte("domain"), []byte("1x001.com")},
+						{[]byte("language"), []byte(lng)},
+						{[]byte("choice[name]"), []byte("betting")},
+						{[]byte("choice[choice]"), []byte("choice[choice][name]=betting_live&choice[choice][choice][name]=betting_live_null&choice[choice][choice][choice][name]=betting_live_null_" + strconv.Itoa(projectID) + "&choice[choice][choice][choice][choice][name]=betting_live_null_" + strconv.Itoa(projectID) + "_" + strconv.Itoa(projectID) + "&choice[choice][choice][choice][choice][choice][name]=betting_live_null_" + strconv.Itoa(projectID) + "_" + strconv.Itoa(projectID) + "_" + strconv.Itoa(i) + "&choice[choice][choice][choice][choice][choice][choice]=null")},
 					},
-					map[string][][]byte{
-						"Content-Type":     {[]byte("application/json")},
-						"CacheBox-Control": {[]byte("max-age=1234567890")},
-						"Content-Length":   {[]byte("1234567890")},
-						"X-Project-ID":     {[]byte("62")},
-						"Accept-Encoding":  {[]byte("gzip"), []byte("br")},
-						"X-Real-IP":        {[]byte("192.168.1.10")},
-						"User-Agent":       {[]byte("Go-http-client/1.1")},
-						"Authorization":    {[]byte("Bearer example.jwt.token")},
-						"X-Request-ID":     {[]byte("req-abc123")},
-						"Accept-Language":  {[]byte("en-US,en;q=0.9")},
+					[][2][]byte{
+						{[]byte("Content-Type"), []byte("application/json")},
+						{[]byte("CacheBox-Control"), []byte("max-age=1234567890")},
+						{[]byte("Content-Length"), []byte("1234567890")},
+						{[]byte("X-Project-ID"), []byte("62")},
+						{[]byte("Accept-Encoding"), []byte("gzip")},
+						{[]byte("Accept-Encoding"), []byte("br")},
+						{[]byte("X-Real-IP"), []byte("192.168.1.10")},
+						{[]byte("User-Agent"), []byte("Go-http-client/1.1")},
+						{[]byte("Authorization"), []byte("Bearer example.jwt.token")},
+						{[]byte("X-Request-ID"), []byte("req-abc123")},
+						{[]byte("Accept-Language"), []byte("en-US,en;q=0.9")},
 					},
 				)
 				list = append(list, req)
