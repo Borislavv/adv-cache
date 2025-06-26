@@ -41,7 +41,7 @@ func NewRequestFromNetHttp(cfg *config.Cache, r *http.Request) *Request {
 
 func sanitizeNetHttpRequest(rule *config.Rule, r *http.Request) {
 	if len(rule.CacheKey.QueryBytes) == 0 {
-		return // Нечего фильтровать, сохраняем исходный запрос
+		return
 	}
 
 	originalQuery := r.URL.RawQuery
@@ -61,9 +61,8 @@ func sanitizeNetHttpRequest(rule *config.Rule, r *http.Request) {
 }
 
 func keyAllowed(allowed [][]byte, key string) bool {
-	keyBytes := []byte(key)
 	for _, allowedKey := range allowed {
-		if bytes.EqualFold(keyBytes, allowedKey) {
+		if bytes.HasPrefix([]byte(key), allowedKey) {
 			return true
 		}
 	}
