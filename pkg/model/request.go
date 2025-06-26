@@ -8,6 +8,7 @@ import (
 	"github.com/zeebo/xxh3"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"unsafe"
 )
@@ -39,19 +40,24 @@ func NewRequestFromNetHttp(cfg *config.Cache, r *http.Request) *Request {
 }
 
 func sanitizeNetHttpRequest(rule *config.Rule, r *http.Request) {
-	queries := r.URL.Query()
-	for key := range queries {
-		if !keyAllowed(rule.CacheKey.QueryBytes, key) {
-			queries.Del(key)
-		}
+	if len(rule.CacheKey.QueryBytes) == 0 {
+		return // Нечего фильтровать, сохраняем исходный запрос
 	}
-	r.URL.RawQuery = queries.Encode()
 
-	for key := range r.Header {
-		if !keyAllowed(rule.CacheKey.HeadersBytes, key) {
-			r.Header.Del(key)
+	originalQuery := r.URL.RawQuery
+	pairs := strings.Split(originalQuery, "&")
+	var sanitizedQuery []string
+
+	for _, pair := range pairs {
+		if keyEnd := strings.Index(pair, "="); keyEnd != -1 {
+			key := pair[:keyEnd]
+			if keyAllowed(rule.CacheKey.QueryBytes, key) {
+				sanitizedQuery = append(sanitizedQuery, pair)
+			}
 		}
 	}
+
+	r.URL.RawQuery = strings.Join(sanitizedQuery, "&")
 }
 
 func keyAllowed(allowed [][]byte, key string) bool {
