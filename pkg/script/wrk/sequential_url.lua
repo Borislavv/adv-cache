@@ -1,7 +1,7 @@
 -- sequential_url.lua
 
 -- Диапазоны
-local sport_min, sport_max = 1, 10
+local sport_min, sport_max = 1, 1
 local championship_min, championship_max = 1, 100
 local match_min, match_max = 1, 100
 
@@ -22,15 +22,15 @@ request = function()
         .. "&choice[choice][choice][choice][choice][name]=betting_live_null_" .. sport .. "_" .. championship
         .. "&choice[choice][choice][choice][choice][choice][name]=betting_live_null_" .. sport .. "_" .. championship .. "_" .. match
 
-    local path = "/api/v2/user?language=en&domain=google.com&timezone=3&project[id]=62&stream=homepage&" .. q
+    local path = "/api/v2/pagedata?language=en&domain=melbet-djibouti.com&timezone=3&project[id]=62&stream=homepage&" .. q
 
     -- Увеличиваем счётчик итераций
     iter = iter + 1
 
-    -- Каждые 1000 итераций выводим сформированный путь
-    if iter % 1000 == 0 then
-        print(string.format("[wrk] Iteration %d: %s", iter, path))
-    end
+--     -- Каждые 1000 итераций выводим сформированный путь
+--     if iter % 1000 == 0 then
+--         print(string.format("[wrk] Iteration %d: %s", iter, path))
+--     end
 
     -- Инкрементируем вложенные счётчики
     match = match + 1
