@@ -1,152 +1,160 @@
-**High-Performance Golang HTTP Cache**
+# Advanced Cache
 
-> **Read: \~15 ns/op | Write: \~45 ns/op | RPS: 150k**
-> **Cache-as-a-Service**: Sharded in-memory HTTP cache middleware with TinyLFU-enhanced LRU eviction, background refresh, Prometheus metrics, and disk persistence.
+> High-performance, zero-allocation, in-memory HTTP cache middleware for Caddy and Traefik.
 
----
+Advanced Cache is a blazing-fast, production-ready caching layer for Go-based HTTP servers, designed with performance-first principles.
+It features a sharded LRU/TinyLFU cache, zero-allocation request modeling, memory-aware eviction, GZIP compression, and deep integration with **Caddy** and **Traefik**.
 
-## 🚀 Core Features
+## ✨ Features
 
-1. **Massively Sharded Map (2048 shards)**
-   Distributes keys across 2048 independent shards to minimize lock contention and maximize concurrency.
+- 🔄 **In-Memory Caching** with configurable LRU, LFU, and TinyLFU eviction algorithms
+- 🔧 **Pluggable Storage Backends** with sharding support and atomic access
+- 🧠 **Zero-allocation path + query modeling** with fast hashing and no garbage
+- 🚀 **Ultra-low latency**, designed for high-throughput APIs and edge caches
+- 📦 **GZIP compression**, response interning and memory pool reuse (`sync.Pool`)
+- 🌐 **Caddy / Traefik Middleware** compatible with full setup via Caddyfile or Traefik YAML
+- 📊 Built-in **metrics export via VictoriaMetrics** (no Prometheus client overhead)
+- ☸️ **Kubernetes-ready** with native liveness/readiness probes
+- ⚙️ **Hot reloadable** YAML configuration
 
-2. **Per-Shard LRU Lists**
-   Each shard maintains its own lightweight LRU list for precise, low-overhead eviction without scanning the entire cache.
+## 🧱 Architecture Overview
 
-3. **TinyLFU Access Filter**
-   Integrates TinyLFU using background frequency sketches via a ring buffer. New entries are admitted only if they outperform existing ones, boosting hit rate and protecting hot keys.
+The system is composed of several packages, with clear separation of concerns:
 
-4. **Selective Evictor**
-   Eviction routine targets the top \~17% busiest shards (≈384 shards), removing the least-used items as identified by the TinyLFU filter for optimal freshness.
+- `pkg/storage` — pluggable cache layers (`lru`, `lfu`, `ristretto`), eviction policies, memory usage tracking
+- `pkg/caddy/middleware` — Caddy v2 middleware integration, config parsing, runtime hook
+- `pkg/traefik/middleware` — Traefik middleware plugin entrypoint
+- `pkg/model` — Zero-allocation representations of requests, responses, and internal keys
+- `pkg/list`, `pkg/buffer` — internal linked-lists, ring buffers, sharded maps
+- `pkg/prometheus/metrics` — VictoriaMetrics integration for request/status/time metrics
+- `internal/cache` — RESTful control interface, YAML reloading, cache orchestration
 
-5. **Probabilistic Refresher**
-   Background sampler picks random entries, applies `ShouldRefresh()` with a beta-based exponential timing algorithm, and updates through a configurable rate limiter to prevent stampedes.
+## 🛠 Installation & Build
 
-6. **On-Demand GZIP Response**
-   Responses larger than 1KB are compressed with GZIP and automatically tagged with `Content-Encoding: gzip` for efficient bandwidth usage.
+### Requirements
+- Go 1.20+
+- [Caddy](https://caddyserver.com/) (for Caddy middleware integration)
+- `make`, `docker` (optional for containerized builds)
 
-7. **Disk Dump & Load**
-   Snapshots entire cache to a gzipped file on disk and reloads on startup. Simple overwrite strategy—no rotation.
-
-8. **Flexible Request Keying**
-   Matches request path, filters query parameters and headers, and constructs cache keys based on configured rules for precise control.
-
-9. **Comprehensive Config**
-   Supports environment variables and YAML (see [config.prod.yaml](https://github.com/Borislavv/advanced-cache/blob/master/config/config.prod.yaml)) with these sections:
-
-   * **preallocate**: shard count, per-shard capacity
-   * **eviction**: policy, thresholds
-   * **storage**: type, memory limits
-   * **refresh**: TTL, rate, beta, error TTL, backend URL
-   * **persistence**: dump directory, file name
-   * **rules**: path-based key and value extraction filters
-
-10. **Metrics & Observability**
-    Exposes Prometheus metrics (`/metrics`) and readiness/liveness probes for Kubernetes. Detailed debug logs track rolling-window stats (5s,1m,5m,1h).
-
----
-
-## 🔧 Example Configuration
-
-### Environment Variables
-
-```
-CACHE_CONFIG_PATH="/config/config.prod.yaml" 
-FASTHTTP_SERVER_NAME="star.fast"
-FASTHTTP_SERVER_PORT=":8010"
-FASTHTTP_SERVER_SHUTDOWN_TIMEOUT="5s"
-FASTHTTP_SERVER_REQUEST_TIMEOUT="10s"
-IS_PROMETHEUS_METRICS_ENABLED="true"
-LIVENESS_PROBE_TIMEOUT="5s"
-```
-
-### YAML Configuration
-
-```yaml
-cache:
-  enabled: true
-  preallocate:
-    num_shards: 2048
-    per_shard: 8196
-  eviction:
-    policy: "lru"
-    threshold: 0.9
-  storage:
-    type: "malloc"
-    size: 21474836480
-  refresh:
-    ttl: "24h"
-    rate: 1000
-    error_ttl: "30m"
-    beta: 0.4
-    backend_url: "https://google.com"
-  persistence:
-    is_enabled: true
-    dump_dir: "public/dump"
-    dump_name: "cache.dump.gz"
-  rules:
-    - path: "/api/v1/user"
-      cache_key:
-        query: ['param1','param2','param3','param4']
-        headers: ['Accept-Encoding','X-Custom-ID']
-      cache_value:
-        headers: ['Cache-Control','X-Custom-ID']
-    - path: "/api/v1/data"
-      cache_key:
-        query: ['param1','param2','param3','param4','param5']
-        headers: ['Accept-Encoding','X-Custom-ID']
-      cache_value:
-        headers: ['Cache-Control','X-Custom-ID']
-```
-
----
-
-## 🏗️ Architecture Overview
-
-* **Sharded Storage**: 2048 shards, each with map + per-shard LRU list + TinyLFU sketch.
-* **Eviction**: Select busiest \~17% shards, purge bottom frequency items.
-* **Refresh**: Random sampling, beta-probability, rate-limited updates.
-* **Pooling**: Aggressive sync.Pool & custom BatchPool for buffers, requests, and responses.
-* **HTTP API**: FastHTTP endpoints for cache ops, health, and metrics.
-* **Persistence**: Gzipped dump on shutdown, load on startup.
-
----
-
-## 🛠️ Quick Start
-
+### Building the Server
 ```bash
 git clone https://github.com/Borislavv/advanced-cache.git
 cd advanced-cache
-go build -o advcache
-
-# Run with envs:
-CACHE_CONFIG_PATH="/config/config.prod.yaml" 
-FASTHTTP_SERVER_NAME="star.fast" 
-FASTHTTP_SERVER_PORT=":8010" 
-FASTHTTP_SERVER_SHUTDOWN_TIMEOUT="5s" 
-FASTHTTP_SERVER_REQUEST_TIMEOUT="10s" 
-IS_PROMETHEUS_METRICS_ENABLED="true" 
-LIVENESS_PROBE_TIMEOUT="5s" 
-
-// change ./config/{conifg.prod|config.local|config.test}.yaml if you need
-
-./advcache
+go build -o advanced-cache ./cmd
 ```
 
----
+## 🚀 Quick Start (Caddy)
 
-### 👊 Advanced cache vs. Ristretto
-<img width="1372" alt="image" src="https://github.com/user-attachments/assets/f75bcb71-47a5-46c0-8670-2bc1d8a5e970" />
+Set up Caddyfile and copy middleware module from pkg/caddy (register your module in caddy/cmd/caddy/main.go -> `_ "github.com/caddyserver/caddy/v2/modules/advancedcache"`).
+`Caddyfile` example:
+```caddy
+:80 {
+  route {
+    advanced_cache {
+      config_path /config/config.prod.yaml
+    }
+    reverse_proxy http://localhost:8080
+  }
+}
+```
 
-**Note: benchmark has 1000 operations per iteration (results must be divided by 1000).**
-**See test by path for get more details: /pkg/storage/{ristretto_test|storage_test}.go** 
+## 🚀 Quick Start (Traefik)
 
-## 👤 Author & Maintainer
+Copy middleware plugin from pkg/traefik and register it in Traefik as middleware.
 
-* **Glazunov Borislav**
-* **Email**: [glazunov2142@gmail.com](mailto:glazunov2142@gmail.com)
-* **Telegram**: @BorislavGlazunov
+## ⚙️ Configuration
 
----
+Configuration is loaded from a YAML file. Example:
+```yaml
+cache:
+   env: "prod"
+   enabled: true
 
-**Keywords:** `golang cache` `traefik middleware` `kubernetes cache` `LRU TinyLFU` `high-performance` `in-memory cache` `prometheus metrics`
+   lifetime:
+      max_req_dur: "100ms" # If a request lifetime is longer than 100ms then request will be canceled by context.
+      escape_max_req_dur: "X-Google-Bot" # If the header exists the timeout above will be skipped.
+
+   upstream:
+      url: "http://localhost:8020" # downstream reverse proxy host:port
+      rate: 1000 # Rate limiting reqs to backend per second.
+      timeout: "10s" # Timeout for requests to backend.
+
+   preallocate:
+      num_shards: 2048 # Fixed constant (see `NumOfShards` in code). Controls the number of sharded maps.
+      per_shard: 8196  # Preallocated map size per shard. Without resizing, this supports 2048*8196=~16785408 keys in total.
+      # Note: this is an upper-bound estimate and may vary depending on hash distribution quality.
+
+   eviction:
+      threshold: 0.9 # Trigger eviction when cache memory usage exceeds 90% of its configured limit.
+
+   storage:
+      size: 32212254720 # 30 GB of maximum allowed memory for the in-memory cache (in bytes).
+
+   refresh:
+      ttl: "12h"
+      error_ttl: "1h"
+      rate: 1000 # Rate limiting reqs to backend per second.
+      scan_rate: 10000 # Rate limiting of num scans items per second.
+      beta: 0.4 # Controls randomness in refresh timing to avoid thundering herd (from 0 to 1).
+
+   persistence:
+      dump:
+         enabled: true
+         format: "gzip" # gzip or raw json
+         dump_dir: "public/dump"
+         dump_name: "cache.dump.gz"
+         rotate_policy: "ring" # fixed, ring
+         max_files: 7
+
+   rules:
+      - path: "/api/v2/user"
+        ttl: "24h"
+        error_ttl: "1h"
+        beta: 0.3 # Controls randomness in refresh timing to avoid thundering herd.
+        cache_key:
+           query: ['project[id]', 'domain', 'language', 'choice'] # Match query parameters by prefix.
+           headers: ['Accept-Encoding', 'X-Project-ID']           # Match headers by exact value.
+        cache_value:
+           headers: ['X-Project-ID']                              # Store only when headers match exactly.
+
+      - path: "/api/v1/data"
+        ttl: "36h"
+        error_ttl: "3h"
+        beta: 0.3 # Controls randomness in refresh timing to avoid thundering herd.
+        cache_key:
+           query: ['project[id]', 'domain', 'language', 'choice'] # Match query parameters by prefix.
+           headers: ['Accept-Encoding', 'X-Project-ID']           # Match headers by exact value.
+        cache_value:
+           headers: ['X-Project-ID']                              # Store only when headers match exactly.
+
+```
+
+### Environment Variables
+- `CONFIG_PATH`: Override path to config YAML
+- `LOG_LEVEL`: Logging verbosity (default: `info`)
+
+## 🧪 Use Cases
+
+- API response caching
+- Static asset edge caching
+- Server-side HTML/SSR caching
+- Caddy or Traefik based high-RPS load balancing with in-memory acceleration
+
+## 🔌 Extendability
+
+- Plug your own storage backend via `pkg/storage`
+- Customize request hash, serialization, TTL rules per route
+- Add middlewares via `pkg/server/middleware`
+
+## 📈 Metrics & Monitoring
+
+- `advanced_cache_http_requests_total{path,method,status}`
+- `advanced_cache_memory_usage_bytes`
+- `advanced_cache_items_total`
+- `/metrics` exposes data in VictoriaMetrics-compatible format
+
+## 🪪 License
+MIT — see [LICENSE](./LICENSE) for full text.
+
+## 📬 Contact
+Maintained by [Borislav Glazunov](https://github.com/Borislavv). For support, open an issue or reach out via GitHub.
