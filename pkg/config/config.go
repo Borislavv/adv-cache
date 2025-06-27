@@ -98,9 +98,8 @@ type Refresh struct {
 	// expireTime = ttl * (-beta * ln(random()))
 	// Подробнее: RFC 5861 и https://web.archive.org/web/20100829170210/http://labs.google.com/papers/staleness.pdf
 	// beta: "0.4"
-	Beta     float64       `yaml:"beta"`      // between 0 and 1
-	MinStale time.Duration `yaml:"min_stale"` // computed=time.Duration(float64(TTL/ErrorTTL) * Beta)
-	Timeout  time.Duration `yaml:"timeout"`   // computed=time.Duration(float64(TTL/ErrorTTL) * Beta)
+	Beta     float64       `yaml:"beta"` // between 0 and 1
+	MinStale time.Duration // computed=time.Duration(float64(TTL/ErrorTTL) * Beta)
 }
 
 type Rule struct {

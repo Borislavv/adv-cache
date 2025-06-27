@@ -55,7 +55,7 @@ func (s *Backend) RevalidatorMaker(req *model.Request) func(ctx context.Context)
 // Returns a Data object suitable for caching.
 func (s *Backend) requestExternalBackend(ctx context.Context, req *model.Request) (*model.Data, error) {
 	// Apply a hard timeout for the HTTP request.
-	ctx, cancel := context.WithTimeout(ctx, s.cfg.Cache.Refresh.Timeout)
+	ctx, cancel := context.WithTimeout(ctx, s.cfg.Cache.Upstream.Timeout)
 	defer cancel()
 
 	url := s.cfg.Cache.Upstream.Url
