@@ -50,7 +50,7 @@ func (s *HTTP) serve(wg *sync.WaitGroup) {
 	defer log.Info().Msgf("[server] %v was stopped (port: %v)", name, port)
 
 	if err := s.server.ListenAndServe(port); err != nil {
-		log.Err(err).Msgf("[server] %v failed to listen and serve port %v: %v", name, port, err.Error())
+		log.Error().Err(err).Msgf("[server] %v failed to listen and serve port %v: %v", name, port, err.Error())
 	}
 }
 

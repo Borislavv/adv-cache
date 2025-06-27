@@ -58,7 +58,7 @@ func (s *Backend) requestExternalBackend(ctx context.Context, req *model.Request
 	ctx, cancel := context.WithTimeout(ctx, s.cfg.Cache.Refresh.Timeout)
 	defer cancel()
 
-	url := s.cfg.Cache.Refresh.BackendURL
+	url := s.cfg.Cache.Upstream.Url
 	query := req.ToQuery()
 
 	// Efficiently concatenate base URL and query.

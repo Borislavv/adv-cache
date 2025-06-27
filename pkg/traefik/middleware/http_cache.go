@@ -82,7 +82,7 @@ package middleware
 //	if err != nil {
 //		w.WriteHeader(http.StatusBadRequest)
 //		if _, werr := w.Write(internalServerErrorJson); werr != nil {
-//			log.Err(err).Msg("error while writing response into http.ResponseWriter")
+//			log.Error().Err(err).Msg("error while writing response into http.ResponseWriter")
 //		}
 //		return
 //	}
@@ -117,7 +117,7 @@ package middleware
 //		return p.seoRepo.Fetch()
 //	})
 //	if err != nil {
-//		log.Err(err).Msg("failed to make response")
+//		log.Error().Err(err).Msg("failed to make response")
 //		w.WriteHeader(http.StatusInternalServerError)
 //		if _, werr := w.Write(internalServerErrorJson); werr != nil {
 //			log.Err(werr).Msg("error while writing response into http.ResponseWriter")

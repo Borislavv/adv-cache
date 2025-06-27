@@ -29,14 +29,14 @@ func (c *Controller) Probe(ctx *fasthttp.RequestCtx) {
 	if c.probe.IsAlive() {
 		ctx.SetStatusCode(fasthttp.StatusOK)
 		if _, err := ctx.Write(successResponseBytes); err != nil {
-			log.Err(err).Msg("[probe-controller] failed to write success response into *fasthttp.RequestCtx")
+			log.Error().Err(err).Msg("[probe-controller] failed to write success response into *fasthttp.RequestCtx")
 		}
 		return
 	}
 
 	ctx.SetStatusCode(fasthttp.StatusServiceUnavailable)
 	if _, err := ctx.Write(failedResponseBytes); err != nil {
-		log.Err(err).Msg("[probe-controller] failed to write failed response into *fasthttp.RequestCtx")
+		log.Error().Err(err).Msg("[probe-controller] failed to write failed response into *fasthttp.RequestCtx")
 	}
 }
 

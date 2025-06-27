@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
-	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
 	"io"
 	"net/http"
 	"os"
@@ -57,14 +56,14 @@ type Dumper interface {
 type Dump struct {
 	cfg        *config.Cache
 	shardedMap *sharded.Map[*model.Response] // Sharded storage for cache entries
-	storage    *lru.Storage
+	storage    Storage
 	backend    repository.Backender
 }
 
 func NewDumper(
 	cfg *config.Cache,
 	shardedMap *sharded.Map[*model.Response],
-	storage *lru.Storage,
+	storage Storage,
 	backend repository.Backender,
 ) *Dump {
 	return &Dump{
@@ -103,7 +102,7 @@ func (d *Dump) Dump(ctx context.Context) error {
 	var finalName string
 	if cfg.RotatePolicy == "ring" {
 		if err := rotateOldFiles(cfg.Dir, cfg.Name, ext, cfg.MaxFiles); err != nil {
-			log.Err(err).Msg("[dump] rotation error")
+			log.Error().Err(err).Msg("[dump] rotation error")
 		}
 		timestamp := time.Now().Format("20060102T150405")
 		finalName = fmt.Sprintf("%s.%s%s", cfg.Name, timestamp, ext)
@@ -158,7 +157,7 @@ func (d *Dump) Dump(ctx context.Context) error {
 			}
 
 			if err := enc.Encode(e); err != nil {
-				log.Err(err).Msg("[dump] entry encode error")
+				log.Error().Err(err).Msg("[dump] entry encode error")
 				atomic.AddInt32(&errorNum, 1)
 			} else {
 				atomic.AddInt32(&successNum, 1)
@@ -243,7 +242,7 @@ func (d *Dump) Load(ctx context.Context) error {
 
 		entry := dumpEntryPool.Get().(*dumpEntry)
 		if err := dec.Decode(entry); err != nil {
-			log.Err(err).Msg("[dump] entry decode error")
+			log.Error().Err(err).Msg("[dump] entry decode error")
 			errorNum++
 			dumpEntryPool.Put(entry)
 			continue
@@ -253,7 +252,7 @@ func (d *Dump) Load(ctx context.Context) error {
 		req := model.NewRawRequest(d.cfg, entry.MapKey, entry.ShardKey, entry.Query, entry.Path)
 		resp, err := model.NewResponse(data, req, d.cfg, d.backend.RevalidatorMaker(req))
 		if err != nil {
-			log.Err(err).Msg("[dump] response build failed")
+			log.Error().Err(err).Msg("[dump] response build failed")
 			errorNum++
 			dumpEntryPool.Put(entry)
 			continue
@@ -321,7 +320,7 @@ func rotateOldFiles(dir, baseName, ext string, maxFiles int) error {
 	numToRemove := len(sorted) - (maxFiles - 1)
 	for i := 0; i < numToRemove; i++ {
 		if err := os.Remove(sorted[i]); err != nil {
-			log.Err(err).Msgf("[dump] failed to remove old dump file %s", sorted[i])
+			log.Error().Err(err).Msgf("[dump] failed to remove old dump file %s", sorted[i])
 		}
 	}
 	return nil

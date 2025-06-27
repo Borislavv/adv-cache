@@ -113,10 +113,13 @@ func (r *Refresh) runLogger() {
 				return
 			case <-r.refreshSuccessNumCh:
 				refreshesNumPer5Sec++
+				runtime.Gosched()
 			case <-r.refreshErroredNumCh:
 				erroredNumPer5Sec++
+				runtime.Gosched()
 			case <-ticker:
-				if erroredNumPer5Sec <= 0 && refreshesNumPer5Sec <= 0 {
+				if refreshesNumPer5Sec <= 0 && erroredNumPer5Sec <= 0 {
+					runtime.Gosched()
 					continue loop
 				}
 

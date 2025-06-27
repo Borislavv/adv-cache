@@ -50,6 +50,7 @@ func NewEvictor(ctx context.Context, cfg *config.Cache, db Storage, balancer lru
 
 // Run launches multiple evictor goroutines for concurrent eviction.
 func (e *Evict) Run() {
+	e.runLogger()
 	go e.run()
 }
 
@@ -134,6 +135,7 @@ func (e *Evict) runLogger() {
 			evictsMemPer5Sec int64
 			ticker           = utils.NewTicker(e.ctx, 5*time.Second)
 		)
+	loop:
 		for {
 			select {
 			case <-e.ctx.Done():
@@ -143,21 +145,24 @@ func (e *Evict) runLogger() {
 				evictsMemPer5Sec += stat.freedMem
 				runtime.Gosched()
 			case <-ticker:
-				if evictsNumPer5Sec > 0 || evictsMemPer5Sec > 0 {
-					logEvent := log.Info()
-
-					if e.cfg.IsProd() {
-						logEvent.
-							Str("target", "eviction").
-							Str("freedMemBytes", strconv.Itoa(int(evictsMemPer5Sec))).
-							Str("freedItems", strconv.Itoa(evictsNumPer5Sec))
-					}
-
-					logEvent.Msgf("[eviction][5s] removed %d items, freed %s bytes", evictsNumPer5Sec, utils.FmtMem(evictsMemPer5Sec))
-
-					evictsNumPer5Sec = 0
-					evictsMemPer5Sec = 0
+				if evictsNumPer5Sec <= 0 && evictsMemPer5Sec <= 0 {
+					runtime.Gosched()
+					continue loop
 				}
+
+				logEvent := log.Info()
+
+				if e.cfg.IsProd() {
+					logEvent.
+						Str("target", "eviction").
+						Str("freedMemBytes", strconv.Itoa(int(evictsMemPer5Sec))).
+						Str("freedItems", strconv.Itoa(evictsNumPer5Sec))
+				}
+
+				logEvent.Msgf("[eviction][5s] removed %d items, freed %s bytes", evictsNumPer5Sec, utils.FmtMem(evictsMemPer5Sec))
+
+				evictsNumPer5Sec = 0
+				evictsMemPer5Sec = 0
 				runtime.Gosched()
 			}
 		}
