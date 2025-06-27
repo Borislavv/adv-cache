@@ -16,7 +16,7 @@ package middleware
 //
 //var internalServerErrorJson = []byte(`{"error": {"message": "Internal server error."}}`)
 //
-//type Cache struct {
+//type TmpCache struct {
 //	BackendUrl string `mapstructure:"SEO_URL"`
 //	// RevalidateBeta is a value which will be used for generate
 //	// random time point for refresh response (must be from 0.1 to 0.9).
@@ -32,8 +32,8 @@ package middleware
 //	MemoryLimit               float64       `mapstructure:"MEMORY_LIMIT"`
 //}
 //
-//func CreateConfig() *Cache {
-//	return &Cache{
+//func CreateConfig() *TmpCache {
+//	return &TmpCache{
 //		InitStorageLengthPerShard: 256,
 //		EvictionAlgo:              string(cache.LRU),
 //		MemoryFillThreshold:       0.97,
@@ -48,13 +48,13 @@ package middleware
 //	ctx     context.Context
 //	next    http.Handler
 //	name    string
-//	config  *Cache
+//	config  *TmpCache
 //	seoRepo repository.Seo
 //	storage storage.Storage
 //}
 //
-//func New(ctx context.Context, next http.Handler, config *Cache, name string) http.Handler {
-//	cacheCfg := &cfg.Cache{
+//func New(ctx context.Context, next http.Handler, config *TmpCache, name string) http.Handler {
+//	cacheCfg := &cfg.TmpCache{
 //		BackendUrl:                config.BackendUrl,
 //		RevalidateBeta:            config.RevalidateBeta,
 //		RevalidateInterval:        config.RevalidateInterval,
