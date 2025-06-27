@@ -58,7 +58,7 @@ func loadCfg() *config.Config {
 	}
 
 	cfgPath := &configPath{}
-	if err := viper.Unmarshal(cfg); err != nil {
+	if err := viper.Unmarshal(cfgPath); err != nil {
 		log.Err(err).Msg("[main] failed to unmarshal config from envs")
 		panic(err)
 	}
