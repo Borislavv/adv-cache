@@ -51,7 +51,7 @@
 ### Environment Variables
 
 ```
-APP_ENV="prod"
+CACHE_CONFIG_PATH="/config/config.prod.yaml" 
 FASTHTTP_SERVER_NAME="star.fast"
 FASTHTTP_SERVER_PORT=":8010"
 FASTHTTP_SERVER_SHUTDOWN_TIMEOUT="5s"
@@ -120,7 +120,7 @@ cd advanced-cache
 go build -o advcache
 
 # Run with envs:
-APP_ENV="prod" 
+CACHE_CONFIG_PATH="/config/config.prod.yaml" 
 FASTHTTP_SERVER_NAME="star.fast" 
 FASTHTTP_SERVER_PORT=":8010" 
 FASTHTTP_SERVER_SHUTDOWN_TIMEOUT="5s" 

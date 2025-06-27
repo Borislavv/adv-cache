@@ -25,7 +25,7 @@ func init() {
 
 	// Bind all relevant environment variables using Viper.
 	viper.AutomaticEnv()
-	_ = viper.BindEnv("APP_ENV")
+	_ = viper.BindEnv("CACHE_CONFIG_PATH")
 	_ = viper.BindEnv("FASTHTTP_SERVER_NAME")
 	_ = viper.BindEnv("FASTHTTP_SERVER_PORT")
 	_ = viper.BindEnv("FASTHTTP_SERVER_SHUTDOWN_TIMEOUT")
@@ -53,7 +53,17 @@ func loadCfg() *config.Config {
 		panic(err)
 	}
 
-	cacheConfig, err := config2.LoadConfig()
+	type configPath struct {
+		ConfigPath string `envconfig:"IS_PROMETHEUS_METRICS_ENABLED" mapstructure:"CACHE_CONFIG_PATH" default:"/config/config.dev.yaml"`
+	}
+
+	cfgPath := &configPath{}
+	if err := viper.Unmarshal(cfgPath); err != nil {
+		log.Err(err).Msg("[main] failed to unmarshal config from envs")
+		panic(err)
+	}
+
+	cacheConfig, err := config2.LoadConfig(cfgPath.ConfigPath)
 	if err != nil {
 		log.Err(err).Msg("[main] failed to load config from envs")
 		panic(err)

@@ -1,7 +1,6 @@
 package config
 
 import (
-	"errors"
 	"fmt"
 	"gopkg.in/yaml.v3"
 	"os"
@@ -38,12 +37,25 @@ type Env struct {
 type CacheBox struct {
 	Env         string        `yaml:"env"`
 	Enabled     bool          `yaml:"enabled"`
+	LifeTime    Lifetime      `yaml:"lifetime"`
+	Upstream    Upstream      `yaml:"upstream"`
 	Persistence Persistence   `yaml:"persistence"`
 	Preallocate Preallocation `yaml:"preallocate"`
 	Eviction    Eviction      `yaml:"eviction"`
 	Refresh     Refresh       `yaml:"refresh"`
 	Storage     Storage       `yaml:"storage"`
 	Rules       []*Rule       `yaml:"rules"`
+}
+
+type Lifetime struct {
+	MaxReqDuration             time.Duration `yaml:"max_req_dur"`               // If a request lifetime is longer than 100ms then request will be canceled by context.
+	EscapeMaxReqDurationHeader string        `yaml:"escape_max_req_dur_header"` // If the header exists the timeout above will be skipped.
+}
+
+type Upstream struct {
+	Url     string        `yaml:"url"`     // Reverse Proxy url (can be found in Caddyfile). URL to underlying backend.
+	Rate    int           `yaml:"rate"`    // Rate limiting reqs to backend per second.
+	Timeout time.Duration `yaml:"timeout"` // Timeout for requests to backend.
 }
 
 type Dump struct {
@@ -86,10 +98,9 @@ type Refresh struct {
 	// expireTime = ttl * (-beta * ln(random()))
 	// Подробнее: RFC 5861 и https://web.archive.org/web/20100829170210/http://labs.google.com/papers/staleness.pdf
 	// beta: "0.4"
-	Beta       float64       `yaml:"beta"`      // between 0 and 1
-	MinStale   time.Duration `yaml:"min_stale"` // computed=time.Duration(float64(TTL/ErrorTTL) * Beta)
-	Timeout    time.Duration `yaml:"timeout"`   // computed=time.Duration(float64(TTL/ErrorTTL) * Beta)
-	BackendURL string        `yaml:"backend_url"`
+	Beta     float64       `yaml:"beta"`      // between 0 and 1
+	MinStale time.Duration `yaml:"min_stale"` // computed=time.Duration(float64(TTL/ErrorTTL) * Beta)
+	Timeout  time.Duration `yaml:"timeout"`   // computed=time.Duration(float64(TTL/ErrorTTL) * Beta)
 }
 
 type Rule struct {
@@ -115,27 +126,7 @@ type Value struct {
 	HeadersBytes [][]byte
 }
 
-const (
-	configPath     = "/config/config.prod.yaml"
-	configPathDev  = "/config/config.dev.yaml"
-	configPathTest = "/../../config/config.test.yaml"
-)
-
-func LoadConfig() (*Cache, error) {
-	env := os.Getenv("APP_ENV")
-
-	var path string
-	switch {
-	case env == Prod:
-		path = configPath
-	case env == Dev:
-		path = configPathDev
-	case env == Test:
-		path = configPathTest
-	default:
-		return nil, errors.New("unknown APP_ENV: '" + env + "'")
-	}
-
+func LoadConfig(path string) (*Cache, error) {
 	dir, err := os.Getwd()
 	if err != nil {
 		return nil, err
@@ -159,7 +150,6 @@ func LoadConfig() (*Cache, error) {
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("unmarshal yaml from %s: %w", path, err)
 	}
-	cfg.Cache.Env = env
 
 	for k, rule := range cfg.Cache.Rules {
 		cfg.Cache.Rules[k].PathBytes = []byte(rule.Path)
