@@ -108,9 +108,9 @@ type Rule struct {
 	TTL        time.Duration `yaml:"ttl"`       // TTL for this rule.
 	ErrorTTL   time.Duration `yaml:"error_ttl"` // ErrorTTL for this rule.
 	Beta       float64       `yaml:"beta"`      // between 0 and 1
-	MinStale   time.Duration `yaml:"min_stale"` // computed=time.Duration(float64(TTL/ErrorTTL) * Beta)
 	CacheKey   Key           `yaml:"cache_key"`
 	CacheValue Value         `yaml:"cache_value"`
+	MinStale   time.Duration // computed=time.Duration(float64(TTL/ErrorTTL) * Beta)
 }
 
 type Key struct {
