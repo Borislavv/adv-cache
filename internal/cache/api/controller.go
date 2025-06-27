@@ -78,7 +78,7 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 	var from = time.Now()
 
 	// Parse request parameters.
-	req := model.NewRequestFromFasthttp(c.cfg.Cache, r)
+	req, _ := model.NewRequestFromFasthttp(c.cfg.Cache, r)
 
 	// Try to get response from cache.
 	resp, found := c.cache.Get(req)
