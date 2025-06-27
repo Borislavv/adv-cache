@@ -7,7 +7,7 @@ It features a sharded LRU/TinyLFU cache, zero-allocation request modeling, memor
 
 ## ✨ Features
 
-- 🔄 **In-Memory Caching** with configurable LRU, LFU, and TinyLFU eviction algorithms
+- 🔄 **In-Memory Caching** with configurable LRU + TinyLFU eviction algorithms
 - 🔧 **Pluggable Storage Backends** with sharding support and atomic access
 - 🧠 **Zero-allocation path + query modeling** with fast hashing and no garbage
 - 🚀 **Ultra-low latency**, designed for high-throughput APIs and edge caches
