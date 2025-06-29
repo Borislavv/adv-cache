@@ -7,7 +7,7 @@ It features a sharded LRU/TinyLFU cache, zero-allocation request modeling, memor
 
 ## ✨ Features
 
-- 🔄 **In-Memory Caching** with configurable LRU, LFU, and TinyLFU eviction algorithms
+- 🔄 **In-Memory Caching** with configurable LRU + TinyLFU eviction algorithms
 - 🔧 **Pluggable Storage Backends** with sharding support and atomic access
 - 🧠 **Zero-allocation path + query modeling** with fast hashing and no garbage
 - 🚀 **Ultra-low latency**, designed for high-throughput APIs and edge caches
@@ -21,7 +21,7 @@ It features a sharded LRU/TinyLFU cache, zero-allocation request modeling, memor
 
 The system is composed of several packages, with clear separation of concerns:
 
-- `pkg/storage` — pluggable cache layers (`lru`, `lfu`, `ristretto`), eviction policies, memory usage tracking
+- `pkg/storage` — pluggable cache layers (`lru`, `lfu`), eviction policies, memory usage tracking
 - `pkg/caddy/middleware` — Caddy v2 middleware integration, config parsing, runtime hook
 - `pkg/traefik/middleware` — Traefik middleware plugin entrypoint
 - `pkg/model` — Zero-allocation representations of requests, responses, and internal keys
