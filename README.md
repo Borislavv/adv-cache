@@ -4,6 +4,7 @@
 
 Advanced Cache is a blazing-fast, production-ready caching layer for Go-based HTTP servers, designed with performance-first principles.
 It features a sharded LRU/TinyLFU cache, zero-allocation request modeling, memory-aware eviction, GZIP compression, and deep integration with **Caddy** and **Traefik**.
+If you like this project, ⭐️ it!
 
 ## ✨ Features
 
