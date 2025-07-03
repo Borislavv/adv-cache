@@ -249,8 +249,8 @@ func (d *Dump) Load(ctx context.Context) error {
 }
 
 func (d *Dump) buildResponseFromEntry(entry *dumpEntry) (*model.Response, error) {
-	data := model.NewData(d.cfg, entry.Path, entry.StatusCode, entry.Headers, entry.Body)
 	req := model.NewRawRequest(d.cfg, entry.MapKey, entry.ShardKey, entry.Query, entry.Path, entry.QueryHeaders)
+	data := model.NewData(req.Rule(), entry.StatusCode, entry.Headers, entry.Body)
 	resp, err := model.NewResponse(data, req, d.cfg, d.backend.RevalidatorMaker(req))
 	if err != nil {
 		return nil, err
