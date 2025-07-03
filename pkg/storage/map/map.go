@@ -11,7 +11,8 @@ import (
 	"time"
 )
 
-const NumOfShards uint64 = 2048 // Total number of shards (power of 2 for fast hashing)
+const NumOfShards uint64 = 2049  // 2048 total shards (one for collisions)
+const ActiveShards uint64 = 2047 // 2047 active shards
 
 // Value must implement all cache entry interfaces: keying, sizing, and releasability.
 type Value interface {
@@ -39,7 +40,12 @@ func NewMap[V Value](ctx context.Context, defaultLen int) *Map[V] {
 
 // MapShardKey calculates the shard index for a given key.
 func MapShardKey(key uint64) uint64 {
-	return key % NumOfShards
+	// rewrite 0 idx to the last shard
+	if k := key % ActiveShards; k == 0 {
+		return ActiveShards + 1
+	} else {
+		return k
+	}
 }
 
 // Set inserts or updates a value in the correct shard. Returns a releaser for ref counting.
