@@ -7,7 +7,7 @@ cache:
     escape_max_req_dur: "X-Google-Bot" # If the header exists the timeout above will be skipped.
 
   upstream:
-    url: "http://localhost:8020" # downstream reverse proxy host:port
+    url: "https://google.com" # downstream reverse proxy host:port
     rate: 160 # Rate limiting reqs to backend per second.
     timeout: "10s" # Timeout for requests to backend.
 
@@ -20,7 +20,7 @@ cache:
     threshold: 0.9 # Trigger eviction when cache memory usage exceeds 90% of its configured limit.
 
   storage:
-    size: 3221225472 # 3 GB of maximum allowed memory for the in-memory cache (in bytes).
+    size: 32212254720 # 32GB of maximum allowed memory for the in-memory cache (in bytes).
 
   refresh:
     ttl: "1h"
@@ -45,9 +45,15 @@ cache:
       beta: 0.3 # Controls randomness in refresh timing to avoid thundering herd.
       cache_key:
         query: ['project[id]', 'domain', 'language', 'choice'] # Match query parameters by prefix.
-        headers: ['Accept-Encoding', 'X-Project-ID']           # Match headers by exact value.
+        headers:
+          - Accept-Encoding  # Обязательно! gzip / br / deflate.
+          - Accept-Language  # Если у тебя мультиязычный контент.
       cache_value:
-        headers: ['X-Project-ID']                              # Store only when headers match exactly.
+        headers:
+          - Content-Type       # Тип ответа. Например: application/json.
+          - Content-Encoding   # Указывает, что тело сжатое (gzip, br).
+          - Cache-Control      # Если отдаёшь клиенту max-age, public/private.
+          - Vary               # Если ты варьируешь по Accept-Encoding или Accept-Language.
 
     - path: "/api/v1/pagecontent"
       ttl: "36h"
