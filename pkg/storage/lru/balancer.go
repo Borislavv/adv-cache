@@ -78,7 +78,11 @@ func (b *Balance) Shards() [sharded.NumOfShards]*ShardNode {
 
 // RandNode returns a random ShardNode for sampling (e.g., for background refreshers).
 func (b *Balance) RandNode() *ShardNode {
-	return b.shards[rand.Uint64N(sharded.NumOfShards)]
+	if n := b.shards[rand.Uint64N(sharded.NumOfShards)]; n.Shard.ID() == 0 {
+		return b.shards[rand.Uint64N(sharded.ActiveShards)]
+	} else {
+		return n
+	}
 }
 
 // Register inserts a new ShardNode for a given Shard, creates its Storage, and adds it to memList and shards array.
