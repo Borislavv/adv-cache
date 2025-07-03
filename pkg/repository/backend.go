@@ -6,6 +6,7 @@ import (
 	"errors"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/model"
+	"io"
 	"net/http"
 )
 
@@ -83,11 +84,11 @@ func (s *Backend) requestExternalBackend(ctx context.Context, req *model.Request
 	defer func() { _ = response.Body.Close() }()
 
 	// Read response body using a pooled reader to reduce allocations.
-	body := new(bytes.Buffer)
-	_, err = body.ReadFrom(response.Body)
+	var buf bytes.Buffer
+	_, err = io.Copy(&buf, response.Body)
 	if err != nil {
 		return nil, err
 	}
 
-	return model.NewData(req.Rule(), response.StatusCode, response.Header, body.Bytes()), nil
+	return model.NewData(req.Rule(), response.StatusCode, response.Header, buf.Bytes()), nil
 }
