@@ -20,13 +20,12 @@ var (
 )
 
 type Request struct {
-	rule        *config.Rule // possibly nil pointer (be careful)
-	key         uint64
-	shard       uint64
-	OriginQuery []byte
-	query       []byte
-	path        []byte
-	headers     [][2][]byte
+	rule    *config.Rule // possibly nil pointer (be careful)
+	key     uint64
+	shard   uint64
+	query   []byte
+	path    []byte
+	headers [][2][]byte
 }
 
 func NewRequestFromNetHttp(cfg *config.Cache, r *http.Request) (*Request, error) {
@@ -72,8 +71,15 @@ func NewRawRequest(cfg *config.Cache, key, shard uint64, query, path []byte, hea
 
 func NewRequest(cfg *config.Cache, path []byte, argsKvPairs [][2][]byte, headersKvPairs [][2][]byte) *Request {
 	req := &Request{path: path, rule: matchRule(cfg, path)}
-	req.setUpManually(argsKvPairs, headersKvPairs)
+	req.setUpManually(
+		getFilteredAndSortedKeyQueriesManual(argsKvPairs, req.rule.CacheKey.QueryBytes),
+		getFilteredAndSortedKeyHeadersManual(headersKvPairs, req.rule.CacheKey.HeadersBytes),
+	)
 	return req
+}
+
+func (r *Request) Rule() *config.Rule {
+	return r.rule
 }
 
 func (r *Request) ToQuery() []byte {
@@ -97,7 +103,11 @@ func (r *Request) ShardKey() uint64 {
 }
 
 func (r *Request) Weight() int64 {
-	return int64(unsafe.Sizeof(*r)) + int64(len(r.query))
+	weight := int64(unsafe.Sizeof(*r)) + int64(len(r.query)) + int64(len(r.path))
+	for _, kv := range r.Headers() {
+		weight += int64(unsafe.Sizeof(kv)) + int64(len(kv[0])) + int64(len(kv[1]))
+	}
+	return weight
 }
 
 func (r *Request) setUpManually(argsKvPairs [][2][]byte, headersKvPairs [][2][]byte) {
@@ -148,9 +158,8 @@ func (r *Request) setUpManually(argsKvPairs [][2][]byte, headersKvPairs [][2][]b
 		buf = append(buf, headersBuf...)
 	}
 
-	r.query = queryBuf[:]
-	r.OriginQuery = append(r.OriginQuery, queryBuf[:]...)
 	r.key = hash(buf[:])
+	r.query = queryBuf[:]
 	r.shard = sharded.MapShardKey(r.key)
 }
 
@@ -260,6 +269,49 @@ func getFilteredAndSortedKeyHeadersFastHttp(r *fasthttp.RequestHeader, allowed [
 			}
 		}
 	})
+	sort.Slice(filtered, func(i, j int) bool {
+		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
+	})
+	return filtered
+}
+
+func getFilteredAndSortedKeyQueriesManual(inputKvPairs [][2][]byte, allowed [][]byte) (kvPairs [][2][]byte) {
+	var filtered = make([][2][]byte, 0, len(allowed))
+	if len(allowed) == 0 {
+		return filtered
+	}
+	for _, kvPair := range inputKvPairs {
+		for _, ak := range allowed {
+			if bytes.HasPrefix(kvPair[0], ak) {
+				filtered = append(filtered, [2][]byte{
+					append([]byte(nil), kvPair[0]...),
+					append([]byte(nil), kvPair[1]...),
+				})
+			}
+		}
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
+	})
+	return filtered
+}
+
+func getFilteredAndSortedKeyHeadersManual(inputKvPairs [][2][]byte, allowed [][]byte) (kvPairs [][2][]byte) {
+	var filtered = make([][2][]byte, 0, len(allowed))
+	if len(allowed) == 0 {
+		return filtered
+	}
+	for _, kvPair := range inputKvPairs {
+		for _, allowedKey := range allowed {
+			if bytes.EqualFold(kvPair[0], allowedKey) {
+				filtered = append(filtered, [2][]byte{
+					append([]byte(nil), kvPair[0]...),
+					append([]byte(nil), kvPair[1]...),
+				})
+				break
+			}
+		}
+	}
 	sort.Slice(filtered, func(i, j int) bool {
 		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
 	})
