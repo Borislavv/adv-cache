@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"fmt"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/list"
 	"math"
 	"math/rand/v2"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -216,4 +218,46 @@ func (r *Response) setUpWeight() int64 {
 // Weight estimates the in-memory size of this response (including dynamic fields).
 func (r *Response) Weight() int64 {
 	return r.weight
+}
+
+func (r *Response) PrintDump() {
+	req := r.Request()
+	data := r.Data()
+
+	// Format request headers
+	reqHeaders := make([]string, 0, len(req.Headers()))
+	for _, header := range req.Headers() {
+		reqHeaders = append(reqHeaders, fmt.Sprintf("%s: %s", header[0], header[1]))
+	}
+
+	// Format data headers
+	dataHeaders := make([]string, 0, len(data.Headers()))
+	for key, values := range data.Headers() {
+		for _, val := range values {
+			dataHeaders = append(dataHeaders, fmt.Sprintf("%s: %s", key, val))
+		}
+	}
+
+	fmt.Printf(
+		"Response Dump {\n"+
+			"  Request:\n"+
+			"    MapKey:   %d\n"+
+			"    ShardKey: %d\n"+
+			"    Query:    %s\n"+
+			"    Query:    %s\n"+
+			"    Headers:\n      %s\n"+
+			"  Data:\n"+
+			"    StatusCode: %d\n"+
+			"    Headers:\n      %s\n"+
+			"    Body: |-\n      %s\n"+
+			"}\n",
+		req.MapKey(),
+		req.ShardKey(),
+		string(req.ToQuery()),
+		string(req.OriginQuery),
+		strings.Join(reqHeaders, "\n      "),
+		data.StatusCode(),
+		strings.Join(dataHeaders, "\n      "),
+		string(data.Body()),
+	)
 }
