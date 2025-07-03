@@ -220,7 +220,7 @@ func (r *Response) Weight() int64 {
 	return r.weight
 }
 
-func (r *Response) PrintDump() {
+func (r *Response) PrintDump(marker string) {
 	req := r.Request()
 	data := r.Data()
 
@@ -239,23 +239,24 @@ func (r *Response) PrintDump() {
 	}
 
 	fmt.Printf(
-		"Response Dump {\n"+
-			"  Request:\n"+
-			"    MapKey:   %d\n"+
-			"    ShardKey: %d\n"+
-			"    Query:    %s\n"+
-			"    Headers:\n      %s\n"+
-			"  Data:\n"+
-			"    StatusCode: %d\n"+
-			"    Headers:\n      %s\n"+
-			"    Body: |-\n      %s\n"+
+		"[DUMP-%v] Response {\n"+
+			"\tRequest:\n"+
+			"\t\tMapKey:   %d\n"+
+			"\t\tShardKey: %d\n"+
+			"\t\tQuery:    %s\n"+
+			"\t\tHeaders:  \n\t\t\t- %s\n"+
+			"\tData:\n"+
+			"\t\tStatusCode: %d\n"+
+			"\t\tHeaders:    \n\t\t\t- %s\n"+
+			"\t\tBody:       %s\n"+
 			"}\n",
+		marker,
 		req.MapKey(),
 		req.ShardKey(),
 		string(req.ToQuery()),
-		strings.Join(reqHeaders, "\n      "),
+		strings.Join(reqHeaders, "\n\t\t\t- "),
 		data.StatusCode(),
-		strings.Join(dataHeaders, "\n      "),
+		strings.Join(dataHeaders, "\n\t\t\t- "),
 		string(data.Body()),
 	)
 }
