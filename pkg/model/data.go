@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"net/http"
+	"strconv"
 	"unsafe"
 )
 
@@ -51,7 +52,8 @@ func (d *Data) compress() {
 
 	_, err := gzipper.Write(d.body)
 	if err == nil && gzipper.Close() == nil {
-		d.headers["Content-Encoding"] = append(d.headers["Content-Encoding"], "compress")
+		d.headers["Content-Encoding"] = append(d.headers["Content-Encoding"], "gzip")
+		d.headers["Content-Length"] = append(d.headers["Content-Length"], strconv.Itoa(buf.Len()))
 		d.body = append([]byte{}, buf.Bytes()...)
 	} else {
 		d.body = append([]byte{}, d.body...)
