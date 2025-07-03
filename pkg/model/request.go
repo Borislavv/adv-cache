@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
+	"github.com/rs/zerolog/log"
 	"github.com/valyala/fasthttp"
 	"github.com/zeebo/xxh3"
 	"net/http"
@@ -35,6 +36,7 @@ func NewRequestFromNetHttp(cfg *config.Cache, r *http.Request) (*Request, error)
 
 	rule := matchRule(cfg, req.path)
 	if rule == nil {
+		log.Error().Err(RuleNotFoundError).Msgf("rule not found for path '%v'", string(req.path))
 		return nil, RuleNotFoundError
 	}
 	req.rule = rule
@@ -55,6 +57,7 @@ func NewRequestFromFasthttp(cfg *config.Cache, r *fasthttp.RequestCtx) (*Request
 
 	req.rule = matchRule(cfg, path)
 	if req.rule == nil {
+		log.Error().Err(RuleNotFoundError).Msgf("rule not found for path '%v'", string(req.path))
 		return nil, RuleNotFoundError
 	}
 
