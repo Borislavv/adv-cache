@@ -10,7 +10,6 @@ import (
 	"runtime"
 	"sync/atomic"
 	"time"
-	"unsafe"
 )
 
 var (
@@ -68,8 +67,7 @@ func (middleware *TraefikCacheMiddleware) ServeHTTP(w http.ResponseWriter, r *ht
 		middleware.next.ServeHTTP(captured, r)
 
 		// Build new response
-		path := unsafe.Slice(unsafe.StringData(r.URL.Path), len(r.URL.Path))
-		data := model.NewData(middleware.cfg, path, captured.statusCode, captured.headers, captured.body.Bytes())
+		data := model.NewData(req.Rule(), captured.statusCode, captured.headers, captured.body.Bytes())
 		resp, _ = model.NewResponse(data, req, middleware.cfg, middleware.backend.RevalidatorMaker(req))
 
 		// Store response in cache
