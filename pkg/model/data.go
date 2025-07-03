@@ -15,37 +15,47 @@ type Data struct {
 	body       []byte
 }
 
-// NewData creates a new Data object, compressing body with gzip if large enough.
+// NewData creates a new Data object, compressing body with compress if large enough.
 // Uses memory pools for buffer and writer to minimize allocations.
-func NewData(cfg *config.Cache, path []byte, statusCode int, headers http.Header, body []byte) *Data {
-	data := &Data{
-		headers:    getAllowedValueHeaders(cfg, path, headers),
-		statusCode: statusCode,
-	}
+func NewData(rule *config.Rule, statusCode int, headers http.Header, body []byte) *Data {
+	return (&Data{headers: headers, statusCode: statusCode}).
+		filterHeadersInPlace(rule.CacheValue.HeadersBytes).
+		setUpBody(body)
+}
 
-	// Compress body if it shard large enough for gzip to help
-	if len(body) > gzipThreshold {
-		gzipper := GzipWriterPool.Get().(*gzip.Writer)
-		defer GzipWriterPool.Put(gzipper)
-
-		buf := GzipBufferPool.Get().(*bytes.Buffer)
-		defer GzipBufferPool.Put(buf)
-
-		gzipper.Reset(buf)
-		buf.Reset()
-
-		_, err := gzipper.Write(body)
-		if err == nil && gzipper.Close() == nil {
-			data.headers["Content-Encoding"] = append(data.headers["Content-Encoding"], "gzip")
-			data.body = append([]byte{}, buf.Bytes()...)
-		} else {
-			data.body = append([]byte{}, body...)
-		}
+func (d *Data) setUpBody(body []byte) *Data {
+	// Compress body if it shard large enough for compress to help
+	if d.isNeedCompression() {
+		d.compress()
 	} else {
-		data.body = body
+		d.body = body
 	}
+	return d
+}
 
-	return data
+func (d *Data) isNeedCompression() bool {
+	return len(d.body) > gzipThreshold
+}
+
+// compress is checks whether the item weight is more than threshold
+// if so, then body compresses by compress and will add an appropriate Content-Encoding HTTP header.
+func (d *Data) compress() {
+	gzipper := GzipWriterPool.Get().(*gzip.Writer)
+	defer GzipWriterPool.Put(gzipper)
+
+	buf := GzipBufferPool.Get().(*bytes.Buffer)
+	defer GzipBufferPool.Put(buf)
+
+	gzipper.Reset(buf)
+	buf.Reset()
+
+	_, err := gzipper.Write(d.body)
+	if err == nil && gzipper.Close() == nil {
+		d.headers["Content-Encoding"] = append(d.headers["Content-Encoding"], "compress")
+		d.body = append([]byte{}, buf.Bytes()...)
+	} else {
+		d.body = append([]byte{}, d.body...)
+	}
 }
 
 func (d *Data) Weight() int64 {
@@ -58,35 +68,18 @@ func (d *Data) Headers() http.Header { return d.headers }
 // StatusCode returns the HTTP status code.
 func (d *Data) StatusCode() int { return d.statusCode }
 
-// Body returns the response body (possibly gzip-compressed).
+// Body returns the response body (possibly compress-compressed).
 func (d *Data) Body() []byte { return d.body }
 
-func filterValueHeadersInPlace(headers http.Header, allowed [][]byte) {
+func (d *Data) filterHeadersInPlace(allowed [][]byte) *Data {
 headersLoop:
-	for headerName, _ := range headers {
+	for headerName, _ := range d.headers {
 		for _, allowedHeader := range allowed {
 			if bytes.EqualFold([]byte(headerName), allowedHeader) {
 				continue headersLoop
 			}
 		}
-		delete(headers, headerName)
+		delete(d.headers, headerName)
 	}
-}
-
-func getValueAllowed(cfg *config.Cache, path []byte) (headers [][]byte) {
-	headers = make([][]byte, 0, 7)
-	for _, rule := range cfg.Cache.Rules {
-		if bytes.HasPrefix(path, rule.PathBytes) {
-			for _, header := range rule.CacheValue.HeadersBytes {
-				headers = append(headers, header)
-			}
-		}
-	}
-	return headers
-}
-
-func getAllowedValueHeaders(cfg *config.Cache, path []byte, headers http.Header) http.Header {
-	allowedValueHeaders := getValueAllowed(cfg, path)
-	filterValueHeadersInPlace(headers, allowedValueHeaders)
-	return headers
+	return d
 }
