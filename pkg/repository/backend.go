@@ -72,6 +72,10 @@ func (s *Backend) requestExternalBackend(ctx context.Context, req *model.Request
 		return nil, err
 	}
 
+	for _, hdr := range req.Headers() {
+		request.Header.Add(string(hdr[0]), string(hdr[1]))
+	}
+
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		return nil, err
