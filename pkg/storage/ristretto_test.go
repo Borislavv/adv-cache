@@ -53,23 +53,51 @@ func init() {
 	ristrettoCfg = &config.Cache{
 		Cache: config.CacheBox{
 			Enabled: true,
+			LifeTime: config.Lifetime{
+				MaxReqDuration:             time.Millisecond * 100,
+				EscapeMaxReqDurationHeader: "X-Target-Bot",
+			},
+			Upstream: config.Upstream{
+				Url:     "https://google.com",
+				Rate:    1000,
+				Timeout: time.Second * 5,
+			},
 			Preallocate: config.Preallocation{
-				PerShard: 8196,
+				PerShard: 8,
 			},
 			Eviction: config.Eviction{
 				Policy:    "lru",
 				Threshold: 0.9,
 			},
 			Refresh: config.Refresh{
-				TTL:        time.Hour,
-				ErrorTTL:   time.Minute * 10,
-				Beta:       0.4,
-				MinStale:   time.Minute * 40,
-				BackendURL: "https://seo-master.lux.kube.xbet.lan",
+				TTL:      time.Hour,
+				ErrorTTL: time.Minute * 10,
+				Beta:     0.4,
+				MinStale: time.Minute * 40,
 			},
 			Storage: config.Storage{
 				Type: "malloc",
-				Size: 1024 * 1024 * 64, // 64 MB
+				Size: 1024 * 1024 * 5, // 5 MB
+			},
+			Rules: []*config.Rule{
+				{
+					Path:      "/api/v2/pagedata",
+					PathBytes: []byte("/api/v2/pagedata"),
+					TTL:       time.Hour,
+					ErrorTTL:  time.Minute * 15,
+					Beta:      0.4,
+					MinStale:  time.Duration(float64(time.Hour) * 0.4),
+					CacheKey: config.Key{
+						Query:        []string{"project[id]", "domain", "language", "choice"},
+						QueryBytes:   [][]byte{[]byte("project[id]"), []byte("domain"), []byte("language"), []byte("choice")},
+						Headers:      []string{"Accept-Encoding", "Accept-Language"},
+						HeadersBytes: [][]byte{[]byte("Accept-Encoding"), []byte("Accept-Language")},
+					},
+					CacheValue: config.Value{
+						Headers:      []string{"Content-Type", "Vary"},
+						HeadersBytes: [][]byte{[]byte("Content-Type"), []byte("Vary")},
+					},
+				},
 			},
 		},
 	}
