@@ -13,7 +13,6 @@ import (
 	"runtime"
 	"sync/atomic"
 	"time"
-	"unsafe"
 )
 
 var _ caddy.Module = (*CacheMiddleware)(nil)
@@ -82,8 +81,7 @@ func (middleware *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Requ
 		}
 
 		// Build new response
-		path := unsafe.Slice(unsafe.StringData(r.URL.Path), len(r.URL.Path))
-		data := model.NewData(middleware.cfg, path, captured.status, captured.header, captured.body.Bytes())
+		data := model.NewData(req.Rule(), captured.status, captured.header, captured.body.Bytes())
 		resp, _ = model.NewResponse(data, req, middleware.cfg, middleware.backend.RevalidatorMaker(req))
 		middleware.store.Set(resp)
 	}
