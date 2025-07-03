@@ -3,7 +3,6 @@ package mock
 import (
 	"context"
 	"github.com/Borislavv/advanced-cache/pkg/config"
-	localesandlanguages "github.com/Borislavv/advanced-cache/pkg/locale"
 	"github.com/Borislavv/advanced-cache/pkg/model"
 	"net/http"
 	"strconv"
@@ -17,37 +16,37 @@ func GenerateRandomRequests(cfg *config.Cache, path []byte, num int) []*model.Re
 
 	// Iterate over all possible language and project ID combinations until num requests are created
 	for {
-		for _, lng := range localesandlanguages.LanguageCodeList() {
-			for projectID := 1; projectID < 1000; projectID++ {
-				if i >= num {
-					return list
-				}
-				req := model.NewRequest(
-					cfg,
-					path,
-					[][2][]byte{
-						{[]byte("project[id]"), []byte(strconv.Itoa(projectID))},
-						{[]byte("domain"), []byte("1x001.com")},
-						{[]byte("language"), []byte(lng)},
-						{[]byte("choice[name]"), []byte("betting")},
-						{[]byte("choice[choice][name]"), []byte("betting_live")},
-						{[]byte("choice[choice][choice][name]"), []byte("betting_live_null")},
-						{[]byte("choice[choice][choice][choice][name]"), []byte("betting_live_null_" + strconv.Itoa(i))},
-						{[]byte("choice[choice][choice][choice][choice][name]"), []byte("betting_live_null_" + strconv.Itoa(i) + "_" + strconv.Itoa(i))},
-						{[]byte("choice[choice][choice][choice][choice][choice][name]"), []byte("betting_live_null_" + strconv.Itoa(i) + "_" + strconv.Itoa(i) + "_" + strconv.Itoa(i))},
-						{[]byte("choice[choice][choice][choice][choice][choice][choice]"), []byte("null")},
-					},
-					[][2][]byte{
-						{[]byte("Host"), []byte("0.0.0.0:8020")},
-						{[]byte("Accept-Encoding"), []byte("gzip, deflate, br")},
-						{[]byte("Accept-Language"), []byte("en-US,en;q=0.9")},
-						{[]byte("Content-Type"), []byte("application/json")},
-					},
-				)
-				list = append(list, req)
-				i++
-			}
+		//for _, lng := range localesandlanguages.LanguageCodeList() {
+		//for projectID := 1; projectID < 1000; projectID++ {
+		if i >= num {
+			return list
 		}
+		req := model.NewRequest(
+			cfg,
+			path,
+			[][2][]byte{
+				{[]byte("project[id]"), []byte("285")},
+				{[]byte("domain"), []byte("1x001.com")},
+				{[]byte("language"), []byte("en")},
+				{[]byte("choice[name]"), []byte("betting")},
+				{[]byte("choice[choice][name]"), []byte("betting_live")},
+				{[]byte("choice[choice][choice][name]"), []byte("betting_live_null")},
+				{[]byte("choice[choice][choice][choice][name]"), []byte("betting_live_null_" + strconv.Itoa(i))},
+				{[]byte("choice[choice][choice][choice][choice][name]"), []byte("betting_live_null_" + strconv.Itoa(i) + "_" + strconv.Itoa(i))},
+				{[]byte("choice[choice][choice][choice][choice][choice][name]"), []byte("betting_live_null_" + strconv.Itoa(i) + "_" + strconv.Itoa(i) + "_" + strconv.Itoa(i))},
+				{[]byte("choice[choice][choice][choice][choice][choice][choice]"), []byte("null")},
+			},
+			[][2][]byte{
+				{[]byte("Host"), []byte("0.0.0.0:8020")},
+				{[]byte("Accept-Encoding"), []byte("gzip, deflate, br")},
+				{[]byte("Accept-Language"), []byte("en-US,en;q=0.9")},
+				{[]byte("Content-Type"), []byte("application/json")},
+			},
+		)
+		list = append(list, req)
+		i++
+		//}
+		//}
 	}
 }
 
@@ -60,7 +59,7 @@ func GenerateRandomResponses(cfg *config.Cache, path []byte, num int) []*model.R
 
 	list := make([]*model.Response, 0, num)
 	for _, req := range GenerateRandomRequests(cfg, path, num) {
-		data := model.NewData(cfg, path, http.StatusOK, headers, []byte(GenerateRandomString()))
+		data := model.NewData(req.Rule(), http.StatusOK, headers, []byte(GenerateRandomString()))
 		resp, err := model.NewResponse(
 			data, req, cfg,
 			func(ctx context.Context) (*model.Data, error) {
