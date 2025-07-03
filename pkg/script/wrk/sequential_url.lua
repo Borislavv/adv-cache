@@ -29,16 +29,16 @@ request = function()
 
     local path = "/api/v2/pagedata" .. q
 
-    -- Выводим первый запрос
-    if not printed_first then
-        print("[wrk] First URL: " .. path)
-        printed_first = true
-    end
+--     -- Выводим первый запрос
+--     if not printed_first then
+--         print("[wrk] First URL: " .. path)
+--         printed_first = true
+--     end
 
-    -- Каждые 10_000 запросов логируем URL
-    if i % 10000 == 0 then
-        print("[wrk] URL at i=" .. i .. ": " .. path)
-    end
+--     -- Каждые 10_000 запросов логируем URL
+--     if i % 10000 == 0 then
+--         print("[wrk] URL at i=" .. i .. ": " .. path)
+--     end
 
     -- Инкремент и цикл
     i = i + 1
