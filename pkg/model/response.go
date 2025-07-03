@@ -17,7 +17,7 @@ import (
 	"unsafe"
 )
 
-const gzipThreshold = 1024 // Minimum body size to apply gzip compression
+const gzipThreshold = 1024 // Minimum body size to apply compress compression
 
 // -- Internal pools for efficient memory management --
 
@@ -26,7 +26,7 @@ var (
 	GzipWriterPool = &sync.Pool{New: func() any {
 		w, err := gzip.NewWriterLevel(nil, gzip.BestSpeed)
 		if err != nil {
-			panic("failed to Init. gzip writer: " + err.Error())
+			panic("failed to Init. compress writer: " + err.Error())
 		}
 		return w
 	}}
@@ -244,7 +244,6 @@ func (r *Response) PrintDump() {
 			"    MapKey:   %d\n"+
 			"    ShardKey: %d\n"+
 			"    Query:    %s\n"+
-			"    Query:    %s\n"+
 			"    Headers:\n      %s\n"+
 			"  Data:\n"+
 			"    StatusCode: %d\n"+
@@ -254,7 +253,6 @@ func (r *Response) PrintDump() {
 		req.MapKey(),
 		req.ShardKey(),
 		string(req.ToQuery()),
-		string(req.OriginQuery),
 		strings.Join(reqHeaders, "\n      "),
 		data.StatusCode(),
 		strings.Join(dataHeaders, "\n      "),
