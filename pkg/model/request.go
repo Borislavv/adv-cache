@@ -3,6 +3,7 @@ package model
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
 	"github.com/valyala/fasthttp"
@@ -316,4 +317,25 @@ func getFilteredAndSortedKeyHeadersManual(inputKvPairs [][2][]byte, allowed [][]
 		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
 	})
 	return filtered
+}
+
+func (r *Request) PrintDump(marker string) {
+	reqHeaders := make([]string, 0, len(r.Headers()))
+	for _, header := range r.Headers() {
+		reqHeaders = append(reqHeaders, fmt.Sprintf("%s: %s", header[0], header[1]))
+	}
+
+	fmt.Printf(
+		"[DUMP-%v] Request {\n"+
+			"\t\tMapKey:   %d\n"+
+			"\t\tShardKey: %d\n"+
+			"\t\tQuery:    %s\n"+
+			"\t\tHeaders:  %s\n"+
+			"}\n",
+		marker,
+		r.MapKey(),
+		r.ShardKey(),
+		string(r.ToQuery()),
+		strings.Join(reqHeaders, "\n\t\t"),
+	)
 }
