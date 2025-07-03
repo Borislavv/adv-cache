@@ -89,5 +89,5 @@ func (s *Backend) requestExternalBackend(ctx context.Context, req *model.Request
 		return nil, err
 	}
 
-	return model.NewData(s.cfg, req.Path(), response.StatusCode, response.Header, body.Bytes()), nil
+	return model.NewData(req.Rule(), response.StatusCode, response.Header, body.Bytes()), nil
 }
