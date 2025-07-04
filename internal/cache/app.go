@@ -130,6 +130,12 @@ func (c *Cache) run() *Cache {
 	c.refresher.Run()
 	c.runMetricsWriter()
 
+	//go func() {
+	//	for _, resp := range mock.GenerateRandomResponses(c.cfg.Cache, []byte("/api/v2/pagedata"), 1_000_000) {
+	//		c.db.Set(resp)
+	//	}
+	//}()
+
 	return c
 }
 
