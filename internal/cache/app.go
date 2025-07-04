@@ -5,6 +5,7 @@ import (
 	"github.com/Borislavv/advanced-cache/internal/cache/config"
 	"github.com/Borislavv/advanced-cache/internal/cache/server"
 	"github.com/Borislavv/advanced-cache/pkg/k8s/probe/liveness"
+	"github.com/Borislavv/advanced-cache/pkg/mock"
 	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
@@ -130,11 +131,11 @@ func (c *Cache) run() *Cache {
 	c.refresher.Run()
 	c.runMetricsWriter()
 
-	//go func() {
-	//	for _, resp := range mock.GenerateRandomResponses(c.cfg.Cache, []byte("/api/v2/pagedata"), 1_000_000) {
-	//		c.db.Set(resp)
-	//	}
-	//}()
+	go func() {
+		for _, resp := range mock.GenerateRandomResponses(c.cfg.Cache, []byte("/api/v2/pagedata"), 10_000_000) {
+			c.db.Set(resp)
+		}
+	}()
 
 	return c
 }
