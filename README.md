@@ -1,42 +1,41 @@
-
 # Advanced Cache
 
-Кастомный in-memory HTTP кэш для Go, разработан для high-load API и использования как middleware для Caddy и Traefik.  
-Под капотом — шардирование с LRU и TinyLFU, Doorkeeper, дампинг с GZIP, фоновый refresh и настройка через YAML. Всё собрано в одну связку и ориентировано на минимальные аллокации и предсказуемую производительность.
+A custom in-memory HTTP cache for Go, built for high-load APIs and designed to work as middleware for Caddy and Traefik.  
+Under the hood — sharding with LRU and TinyLFU, Doorkeeper filter, GZIP dump persistence, background refresh, and YAML configuration. Everything is bundled together with minimal allocations and predictable performance in mind.
 
 ---
 
-## Что внутри
+## What’s inside
 
-- In-memory кэширование с гибкой конфигурацией LRU + TinyLFU.
-- Шардирование и работа с сотнями миллионов ключей без деградации под нагрузкой.
-- Zero-allocation для пути, query и ключей с быстрым хешированием.
-- GZIP-компрессия и reuse через memory pool.
-- Готовые middleware для Caddy и Traefik — можно встроить в reverse proxy или балансировщик.
-- Метрики через VictoriaMetrics.
-- YAML-конфигурация с hot reload.
-- Готов к деплою в Kubernetes — есть liveness/readiness пробы.
-
----
-
-## Архитектура
-
-- `pkg/storage` — слои кэша (`lru`, `lfu`), eviction, учёт памяти.
-- `pkg/caddy/middleware` — интеграция с Caddy v2.
-- `pkg/traefik/middleware` — интеграция с Traefik.
-- `pkg/model` — zero-allocation структуры для ключей и ответов.
-- `pkg/list`, `pkg/buffer` — внутренние списки, ring buffer и шардированные карты.
-- `pkg/prometheus/metrics` — экспорт метрик для VictoriaMetrics.
-- `internal/cache` — orchestration и REST API для управления.
+- In-memory caching with flexible LRU + TinyLFU configuration.
+- Sharding to handle hundreds of millions of keys without degrading under load.
+- Zero-allocation for paths, queries, and keys with fast hashing.
+- GZIP compression and reuse via memory pools.
+- Ready-made middleware for Caddy and Traefik — plug it into a reverse proxy or load balancer.
+- Metrics via VictoriaMetrics.
+- YAML configuration with hot reload support.
+- Ready for Kubernetes deployment — liveness/readiness probes included.
 
 ---
 
-## Установка и сборка
+## Architecture
 
-**Требования**
+- `pkg/storage` — caching layers (`lru`, `lfu`), eviction logic, memory tracking.
+- `pkg/caddy/middleware` — Caddy v2 integration.
+- `pkg/traefik/middleware` — Traefik integration.
+- `pkg/model` — zero-allocation structs for keys and responses.
+- `pkg/list`, `pkg/buffer` — internal lists, ring buffer and sharded maps.
+- `pkg/prometheus/metrics` — metrics exporter for VictoriaMetrics.
+- `internal/cache` — orchestration and REST API for management.
+
+---
+
+## Installation & build
+
+**Requirements**
 - Go 1.20+
-- Caddy или Traefik (если нужен встраиваемый режим)
-- Docker и Make (опционально)
+- Caddy or Traefik (for embedded mode)
+- Docker and Make (optional)
 
 ```bash
 git clone https://github.com/Borislavv/advanced-cache.git
@@ -46,9 +45,9 @@ go build -o advanced-cache ./cmd
 
 ---
 
-## Пример использования (Caddy)
+## Example usage (Caddy)
 
-Подключаете модуль в `Caddyfile`:
+Add the module in your `Caddyfile`:
 ```caddy
 :80 {
   route {
@@ -62,116 +61,115 @@ go build -o advanced-cache ./cmd
 
 ---
 
-## Пример использования (Traefik)
+## Example usage (Traefik)
 
-Копируете плагин из `pkg/traefik` и регистрируете как middleware.
+Copy the plugin from `pkg/traefik` and register it as middleware.
 
 ---
 
-## Конфигурация
+## Configuration
 
-Вся настройка — через YAML-файл. Пример:
+All settings are defined in a YAML file. Example:
 ```yaml
 cache:
   env: "prod"
   enabled: true
 
   lifetime:
-    max_req_dur: "100ms" # If a request lifetime is longer than 100ms then request will be canceled by context.
-    escape_max_req_dur: "X-Google-Bot" # If the header exists the timeout above will be skipped.
+    max_req_dur: "100ms"
+    escape_max_req_dur: "X-Google-Bot"
 
   upstream:
-    url: "http://localhost:8020" # downstream reverse proxy host:port
-    rate: 1000 # Rate limiting reqs to backend per second.
-    timeout: "10s" # Timeout for requests to backend.
+    url: "http://localhost:8020"
+    rate: 1000
+    timeout: "10s"
 
   preallocate:
-    num_shards: 2048 # Fixed constant (see `NumOfShards` in code). Controls the number of sharded maps.
-    per_shard: 8196  # Preallocated map size per shard. Without resizing, this supports 2048*8196=~16785408 keys in total.
-    # Note: this is an upper-bound estimate and may vary depending on hash distribution quality.
+    num_shards: 2048
+    per_shard: 8196
 
   eviction:
-    threshold: 0.9 # Trigger eviction when cache memory usage exceeds 90% of its configured limit.
+    threshold: 0.9
 
   storage:
-    size: 32212254720 # 30 GB of maximum allowed memory for the in-memory cache (in bytes).
+    size: 32212254720
 
   refresh:
     ttl: "12h"
     error_ttl: "1h"
-    rate: 1000 # Rate limiting reqs to backend per second.
-    scan_rate: 10000 # Rate limiting of num scans items per second.
-    beta: 0.4 # Controls randomness in refresh timing to avoid thundering herd (from 0 to 1).
+    rate: 1000
+    scan_rate: 10000
+    beta: 0.4
 
   persistence:
     dump:
       enabled: true
-      format: "gzip" # gzip or raw json
+      format: "gzip"
       dump_dir: "public/dump"
       dump_name: "cache.dump.gz"
-      rotate_policy: "ring" # fixed, ring
+      rotate_policy: "ring"
       max_files: 7
 
   rules:
     - path: "/api/v2/pagedata"
       ttl: "24h"
       error_ttl: "1h"
-      beta: 0.3 # Controls randomness in refresh timing to avoid thundering herd.
+      beta: 0.3
       cache_key:
-        query: ['project[id]', 'domain', 'language', 'choice'] # Match query parameters by prefix.
-        headers: ['Accept-Encoding', 'X-Project-ID']           # Match headers by exact value.
+        query: ['project[id]', 'domain', 'language', 'choice']
+        headers: ['Accept-Encoding', 'X-Project-ID']
       cache_value:
-        headers: ['X-Project-ID']                              # Store only when headers match exactly.
+        headers: ['X-Project-ID']
 
     - path: "/api/v1/pagecontent"
       ttl: "36h"
       error_ttl: "3h"
-      beta: 0.3 # Controls randomness in refresh timing to avoid thundering herd.
+      beta: 0.3
       cache_key:
-        query: ['project[id]', 'domain', 'language', 'choice'] # Match query parameters by prefix.
-        headers: ['Accept-Encoding', 'X-Project-ID']           # Match headers by exact value.
+        query: ['project[id]', 'domain', 'language', 'choice']
+        headers: ['Accept-Encoding', 'X-Project-ID']
       cache_value:
-        headers: ['X-Project-ID']                              # Store only when headers match exactly.
+        headers: ['X-Project-ID']
 ```
 
 ---
 
-## Реальные цифры
+## Real numbers
 
-- Чтение: ~50 ns/op
-- Запись: ~60 ns/op (синхронно и гарантированно, в отличие от асинхронной записи у Ristretto)
-- RPS через FastHTTP: ~150 000 RPS+
+- Read: ~50 ns/op
+- Write: ~60 ns/op (synchronous and guaranteed, unlike Ristretto’s async writes)
+- FastHTTP RPS: ~150,000 RPS+
 
 ---
 
 ## Use cases
 
-- API response кэширование с low-latency
-- Edge caching для статики или SSR
-- Кэширование на уровне reverse proxy или балансировщика (Caddy / Traefik)
-- Использование как standalone FastHTTP сервис
+- API response caching with low latency.
+- Edge caching for static or SSR content.
+- Caching at the reverse proxy/load balancer level (Caddy / Traefik).
+- Can also run as a standalone FastHTTP service.
 
 ---
 
-## Метрики
+## Metrics
 
-Экспортируется в VictoriaMetrics-совместимом формате:
+Exported in VictoriaMetrics-compatible format:
 - `advanced_cache_http_requests_total{path,method,status}`
 - `advanced_cache_memory_usage_bytes`
 - `advanced_cache_items_total`
-  
-In progress, more coming soon...
+
+More coming soon...
 
 ---
 
-## Лицензия
+## License
 
-MIT — см. [LICENSE](./LICENSE)
+MIT — see [LICENSE](./LICENSE)
 
 ---
 
-## Контакты
+## Contacts
 
-Мейнтейнер — [Borislav Glazunov](https://github.com/Borislavv).  
-Telegram: @BorislavGlazunov
-Для багов и вопросов — открывайте issue или пишите через GitHub.
+Maintainer — [Borislav Glazunov](https://github.com/Borislavv).  
+Telegram: @BorislavGlazunov  
+For bugs or questions, open an issue or reach out via GitHub.
