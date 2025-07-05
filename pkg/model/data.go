@@ -6,7 +6,23 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"net/http"
 	"strconv"
+	"sync"
 	"unsafe"
+)
+
+const gzipThreshold = 2024 // Minimum body size to apply compress compression
+
+// -- Internal pools for efficient memory management --
+
+var (
+	GzipBufferPool = &sync.Pool{New: func() any { return new(bytes.Buffer) }}
+	GzipWriterPool = &sync.Pool{New: func() any {
+		w, err := gzip.NewWriterLevel(nil, gzip.BestSpeed)
+		if err != nil {
+			panic("failed to Init. compress writer: " + err.Error())
+		}
+		return w
+	}}
 )
 
 // Data is the actual payload (status, h, body) stored in the cache.
@@ -26,21 +42,21 @@ func NewData(rule *config.Rule, statusCode int, headers http.Header, body []byte
 
 func (d *Data) setUpBody(body []byte) *Data {
 	// Compress body if it shard large enough for compress to help
-	if d.isNeedCompression() {
-		d.compress()
+	if d.isNeedCompression(body) {
+		d.compress(body)
 	} else {
 		d.body = body
 	}
 	return d
 }
 
-func (d *Data) isNeedCompression() bool {
-	return len(d.body) > gzipThreshold
+func (d *Data) isNeedCompression(body []byte) bool {
+	return len(body) > gzipThreshold
 }
 
 // compress is checks whether the item weight is more than threshold
 // if so, then body compresses by compress and will add an appropriate Content-Encoding HTTP header.
-func (d *Data) compress() {
+func (d *Data) compress(body []byte) {
 	gzipper := GzipWriterPool.Get().(*gzip.Writer)
 	defer GzipWriterPool.Put(gzipper)
 
@@ -50,13 +66,17 @@ func (d *Data) compress() {
 	gzipper.Reset(buf)
 	buf.Reset()
 
-	_, err := gzipper.Write(d.body)
+	_, err := gzipper.Write(body)
 	if err == nil && gzipper.Close() == nil {
 		d.headers["Content-Encoding"] = append(d.headers["Content-Encoding"], "gzip")
 		d.headers["Content-Length"] = append(d.headers["Content-Length"], strconv.Itoa(buf.Len()))
-		d.body = append([]byte{}, buf.Bytes()...)
+
+		body = body[:0]
+		copy(body, d.body)
+
+		d.body = body[:]
 	} else {
-		d.body = append([]byte{}, d.body...)
+		d.body = body
 	}
 }
 
