@@ -10,7 +10,7 @@ import (
 	"unsafe"
 )
 
-const gzipThreshold = 2024 // Minimum body size to apply compress compression
+const gzipThreshold = 1024 // Minimum body size to apply compress compression
 
 // -- Internal pools for efficient memory management --
 
