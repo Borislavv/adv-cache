@@ -4,7 +4,6 @@ import (
 	"context"
 	"github.com/Borislavv/advanced-cache/pkg/rate"
 	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
-	"runtime"
 	"strconv"
 	"time"
 
@@ -113,13 +112,10 @@ func (r *Refresh) runLogger() {
 				return
 			case <-r.refreshSuccessNumCh:
 				refreshesNumPer5Sec++
-				runtime.Gosched()
 			case <-r.refreshErroredNumCh:
 				erroredNumPer5Sec++
-				runtime.Gosched()
 			case <-ticker:
 				if refreshesNumPer5Sec <= 0 && erroredNumPer5Sec <= 0 {
-					runtime.Gosched()
 					continue loop
 				}
 
@@ -141,7 +137,6 @@ func (r *Refresh) runLogger() {
 
 				refreshesNumPer5Sec = 0
 				erroredNumPer5Sec = 0
-				runtime.Gosched()
 			}
 		}
 	}()

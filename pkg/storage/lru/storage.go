@@ -171,8 +171,6 @@ func (s *Storage) runLogger() {
 
 				logEvent.Msgf("[storage][5s] usage: %s, len: %s, limit: %s, alloc: %s, goroutines: %s, gc: %s",
 					mem, length, limit, alloc, goroutines, gc)
-
-				runtime.Gosched()
 			}
 		}
 	}()

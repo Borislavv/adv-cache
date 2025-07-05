@@ -199,20 +199,7 @@ func (r *Response) RevalidatedAt() time.Time {
 }
 
 func (r *Response) setUpWeight() int64 {
-	var size = int(unsafe.Sizeof(*r))
-
-	data := r.data.Load()
-	if data != nil {
-		for key, values := range data.headers {
-			size += len(key)
-			for _, val := range values {
-				size += len(val)
-			}
-		}
-		size += len(data.body)
-	}
-
-	return int64(size) + r.Request().Weight()
+	return int64(unsafe.Sizeof(*r)) + r.Request().Weight() + r.data.Load().Weight()
 }
 
 // Weight estimates the in-memory size of this response (including dynamic fields).

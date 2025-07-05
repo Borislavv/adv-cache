@@ -3,7 +3,6 @@ package rate
 import (
 	"context"
 	"golang.org/x/time/rate"
-	"runtime"
 )
 
 type Limiter struct {
@@ -30,8 +29,6 @@ func NewLimiter(ctx context.Context, limit, burst int) *Limiter {
 				case <-ctx.Done():
 					return
 				case l.ch <- struct{}{}:
-				default:
-					runtime.Gosched()
 				}
 			}
 		}

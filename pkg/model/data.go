@@ -61,7 +61,14 @@ func (d *Data) compress() {
 }
 
 func (d *Data) Weight() int64 {
-	return int64(unsafe.Sizeof(*d)) + int64(len(d.body))
+	headersWeight := 0
+	for key, v := range d.headers {
+		headersWeight += len(key)
+		for _, value := range v {
+			headersWeight += len(value)
+		}
+	}
+	return int64(unsafe.Sizeof(*d)) + int64(len(d.body)) + int64(headersWeight)
 }
 
 // Headers returns the response h.

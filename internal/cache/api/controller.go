@@ -14,7 +14,6 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/valyala/fasthttp"
 	"net/http"
-	"runtime"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -69,6 +68,13 @@ func NewCacheController(
 		cache:   cache,
 		backend: backend,
 	}
+	//go func() {
+	//	log.Info().Msg("data loading")
+	//	defer log.Info().Msg("data loading finished")
+	//	for _, resp := range mock.GenerateRandomResponses(c.cfg.Cache, []byte("/api/v2/pagedata"), 10_000_000) {
+	//		c.cache.Set(resp)
+	//	}
+	//}()
 	c.runLogger(ctx)
 	return c
 }
@@ -116,9 +122,6 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 	// Record the duration in debug mode for metrics.
 	count.Add(1)
 	duration.Add(time.Since(from).Nanoseconds())
-
-	// Achieving the best performance. Increases CPU usage.
-	runtime.Gosched()
 }
 
 // respondThatServiceIsTemporaryUnavailable returns 503 and logs the error.
@@ -152,7 +155,6 @@ func (c *CacheController) runLogger(ctx context.Context) {
 				return
 			case <-t:
 				c.logAndReset()
-				runtime.Gosched()
 			}
 		}
 	}()

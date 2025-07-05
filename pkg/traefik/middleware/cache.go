@@ -7,7 +7,6 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/repository"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
 	"net/http"
-	"runtime"
 	"sync/atomic"
 	"time"
 )
@@ -47,8 +46,6 @@ func New(ctx context.Context, next http.Handler, name string) http.Handler {
 }
 
 func (middleware *TraefikCacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	defer runtime.Gosched()
-
 	from := time.Now()
 
 	// Build request (return error on rule missing for current path)

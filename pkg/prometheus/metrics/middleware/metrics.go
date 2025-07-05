@@ -4,7 +4,6 @@ import (
 	"context"
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
 	"github.com/valyala/fasthttp"
-	"runtime"
 	"strconv"
 	"unsafe"
 )
@@ -46,7 +45,5 @@ func (m *PrometheusMetrics) Middleware(next fasthttp.RequestHandler) fasthttp.Re
 		m.meter.IncStatus(pathStr, methodStr, m.codes[status])
 		m.meter.IncTotal(pathStr, methodStr, m.codes[status])
 		m.meter.FlushResponseTimeTimer(timer)
-
-		runtime.Gosched()
 	}
 }
