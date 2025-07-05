@@ -60,7 +60,7 @@ func (r *Response) SetUp(
 	r.request.Store(req)
 	r.revalidator = revalidator
 	r.revalidatedAt = time.Now().UnixNano()
-	r.weight = r.totalWeightBytes()
+	r.weight = r.setUpWeight()
 	return r
 }
 
