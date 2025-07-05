@@ -59,7 +59,7 @@ func GenerateRandomResponses(cfg *config.Cache, path []byte, num int) []*model.R
 
 	list := make([]*model.Response, 0, num)
 	for _, req := range GenerateRandomRequests(cfg, path, num) {
-		data := model.NewData(req.Rule(), http.StatusOK, headers, []byte(GenerateRandomString()))
+		data := model.NewData(req.Rule(), http.StatusOK, headers, ResponseBytes())
 		resp, err := model.NewResponse(
 			data, req, cfg,
 			func(ctx context.Context) (*model.Data, error) {
@@ -75,27 +75,34 @@ func GenerateRandomResponses(cfg *config.Cache, path []byte, num int) []*model.R
 	return list
 }
 
-// GenerateRandomString returns a random ASCII string of length between minStrLen and maxStrLen.
-func GenerateRandomString() string {
-	return `{
-		"data": {
-			"type": "seo/pagedata",
-			"attributes": {
-				"title": "1xBet",
-				"description": "",
-				"metaRobots": [],
-				"hierarchyMetaRobots": [
-					{
-						"name": "robots",
-						"content": "noindex, nofollow"
-					}
-				],
-				"ampPageUrl": null,
-				"alternativeLinks": [],
-				"alternateMedia": [],
-				"customCanonical": null,
-				"metas": []
-			}
-		}
-	}`
+var responseBytes = []byte(`{
+  "data": {
+    "type": "seo/pagedata",
+    "attributes": {
+      "title": "1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet 1xBet ",
+      "description": "This is a long description for SEO page data. This description is intentionally made verbose to increase the JSON payload size. It repeats some phrases multiple times. This is a long description for SEO page data. This description is intentionally made verbose to increase the JSON payload size. It repeats some phrases multiple times. This is a long description for SEO page data. This description is intentionally made verbose to increase the JSON payload size. It repeats some phrases multiple times. This is a long description for SEO page data. This description is intentionally made verbose to increase the JSON payload size. It repeats some phrases multiple times. This is a long description for SEO page data. This description is intentionally made verbose to increase the JSON payload size. It repeats some phrases multiple times.",
+      "metaRobots": [],
+      "hierarchyMetaRobots": [
+        {
+          "name": "robots",
+          "content": "noindex, nofollow"
+        }
+      ],
+      "ampPageUrl": null,
+      "alternativeLinks": [],
+      "alternateMedia": [],
+      "customCanonical": null,
+      "metas": [],
+      "siteName": null
+    }
+  }
+}
+`)
+
+// ResponseBytes returns a random ASCII string of length between minStrLen and maxStrLen.
+func ResponseBytes() []byte {
+	length := len(responseBytes)
+	response := make([]byte, length)
+	copy(response, responseBytes)
+	return response
 }
