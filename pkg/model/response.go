@@ -1,35 +1,18 @@
 package model
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
 	"fmt"
-	"github.com/Borislavv/advanced-cache/pkg/config"
-	"github.com/Borislavv/advanced-cache/pkg/list"
 	"math"
 	"math/rand/v2"
 	"net/http"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
-)
 
-const gzipThreshold = 1024 // Minimum body size to apply compress compression
-
-// -- Internal pools for efficient memory management --
-
-var (
-	GzipBufferPool = &sync.Pool{New: func() any { return new(bytes.Buffer) }}
-	GzipWriterPool = &sync.Pool{New: func() any {
-		w, err := gzip.NewWriterLevel(nil, gzip.BestSpeed)
-		if err != nil {
-			panic("failed to Init. compress writer: " + err.Error())
-		}
-		return w
-	}}
+	"github.com/Borislavv/advanced-cache/pkg/config"
+	"github.com/Borislavv/advanced-cache/pkg/list"
 )
 
 // Response is the main cache object, holding the request, payload, metadata, and list pointers.
@@ -77,7 +60,7 @@ func (r *Response) SetUp(
 	r.request.Store(req)
 	r.revalidator = revalidator
 	r.revalidatedAt = time.Now().UnixNano()
-	r.weight = r.setUpWeight()
+	r.weight = r.totalWeightBytes()
 	return r
 }
 
@@ -245,5 +228,84 @@ func (r *Response) PrintDump(marker string) {
 		data.StatusCode(),
 		strings.Join(dataHeaders, "\n\t\t\t- "),
 		string(data.Body()),
+	)
+}
+
+func (r *Response) PrintWeightBreakdown(marker string) {
+	if r == nil {
+		fmt.Printf("[WEIGHT-%v] Response is nil\n", marker)
+		return
+	}
+
+	totalWeight := int64(0)
+
+	// Response struct itself
+	responseStructSize := int64(unsafe.Sizeof(*r))
+	totalWeight += responseStructSize
+
+	// Atomic pointer sizes
+	atomicPtrsSize := int64(unsafe.Sizeof(*r.request)) +
+		int64(unsafe.Sizeof(*r.data)) +
+		int64(unsafe.Sizeof(*r.lruListElem))
+
+	totalWeight += atomicPtrsSize
+
+	// Request
+	req := r.Request()
+	requestStructSize := int64(unsafe.Sizeof(*req))
+	requestPathSize := int64(len(req.Path()))
+	requestQuerySize := int64(len(req.ToQuery()))
+	requestHeadersSize := int64(0)
+	for _, h := range req.Headers() {
+		requestHeadersSize += int64(len(h[0])) + int64(len(h[1]))
+	}
+
+	requestTotal := requestStructSize + requestPathSize + requestQuerySize + requestHeadersSize
+	totalWeight += requestTotal
+
+	// Data
+	data := r.Data()
+	dataStructSize := int64(unsafe.Sizeof(*data))
+	dataHeadersSize := int64(0)
+	for k, vals := range data.Headers() {
+		dataHeadersSize += int64(len(k))
+		for _, v := range vals {
+			dataHeadersSize += int64(len(v))
+		}
+	}
+	dataBodySize := int64(len(data.Body()))
+
+	dataTotal := dataStructSize + dataHeadersSize + dataBodySize
+	totalWeight += dataTotal
+
+	// Print all
+	fmt.Printf(
+		"[WEIGHT-%v] Response weight breakdown:\n"+
+			"  Response struct:     %d bytes\n"+
+			"  Atomic pointers:     %d bytes\n"+
+			"  Request struct:      %d bytes\n"+
+			"  ├─ Path:             %d bytes\n"+
+			"  ├─ Query:            %d bytes\n"+
+			"  ├─ Headers:          %d bytes\n"+
+			"  └─ Total Request:    %d bytes\n"+
+			"  Data struct:         %d bytes\n"+
+			"  ├─ Headers:          %d bytes\n"+
+			"  ├─ Body:             %d bytes\n"+
+			"  └─ Total Data:       %d bytes\n"+
+			"  ----------------------------------\n"+
+			"  Total Response size: %d bytes\n",
+		marker,
+		responseStructSize,
+		atomicPtrsSize,
+		requestStructSize,
+		requestPathSize,
+		requestQuerySize,
+		requestHeadersSize,
+		requestTotal,
+		dataStructSize,
+		dataHeadersSize,
+		dataBodySize,
+		dataTotal,
+		totalWeight,
 	)
 }
