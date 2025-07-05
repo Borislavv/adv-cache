@@ -5,7 +5,6 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/types"
 	"github.com/Borislavv/advanced-cache/pkg/utils"
 	"github.com/rs/zerolog/log"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -141,7 +140,6 @@ func (smap *Map[V]) runMemRefresher() {
 				}
 				atomic.StoreInt64(&smap.mem, mem)
 				atomic.StoreInt64(&smap.len, length)
-				runtime.Gosched()
 			}
 		}
 	}()

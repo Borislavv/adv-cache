@@ -10,7 +10,6 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"net/http"
-	"runtime"
 	"sync/atomic"
 	"time"
 )
@@ -56,8 +55,6 @@ func (middleware *CacheMiddleware) Provision(ctx caddy.Context) error {
 }
 
 func (middleware *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
-	defer runtime.Gosched()
-
 	from := time.Now()
 
 	// Build request (return error on rule missing for current path)

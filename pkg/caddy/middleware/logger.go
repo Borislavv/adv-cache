@@ -3,7 +3,6 @@ package advancedcache
 import (
 	"github.com/Borislavv/advanced-cache/pkg/utils"
 	"github.com/rs/zerolog/log"
-	"runtime"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -19,7 +18,6 @@ func (middleware *CacheMiddleware) runControllerLogger() {
 				return
 			case <-t:
 				middleware.logAndReset()
-				runtime.Gosched()
 			}
 		}
 	}()

@@ -69,7 +69,6 @@ func (e *Evict) run() {
 				case <-e.ctx.Done():
 					return
 				case evictionStatCh <- EvictionStat{items: items, freedMem: freedMem}:
-					runtime.Gosched()
 				}
 			}
 		}
@@ -143,10 +142,8 @@ func (e *Evict) runLogger() {
 			case stat := <-evictionStatCh:
 				evictsNumPer5Sec += stat.items
 				evictsMemPer5Sec += stat.freedMem
-				runtime.Gosched()
 			case <-ticker:
 				if evictsNumPer5Sec <= 0 && evictsMemPer5Sec <= 0 {
-					runtime.Gosched()
 					continue loop
 				}
 
@@ -163,7 +160,6 @@ func (e *Evict) runLogger() {
 
 				evictsNumPer5Sec = 0
 				evictsMemPer5Sec = 0
-				runtime.Gosched()
 			}
 		}
 	}()

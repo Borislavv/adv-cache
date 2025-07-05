@@ -3,8 +3,6 @@ package model
 import (
 	"context"
 	"fmt"
-	"github.com/Borislavv/advanced-cache/pkg/config"
-	"github.com/Borislavv/advanced-cache/pkg/list"
 	"math"
 	"math/rand/v2"
 	"net/http"
@@ -12,6 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 	"unsafe"
+
+	"github.com/Borislavv/advanced-cache/pkg/config"
+	"github.com/Borislavv/advanced-cache/pkg/list"
 )
 
 // Response is the main cache object, holding the request, payload, metadata, and list pointers.
@@ -59,7 +60,7 @@ func (r *Response) SetUp(
 	r.request.Store(req)
 	r.revalidator = revalidator
 	r.revalidatedAt = time.Now().UnixNano()
-	r.weight = r.totalWeightBytes()
+	r.weight = r.setUpWeight()
 	return r
 }
 
@@ -180,49 +181,8 @@ func (r *Response) RevalidatedAt() time.Time {
 	return time.Unix(0, atomic.LoadInt64(&r.revalidatedAt))
 }
 
-func (r *Response) totalWeightBytes() int64 {
-	totalWeight := int64(0)
-
-	// Response struct itself
-	responseStructSize := int64(unsafe.Sizeof(*r))
-	totalWeight += responseStructSize
-
-	// Atomic pointer sizes
-	atomicPtrsSize := int64(unsafe.Sizeof(*r.request)) +
-		int64(unsafe.Sizeof(*r.data)) +
-		int64(unsafe.Sizeof(*r.lruListElem))
-
-	totalWeight += atomicPtrsSize
-
-	// Request
-	req := r.Request()
-	requestStructSize := int64(unsafe.Sizeof(*req))
-	requestPathSize := int64(len(req.Path()))
-	requestQuerySize := int64(len(req.ToQuery()))
-	requestHeadersSize := int64(0)
-	for _, h := range req.Headers() {
-		requestHeadersSize += int64(len(h[0])) + int64(len(h[1]))
-	}
-
-	requestTotal := requestStructSize + requestPathSize + requestQuerySize + requestHeadersSize
-	totalWeight += requestTotal
-
-	// Data
-	data := r.Data()
-	dataStructSize := int64(unsafe.Sizeof(*data))
-	dataHeadersSize := int64(0)
-	for k, vals := range data.Headers() {
-		dataHeadersSize += int64(len(k))
-		for _, v := range vals {
-			dataHeadersSize += int64(len(v))
-		}
-	}
-	dataBodySize := int64(len(data.Body()))
-
-	dataTotal := dataStructSize + dataHeadersSize + dataBodySize
-	totalWeight += dataTotal
-
-	return totalWeight
+func (r *Response) setUpWeight() int64 {
+	return int64(unsafe.Sizeof(*r)) + r.Request().Weight() + r.data.Load().Weight()
 }
 
 // Weight estimates the in-memory size of this response (including dynamic fields).
