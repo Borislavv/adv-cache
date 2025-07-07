@@ -122,6 +122,12 @@ func (r *Request) Weight() int64 {
 	return weight
 }
 
+var bufPool = &sync.Pool{
+	New: func() interface{} {
+		return new(bytes.Buffer)
+	},
+}
+
 func (r *Request) setUpManually(argsKvPairs [][2][]byte, headersKvPairs [][2][]byte) {
 	r.headers = headersKvPairs
 
@@ -129,6 +135,16 @@ func (r *Request) setUpManually(argsKvPairs [][2][]byte, headersKvPairs [][2][]b
 	for _, pair := range argsKvPairs {
 		argsLength += len(pair[0]) + len(pair[1]) + 2
 	}
+	headersLength := 0
+	for _, pair := range headersKvPairs {
+		headersLength += len(pair[0]) + len(pair[1])
+	}
+	buf := bufPool.Get().(*bytes.Buffer)
+	defer func() {
+		buf.Reset()
+		bufPool.Put(buf)
+	}()
+	buf.Grow(argsLength + headersLength)
 
 	queryBuf := make([]byte, 0, argsLength)
 	queryBuf = append(queryBuf, []byte("?")...)
@@ -143,44 +159,26 @@ func (r *Request) setUpManually(argsKvPairs [][2][]byte, headersKvPairs [][2][]b
 	} else {
 		queryBuf = queryBuf[:0] // no parameters
 	}
+	buf.Write(queryBuf)
 
-	headersLength := 0
 	for _, pair := range headersKvPairs {
-		headersLength += len(pair[0]) + len(pair[1]) + 2
+		buf.Write(pair[0])
+		buf.Write(pair[1])
 	}
 
-	headersBuf := make([]byte, 0, headersLength)
-	for _, pair := range headersKvPairs {
-		headersBuf = append(headersBuf, pair[0]...)
-		headersBuf = append(headersBuf, []byte(":")...)
-		headersBuf = append(headersBuf, pair[1]...)
-		headersBuf = append(headersBuf, []byte("\n")...)
-	}
-	if len(headersBuf) > 0 {
-		headersBuf = headersBuf[:len(headersBuf)-1] // remove the last \n char
-	} else {
-		headersBuf = headersBuf[:0] // no headers
-	}
-
-	bufLen := len(queryBuf) + len(headersBuf) + 1
-	buf := make([]byte, 0, bufLen)
-	if bufLen > 1 {
-		buf = append(buf, queryBuf...)
-		buf = append(buf, []byte("\n")...)
-		buf = append(buf, headersBuf...)
-	}
-
-	r.key = hash(buf[:])
+	r.key = hash(buf)
 	r.query = queryBuf[:]
 	r.shard = sharded.MapShardKey(r.key)
 }
 
-func hash(buf []byte) uint64 {
+func hash(buf *bytes.Buffer) uint64 {
 	hasher := hasherPool.Get().(*xxh3.Hasher)
-	defer hasherPool.Put(hasher)
+	defer func() {
+		hasher.Reset()
+		hasherPool.Put(hasher)
+	}()
 
-	hasher.Reset()
-	if _, err := hasher.Write(buf); err != nil {
+	if _, err := hasher.Write(buf.Bytes()); err != nil {
 		panic(err)
 	}
 
