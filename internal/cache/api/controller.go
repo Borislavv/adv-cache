@@ -24,18 +24,12 @@ const CacheGetPath = "/{any:*}"
 
 // Predefined HTTP response templates for error handling (400/503)
 var (
-	badRequestResponseBytes = []byte(`{
-	  "status": 400,
-	  "error": "Bad Request",
-	  "message": "` + string(messagePlaceholder) + `"
-	}`)
 	serviceUnavailableResponseBytes = []byte(`{
 	  "status": 503,
 	  "error": "Service Unavailable",
 	  "message": "` + string(messagePlaceholder) + `"
 	}`)
 	messagePlaceholder = []byte("${message}")
-	zeroLiteral        = "0"
 
 	hdrLastModified = []byte("Last-Modified")
 )
@@ -68,13 +62,6 @@ func NewCacheController(
 		cache:   cache,
 		backend: backend,
 	}
-	//go func() {
-	//	log.Info().Msg("data loading")
-	//	defer log.Info().Msg("data loading finished")
-	//	for _, resp := range mock.GenerateRandomResponses(c.cfg.Cache, []byte("/api/v2/pagedata"), 10_000_000) {
-	//		c.cache.Set(resp)
-	//	}
-	//}()
 	c.runLogger(ctx)
 	return c
 }
