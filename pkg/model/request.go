@@ -187,7 +187,7 @@ func hash(buf *bytes.Buffer) uint64 {
 
 func matchRule(cfg *config.Cache, path []byte) *config.Rule {
 	for _, rule := range cfg.Cache.Rules {
-		if bytes.HasPrefix(path, rule.PathBytes) {
+		if bytes.EqualFold(path, rule.PathBytes) {
 			return rule
 		}
 	}

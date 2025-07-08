@@ -4,16 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/Borislavv/advanced-cache/internal/cache/config"
+	"github.com/Borislavv/advanced-cache/pkg/mock"
 	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
 	serverutils "github.com/Borislavv/advanced-cache/pkg/server/utils"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
+	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
 	"github.com/Borislavv/advanced-cache/pkg/utils"
 	"github.com/fasthttp/router"
 	"github.com/rs/zerolog/log"
 	"github.com/valyala/fasthttp"
-	"net/http"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -42,10 +44,11 @@ var (
 
 // CacheController handles cache API requests (read/write-through, error reporting, metrics).
 type CacheController struct {
-	cfg     *config.Config
-	ctx     context.Context
-	cache   storage.Storage
-	backend repository.Backender
+	cfg         *config.Config
+	ctx         context.Context
+	cache       storage.Storage
+	backend     repository.Backender
+	sharededMap *sharded.Map[*model.Entry]
 }
 
 // NewCacheController builds a cache API controller with all dependencies.
@@ -56,12 +59,50 @@ func NewCacheController(
 	cache storage.Storage,
 	backend repository.Backender,
 ) *CacheController {
+	shardedMap := sharded.NewMap[*model.Entry](ctx, 32)
+
 	c := &CacheController{
-		cfg:     cfg,
-		ctx:     ctx,
-		cache:   cache,
-		backend: backend,
+		cfg:         cfg,
+		ctx:         ctx,
+		cache:       cache,
+		backend:     backend,
+		sharededMap: shardedMap,
 	}
+	go func() {
+
+		log.Info().Msg("[cache-controller] data loading")
+		defer log.Info().Msg("[cache-controller] data loading finished")
+
+		i := 0
+		path := []byte("/api/v2/pagedata")
+		for resp := range mock.StreamRandomResponses(ctx, c.cfg.Cache, path, 10_000_000) {
+			entry, err := model.NewEntryManual(cfg.Cache, path, resp.ToQuery(), resp.Request().Headers())
+			if err != nil {
+				log.Error().Err(err).Msg("error creating entry")
+				return
+			}
+			entry.SetPayload(path, resp.ToQuery(), resp.Data().Body(), resp.Data().Headers(), resp.Data().StatusCode())
+
+			c.sharededMap.Set(entry)
+
+			if i%1_000_000 == 0 {
+				log.Info().Msgf("[cache-controller] map len: %d", c.sharededMap.Len())
+			}
+			i++
+		}
+		log.Info().Msgf("[cache-controller] last: map len: %d", c.sharededMap.Len())
+
+		var cnt = &atomic.Int64{}
+		c.sharededMap.WalkShards(func(key uint64, shard *sharded.Shard[*model.Entry]) {
+			shard.Walk(ctx, func(u uint64, entry *model.Entry) bool {
+				fmt.Printf("key: %d, shard: %d, entry: %+v \n", key, u, entry)
+				if cnt.Add(1) > 100 {
+					return false
+				}
+				return true
+			}, false)
+		})
+	}()
 	c.runLogger(ctx)
 	return c
 }
@@ -70,38 +111,29 @@ func NewCacheController(
 func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 	var from = time.Now()
 
-	// Parse request parameters.
-	req, err := model.NewRequestFromFasthttp(c.cfg.Cache, r)
+	entry, err := model.NewEntry(c.cfg.Cache, r)
 	if err != nil {
+		log.Error().Err(err).Msg("error creating entry")
 		c.respondThatServiceIsTemporaryUnavailable(err, r)
 		return
 	}
 
-	// Try to get response from cache.
-	resp, found := c.cache.Get(req)
+	v, found := c.sharededMap.Get(entry.MapKey(), entry.ShardKey())
 	if !found {
-		// On cache miss, get data from upstream backend and save in cache.
-		computed, err := c.backend.Fetch(c.ctx, req)
-		if err != nil {
-			c.respondThatServiceIsTemporaryUnavailable(err, r)
-			return
-		}
-		resp = computed
-		c.cache.Set(resp)
+		panic("not found")
 	}
+	_, _, status, headers, body := v.Payload()
 
 	// Write status, headers, and body from the cached (or fetched) response.
-	data := resp.Data()
-	r.Response.SetStatusCode(data.StatusCode())
-	for key, vv := range data.Headers() {
+	r.Response.SetStatusCode(status)
+	for key, vv := range headers {
 		for _, value := range vv {
 			r.Response.Header.Add(key, value)
 		}
 	}
 
 	// Set up Last-Modified header
-	r.Response.Header.SetBytesKV(hdrLastModified, resp.RevalidatedAt().AppendFormat(nil, http.TimeFormat))
-	if _, err := serverutils.Write(data.Body(), r); err != nil {
+	if _, err := serverutils.Write(body, r); err != nil {
 		c.respondThatServiceIsTemporaryUnavailable(err, r)
 		return
 	}

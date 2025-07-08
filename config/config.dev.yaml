@@ -6,6 +6,9 @@ cache:
     level: "info" # Any zerolog.Level.
     stats: true   # Should the statistic like num evictions, refreshes, rps, memory usage and so on be written in /std/out?
 
+  compressing:
+    gzip: true
+
   lifetime:
     max_req_dur: "100ms"                # If a request lifetime is longer than 100ms then request will be canceled by context.
     escape_max_req_dur: "X-Google-Bot"  # If the header exists the timeout above will be skipped.
@@ -17,7 +20,7 @@ cache:
 
   preallocate:
     num_shards: 2048  # Fixed constant (see `NumOfShards` in code). Controls the number of sharded maps.
-    per_shard: 1024   # Preallocated map size per shard. Without resizing, this supports 2048*8196=~16785408 keys in total.
+    per_shard: 8   # Preallocated map size per shard. Without resizing, this supports 2048*8196=~16785408 keys in total.
     # Note: this is an upper-bound estimate and may vary depending on hash distribution quality.
 
   eviction:

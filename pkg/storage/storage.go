@@ -14,9 +14,6 @@ type Storage interface {
 	// Returns the response, a releaser for safe concurrent access, and a hit/miss flag.
 	Get(req *model.Request) (resp *model.Response, isHit bool)
 
-	// GetRandom attempts to retrieve any one cached response.
-	GetRandom() (resp *model.Response, isFound bool)
-
 	// Set stores a new response in the cache and returns a releaser for managing resource lifetime.
 	Set(resp *model.Response)
 

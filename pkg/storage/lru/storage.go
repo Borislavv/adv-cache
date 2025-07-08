@@ -3,7 +3,6 @@ package lru
 import (
 	"context"
 	"github.com/Borislavv/advanced-cache/pkg/storage/lfu"
-	"math/rand/v2"
 	"runtime"
 	"strconv"
 	"time"
@@ -70,18 +69,6 @@ func (s *Storage) Get(req *model.Request) (*model.Response, bool) {
 		return resp, true
 	}
 	return nil, false
-}
-
-func (s *Storage) GetRandom() (resp *model.Response, isFound bool) {
-	s.shardedMap.
-		Shard(sharded.MapShardKey(uint64(rand.IntN(int(sharded.ActiveShards))))).
-		Walk(s.ctx, func(u uint64, response *model.Response) bool {
-			resp = response
-			isFound = true
-			return false
-		}, false)
-
-	return resp, isFound
 }
 
 // Set inserts or updates a response in the cache, updating Weight usage and Storage position.
