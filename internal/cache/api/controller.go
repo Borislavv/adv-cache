@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/Borislavv/advanced-cache/internal/cache/config"
+	"github.com/Borislavv/advanced-cache/pkg/mock"
 	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
 	serverutils "github.com/Borislavv/advanced-cache/pkg/server/utils"
@@ -62,6 +63,12 @@ func NewCacheController(
 		cache:   cache,
 		backend: backend,
 	}
+	go func() {
+		path := []byte("/api/v2/pagedata")
+		for resp := range mock.StreamRandomResponses(ctx, c.cfg.Cache, path, 10_000_000) {
+			c.cache.Set(resp)
+		}
+	}()
 	c.runLogger(ctx)
 	return c
 }
