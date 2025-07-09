@@ -39,7 +39,7 @@ func NewRequestFromNetHttp(cfg *config.Cache, r *http.Request) (*Request, error)
 	// path must be a readonly slice, don't change it anywhere
 	req := &Request{path: internedPath} // static value (strings are immutable, so easily refer to it)
 
-	rule := matchRule(cfg, req.path)
+	rule := MatchRule(cfg, req.path)
 	if rule == nil {
 		return nil, RuleNotFoundError
 	}
@@ -58,7 +58,7 @@ func NewRequestFromFasthttp(cfg *config.Cache, r *fasthttp.RequestCtx) (*Request
 
 	req := &Request{path: internedPath}
 
-	req.rule = matchRule(cfg, internedPath)
+	req.rule = MatchRule(cfg, internedPath)
 	if req.rule == nil {
 		return nil, RuleNotFoundError
 	}
@@ -73,7 +73,7 @@ func NewRequestFromFasthttp(cfg *config.Cache, r *fasthttp.RequestCtx) (*Request
 
 func NewRawRequest(cfg *config.Cache, key, shard uint64, query, path []byte, headers [][2][]byte) *Request {
 	internedPath := PathInterner.Intern(path)
-	rule := matchRule(cfg, internedPath)
+	rule := MatchRule(cfg, internedPath)
 	if rule == nil {
 		panic("rile is nil for path: " + string(internedPath))
 	}
@@ -82,7 +82,7 @@ func NewRawRequest(cfg *config.Cache, key, shard uint64, query, path []byte, hea
 
 func NewRequest(cfg *config.Cache, path []byte, argsKvPairs [][2][]byte, headersKvPairs [][2][]byte) *Request {
 	internedPath := PathInterner.Intern(path)
-	req := &Request{path: internedPath, rule: matchRule(cfg, internedPath)}
+	req := &Request{path: internedPath, rule: MatchRule(cfg, internedPath)}
 	req.setUpManually(
 		getFilteredAndSortedKeyQueriesManual(argsKvPairs, req.rule.CacheKey.QueryBytes),
 		getFilteredAndSortedKeyHeadersManual(headersKvPairs, req.rule.CacheKey.HeadersBytes),
@@ -185,7 +185,7 @@ func hash(buf *bytes.Buffer) uint64 {
 	return hasher.Sum64()
 }
 
-func matchRule(cfg *config.Cache, path []byte) *config.Rule {
+func MatchRule(cfg *config.Cache, path []byte) *config.Rule {
 	for _, rule := range cfg.Cache.Rules {
 		if bytes.EqualFold(path, rule.PathBytes) {
 			return rule

@@ -10,7 +10,7 @@ import (
 )
 
 func (middleware *TraefikCacheMiddleware) setUpCache() {
-	shardedMap := sharded.NewMap[*model.Response](middleware.ctx, middleware.cfg.Cache.Preallocate.PerShard)
+	shardedMap := sharded.NewMap[*model.Entry](middleware.ctx, middleware.cfg.Cache.Preallocate.PerShard)
 	middleware.backend = repository.NewBackend(middleware.cfg)
 	balancer := lru.NewBalancer(middleware.ctx, shardedMap)
 	middleware.refresher = storage.NewRefresher(middleware.ctx, middleware.cfg, balancer)

@@ -108,7 +108,13 @@ type Refresh struct {
 	MinStale time.Duration // computed=time.Duration(float64(TTL/ErrorTTL) * Beta)
 }
 
+type Gzip struct {
+	Enabled   bool `yaml:"enabled"`
+	Threshold int  `yaml:"threshold"`
+}
+
 type Rule struct {
+	Gzip       Gzip   `yaml:"gzip"`
 	Path       string `yaml:"path"`
 	PathBytes  []byte
 	TTL        time.Duration `yaml:"ttl"`       // TTL for this rule.

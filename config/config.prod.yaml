@@ -44,6 +44,9 @@ cache:
 
   rules:
     - path: "/api/v2/pagedata"
+      gzip:
+        enabled: true
+        threshold: 1024
       ttl: "12h"
       error_ttl: "1h"
       beta: 0.3 # Controls randomness in refresh timing to avoid thundering herd.
@@ -60,6 +63,9 @@ cache:
           - Vary               # Если ты варьируешь по Accept-Encoding или Accept-Language.
 
     - path: "/api/v1/pagecontent"
+      gzip:
+        enabled: true
+        threshold: 1024
       ttl: "36h"
       error_ttl: "3h"
       beta: 0.3 # Controls randomness in refresh timing to avoid thundering herd.

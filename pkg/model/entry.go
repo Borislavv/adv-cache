@@ -5,26 +5,54 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/list"
 	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
 	"github.com/valyala/fasthttp"
 	"io"
+	"math"
+	"math/rand/v2"
 	"net/http"
 	"sort"
 	"sync/atomic"
+	"time"
 	"unsafe"
 )
 
+type Revalidator func(ctx context.Context, path []byte, query []byte, queryHeaders [][2][]byte) (status int, headers http.Header, body []byte, err error)
+
 // Entry is the packed request+response payload
 type Entry struct {
-	key           uint64
-	shard         uint64
-	payload       []byte
-	rule          *config.Rule
-	lruListElem   *atomic.Pointer[list.Element[*Entry]]
-	revalidator   func(ctx context.Context) (payload []byte, err error)
-	revalidatedAt int64
+	key          uint64
+	shard        uint64
+	rule         *config.Rule
+	payload      *atomic.Pointer[[]byte]
+	lruListElem  *atomic.Pointer[list.Element[*Entry]]
+	revalidator  Revalidator
+	willUpdateAt int64
+	isCompressed int64
+}
+
+func NewEntryFromField(
+	key uint64,
+	shard uint64,
+	payload []byte,
+	rule *config.Rule,
+	revalidator Revalidator,
+	willUpdateAt int64,
+) *Entry {
+	e := &Entry{
+		key:          key,
+		shard:        shard,
+		payload:      &atomic.Pointer[[]byte]{},
+		rule:         rule,
+		lruListElem:  &atomic.Pointer[list.Element[*Entry]]{},
+		revalidator:  revalidator,
+		willUpdateAt: willUpdateAt,
+	}
+	e.payload.Store(&payload)
+	return e
 }
 
 //var (
@@ -44,22 +72,39 @@ func (e *Entry) ShardKey() uint64 { return e.shard }
 
 // NewEntry accepts path, query and request headers as bytes slices.
 func NewEntry(cfg *config.Cache, r *fasthttp.RequestCtx) (*Entry, error) {
-	entry := &Entry{rule: matchRule(cfg, r.Path())}
-	if entry.rule == nil {
+	rule := MatchRule(cfg, r.Path())
+	if rule == nil {
 		return nil, RuleNotFoundError
 	}
+
+	entry := &Entry{
+		rule:        rule,
+		lruListElem: &atomic.Pointer[list.Element[*Entry]]{},
+		payload:     &atomic.Pointer[[]byte]{},
+	}
+
 	return entry.calculateAndSetUpKeys(
 		entry.getFilteredAndSortedKeyQueries(r),
 		entry.getFilteredAndSortedKeyHeaders(r),
 	), nil
 }
 
-func NewEntryManual(cfg *config.Cache, path, query []byte, headers [][2][]byte) (*Entry, error) {
-	entry := &Entry{rule: matchRule(cfg, path)}
+func NewEntryManual(cfg *config.Cache, path, query []byte, headers [][2][]byte, revalidator Revalidator) (*Entry, error) {
+	entry := &Entry{
+		rule:        MatchRule(cfg, path),
+		lruListElem: &atomic.Pointer[list.Element[*Entry]]{},
+		payload:     &atomic.Pointer[[]byte]{},
+		revalidator: revalidator,
+	}
 	if entry.rule == nil {
 		return nil, RuleNotFoundError
 	}
+
+	// initial request payload (response payload will be filled later)
+	entry.SetPayload(path, query, headers, nil, nil, 0)
+
 	entry.calculateAndSetUpKeys(parseQuery(query), headers)
+
 	return entry, nil
 }
 
@@ -95,13 +140,29 @@ func (e *Entry) calculateAndSetUpKeys(filteredQueries, filteredHeaders [][2][]by
 	return e
 }
 
+func (e *Entry) SetRevalidator(revalidator Revalidator) {
+	e.revalidator = revalidator
+}
+
 // SetPayload packs and gzip-compresses the entire payload: Path, Query, Status, Headers, Body.
-func (e *Entry) SetPayload(path, query, body []byte, headers http.Header, status int) {
-	numHeaders := len(headers)
-	estSize := 64 + len(path) + len(query) + len(body)
+// SetPayload packs and gzip-compresses the entire payload: Path, Query, QueryHeaders, Status, ResponseHeaders, Body.
+func (e *Entry) SetPayload(
+	path, query []byte,
+	queryHeaders [][2][]byte,
+	body []byte,
+	headers http.Header,
+	status int,
+) {
+	numQueryHeaders := len(queryHeaders)
+	numResponseHeaders := len(headers)
+
+	estSize := 128 + len(path) + len(query) + len(body)
+	for _, kv := range queryHeaders {
+		estSize += len(kv[0]) + len(kv[1])
+	}
 	for key, vv := range headers {
-		for _, value := range vv {
-			estSize += len(key) + len(value)
+		for _, v := range vv {
+			estSize += len(key) + len(v)
 		}
 	}
 
@@ -115,11 +176,20 @@ func (e *Entry) SetPayload(path, query, body []byte, headers http.Header, status
 	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(query)))
 	buf = append(buf, query...)
 
+	// --- QueryHeaders
+	buf = binary.LittleEndian.AppendUint32(buf, uint32(numQueryHeaders))
+	for _, kv := range queryHeaders {
+		buf = binary.LittleEndian.AppendUint32(buf, uint32(len(kv[0])))
+		buf = append(buf, kv[0]...)
+		buf = binary.LittleEndian.AppendUint32(buf, uint32(len(kv[1])))
+		buf = append(buf, kv[1]...)
+	}
+
 	// --- StatusCode
 	buf = binary.LittleEndian.AppendUint32(buf, uint32(status))
 
-	// --- Headers
-	buf = binary.LittleEndian.AppendUint32(buf, uint32(numHeaders))
+	// --- Response Headers
+	buf = binary.LittleEndian.AppendUint32(buf, uint32(numResponseHeaders))
 	for k, vs := range headers {
 		buf = binary.LittleEndian.AppendUint32(buf, uint32(len(k)))
 		buf = append(buf, []byte(k)...)
@@ -134,21 +204,29 @@ func (e *Entry) SetPayload(path, query, body []byte, headers http.Header, status
 	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(body)))
 	buf = append(buf, body...)
 
-	// Always compress entire payload
-	gzipper := GzipWriterPool.Get().(*gzip.Writer)
-	defer GzipWriterPool.Put(gzipper)
+	if e.rule.Gzip.Enabled && len(buf) >= e.rule.Gzip.Threshold {
+		// --- Compress entire payload
+		gzipper := GzipWriterPool.Get().(*gzip.Writer)
+		defer GzipWriterPool.Put(gzipper)
 
-	bufIn := GzipBufferPool.Get().(*bytes.Buffer)
-	defer GzipBufferPool.Put(bufIn)
-	bufIn.Reset()
-	gzipper.Reset(bufIn)
+		bufIn := GzipBufferPool.Get().(*bytes.Buffer)
+		defer GzipBufferPool.Put(bufIn)
+		bufIn.Reset()
+		gzipper.Reset(bufIn)
 
-	_, err := gzipper.Write(buf)
-	closeErr := gzipper.Close()
-	if err == nil && closeErr == nil {
-		e.payload = append([]byte(nil), bufIn.Bytes()...)
+		_, err := gzipper.Write(buf)
+		closeErr := gzipper.Close()
+		if err == nil && closeErr == nil {
+			tmpBuf := make([]byte, bufIn.Len())
+			copy(tmpBuf, bufIn.Bytes())
+			e.payload.Store(&tmpBuf)
+		} else {
+			e.payload.Store(&buf)
+		}
+
+		atomic.StoreInt64(&e.isCompressed, 1)
 	} else {
-		e.payload = buf // fallback uncompressed (should not happen)
+		e.payload.Store(&buf)
 	}
 }
 
@@ -156,71 +234,117 @@ func (e *Entry) SetPayload(path, query, body []byte, headers http.Header, status
 func (e *Entry) Payload() (
 	path []byte,
 	query []byte,
+	queryHeaders [][2][]byte,
 	status int,
-	headers http.Header,
+	responseHeaders http.Header,
 	body []byte,
+	err error,
 ) {
-	gr, err := gzip.NewReader(bytes.NewReader(e.payload))
-	if err != nil {
-		// fallback: raw payload if broken
-		return nil, nil, 0, nil, e.payload
+	payloadPtr := e.payload.Load()
+	if payloadPtr == nil {
+		return nil, nil, nil, 0, nil, nil, fmt.Errorf("payload is nil")
 	}
-	defer gr.Close()
 
-	rawPayload, err := io.ReadAll(gr)
-	if err != nil {
-		return nil, nil, 0, nil, e.payload
+	var rawPayload []byte
+
+	if atomic.LoadInt64(&e.isCompressed) == 1 {
+		gr, err := gzip.NewReader(bytes.NewReader(*payloadPtr))
+		if err != nil {
+			return nil, nil, nil, 0, nil, nil, fmt.Errorf("gzip reader failed: %w", err)
+		}
+		defer gr.Close()
+
+		rawPayload, err = io.ReadAll(gr)
+		if err != nil {
+			return nil, nil, nil, 0, nil, nil, fmt.Errorf("gzip read failed: %w", err)
+		}
+	} else {
+		rawPayload = *payloadPtr
 	}
 
 	offset := 0
 
 	// --- Path
-	plen := binary.LittleEndian.Uint32(rawPayload[offset:])
+	pathLen := binary.LittleEndian.Uint32(rawPayload[offset:])
 	offset += 4
-	path = rawPayload[offset : offset+int(plen)]
-	offset += int(plen)
+	path = rawPayload[offset : offset+int(pathLen)]
+	offset += int(pathLen)
 
 	// --- Query
-	qlen := binary.LittleEndian.Uint32(rawPayload[offset:])
+	queryLen := binary.LittleEndian.Uint32(rawPayload[offset:])
 	offset += 4
-	query = rawPayload[offset : offset+int(qlen)]
-	offset += int(qlen)
+	query = rawPayload[offset : offset+int(queryLen)]
+	offset += int(queryLen)
+
+	// --- QueryHeaders
+	numQueryHeaders := binary.LittleEndian.Uint32(rawPayload[offset:])
+	offset += 4
+	queryHeaders = make([][2][]byte, numQueryHeaders)
+	for i := 0; i < int(numQueryHeaders); i++ {
+		keyLen := binary.LittleEndian.Uint32(rawPayload[offset:])
+		offset += 4
+		k := rawPayload[offset : offset+int(keyLen)]
+		offset += int(keyLen)
+
+		valueLen := binary.LittleEndian.Uint32(rawPayload[offset:])
+		offset += 4
+		v := rawPayload[offset : offset+int(valueLen)]
+		offset += int(valueLen)
+
+		queryHeaders[i] = [2][]byte{k, v}
+	}
 
 	// --- Status
 	status = int(binary.LittleEndian.Uint32(rawPayload[offset:]))
 	offset += 4
 
-	// --- Headers
+	// --- Response Headers
 	numHeaders := binary.LittleEndian.Uint32(rawPayload[offset:])
 	offset += 4
-	headers = make(http.Header)
+	responseHeaders = make(http.Header)
 	for i := 0; i < int(numHeaders); i++ {
-		klen := binary.LittleEndian.Uint32(rawPayload[offset:])
+		keyLen := binary.LittleEndian.Uint32(rawPayload[offset:])
 		offset += 4
-		keyStr := string(rawPayload[offset : offset+int(klen)])
-		offset += int(klen)
+		keyStr := string(rawPayload[offset : offset+int(keyLen)])
+		offset += int(keyLen)
 
 		numVals := binary.LittleEndian.Uint32(rawPayload[offset:])
 		offset += 4
 		for v := 0; v < int(numVals); v++ {
-			vlen := binary.LittleEndian.Uint32(rawPayload[offset:])
+			valueLen := binary.LittleEndian.Uint32(rawPayload[offset:])
 			offset += 4
-			valStr := string(rawPayload[offset : offset+int(vlen)])
-			offset += int(vlen)
-			headers.Add(keyStr, valStr)
+			valStr := string(rawPayload[offset : offset+int(valueLen)])
+			offset += int(valueLen)
+			responseHeaders.Add(keyStr, valStr)
 		}
 	}
 
 	// --- Body
-	blen := binary.LittleEndian.Uint32(rawPayload[offset:])
+	bodyLen := binary.LittleEndian.Uint32(rawPayload[offset:])
 	offset += 4
-	body = rawPayload[offset : offset+int(blen)]
+	body = rawPayload[offset : offset+int(bodyLen)]
 
 	return
 }
 
+func (e *Entry) Rule() *config.Rule {
+	return e.rule
+}
+
+func (e *Entry) PayloadBytes() []byte {
+	return *e.payload.Load()
+}
+
 func (e *Entry) Weight() int64 {
-	return int64(unsafe.Sizeof(*e)) + int64(cap(e.payload))
+	return int64(unsafe.Sizeof(*e)) + int64(cap(*e.payload.Load()))
+}
+
+func (e *Entry) IsCompressed() bool {
+	return atomic.LoadInt64(&e.isCompressed) == 1
+}
+
+func (e *Entry) WillUpdateAt() int64 {
+	return atomic.LoadInt64(&e.willUpdateAt)
 }
 
 func parseQuery(b []byte) [][2][]byte {
@@ -242,13 +366,14 @@ func (e *Entry) getFilteredAndSortedKeyQueries(r *fasthttp.RequestCtx) (kvPairs 
 	if cap(filtered) == 0 {
 		return filtered
 	}
-	r.QueryArgs().VisitAll(func(key, value []byte) {
+	r.QueryArgs().All()(func(key, value []byte) bool {
 		for _, ak := range e.rule.CacheKey.QueryBytes {
 			if bytes.HasPrefix(key, ak) {
 				filtered = append(filtered, [2][]byte{key, value})
 				break
 			}
 		}
+		return true
 	})
 	sort.Slice(filtered, func(i, j int) bool {
 		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
@@ -261,16 +386,80 @@ func (e *Entry) getFilteredAndSortedKeyHeaders(r *fasthttp.RequestCtx) (kvPairs 
 	if cap(filtered) == 0 {
 		return filtered
 	}
-	r.Request.Header.VisitAll(func(key, value []byte) {
+	r.Request.Header.All()(func(key, value []byte) bool {
 		for _, allowedKey := range e.rule.CacheKey.HeadersBytes {
 			if bytes.EqualFold(key, allowedKey) {
 				filtered = append(filtered, [2][]byte{key, value})
 				break
 			}
 		}
+		return true
 	})
 	sort.Slice(filtered, func(i, j int) bool {
 		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
 	})
 	return filtered
+}
+
+// SetLruListElement sets the LRU list element pointer.
+func (e *Entry) SetLruListElement(el *list.Element[*Entry]) {
+	e.lruListElem.Store(el)
+}
+
+// LruListElement returns the LRU list element pointer (for LRU cache management).
+func (e *Entry) LruListElement() *list.Element[*Entry] {
+	return e.lruListElem.Load()
+}
+
+// ShouldBeRefreshed implements probabilistic refresh logic ("beta" algorithm).
+// Returns true if the entry is stale and, with a probability proportional to its staleness, should be refreshed now.
+func (e *Entry) ShouldBeRefreshed(cfg *config.Cache) bool {
+	if e == nil {
+		return false
+	}
+
+	now := time.Now().UnixNano()
+	remaining := atomic.LoadInt64(&e.willUpdateAt) - now
+
+	if remaining < 0 {
+		remaining = 0 // it's time already
+	}
+
+	interval := e.rule.TTL.Nanoseconds()
+	if interval == 0 {
+		interval = cfg.Cache.Refresh.TTL.Nanoseconds()
+	}
+
+	beta := e.rule.Beta
+	if beta == 0 {
+		beta = cfg.Cache.Refresh.Beta
+	}
+
+	// Probability: higher as we approach ShouldRevalidatedAt
+	prob := 1 - math.Exp(-beta*(1.0-(float64(remaining)/float64(interval))))
+
+	return rand.Float64() < prob
+}
+
+// Revalidate calls the revalidator closure to fetch fresh data and updates the timestamp.
+func (e *Entry) Revalidate(ctx context.Context) error {
+	path, query, headers, _, _, _, err := e.Payload()
+	if err != nil {
+		return err
+	}
+
+	statusCode, respHeaders, body, err := e.revalidator(ctx, path, query, headers)
+	if err != nil {
+		return err
+	}
+
+	e.SetPayload(path, query, headers, body, respHeaders, statusCode)
+
+	if statusCode == http.StatusOK {
+		atomic.StoreInt64(&e.willUpdateAt, time.Now().UnixNano()+e.rule.TTL.Nanoseconds())
+	} else {
+		atomic.StoreInt64(&e.willUpdateAt, time.Now().UnixNano()+e.rule.ErrorTTL.Nanoseconds())
+	}
+
+	return nil
 }

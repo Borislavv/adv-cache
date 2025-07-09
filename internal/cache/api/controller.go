@@ -11,11 +11,11 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/repository"
 	serverutils "github.com/Borislavv/advanced-cache/pkg/server/utils"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
-	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
 	"github.com/Borislavv/advanced-cache/pkg/utils"
 	"github.com/fasthttp/router"
 	"github.com/rs/zerolog/log"
 	"github.com/valyala/fasthttp"
+	"net/http"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -32,8 +32,7 @@ var (
 	  "message": "` + string(messagePlaceholder) + `"
 	}`)
 	messagePlaceholder = []byte("${message}")
-
-	hdrLastModified = []byte("Last-Modified")
+	hdrLastModified    = []byte("Last-Modified")
 )
 
 // Buffered channel for request durations (used only if debug enabled)
@@ -44,11 +43,10 @@ var (
 
 // CacheController handles cache API requests (read/write-through, error reporting, metrics).
 type CacheController struct {
-	cfg         *config.Config
-	ctx         context.Context
-	cache       storage.Storage
-	backend     repository.Backender
-	sharededMap *sharded.Map[*model.Entry]
+	cfg     *config.Config
+	ctx     context.Context
+	cache   storage.Storage
+	backend repository.Backender
 }
 
 // NewCacheController builds a cache API controller with all dependencies.
@@ -59,70 +57,74 @@ func NewCacheController(
 	cache storage.Storage,
 	backend repository.Backender,
 ) *CacheController {
-	shardedMap := sharded.NewMap[*model.Entry](ctx, 32)
-
 	c := &CacheController{
-		cfg:         cfg,
-		ctx:         ctx,
-		cache:       cache,
-		backend:     backend,
-		sharededMap: shardedMap,
+		cfg:     cfg,
+		ctx:     ctx,
+		cache:   cache,
+		backend: backend,
 	}
 	go func() {
-
 		log.Info().Msg("[cache-controller] data loading")
 		defer log.Info().Msg("[cache-controller] data loading finished")
 
-		i := 0
 		path := []byte("/api/v2/pagedata")
 		for resp := range mock.StreamRandomResponses(ctx, c.cfg.Cache, path, 10_000_000) {
-			entry, err := model.NewEntryManual(cfg.Cache, path, resp.ToQuery(), resp.Request().Headers())
+			entry, err := model.NewEntryManual(cfg.Cache, path, resp.ToQuery(), resp.Request().Headers(), c.backend.RevalidatorMaker())
 			if err != nil {
 				log.Error().Err(err).Msg("error creating entry")
 				return
 			}
-			entry.SetPayload(path, resp.ToQuery(), resp.Data().Body(), resp.Data().Headers(), resp.Data().StatusCode())
-
-			c.sharededMap.Set(entry)
-
-			if i%1_000_000 == 0 {
-				log.Info().Msgf("[cache-controller] map len: %d", c.sharededMap.Len())
-			}
-			i++
+			entry.SetPayload(path, resp.ToQuery(), resp.Request().Headers(), resp.Data().Body(), resp.Data().Headers(), resp.Data().StatusCode())
+			c.cache.Set(entry)
 		}
-		log.Info().Msgf("[cache-controller] last: map len: %d", c.sharededMap.Len())
-
-		var cnt = &atomic.Int64{}
-		c.sharededMap.WalkShards(func(key uint64, shard *sharded.Shard[*model.Entry]) {
-			shard.Walk(ctx, func(u uint64, entry *model.Entry) bool {
-				fmt.Printf("key: %d, shard: %d, entry: %+v \n", key, u, entry)
-				if cnt.Add(1) > 100 {
-					return false
-				}
-				return true
-			}, false)
-		})
 	}()
 	c.runLogger(ctx)
 	return c
 }
 
-// Index is the main HTTP handler for /api/v1/cache.
+func (c *CacheController) queryHeaders(r *fasthttp.RequestCtx) [][2][]byte {
+	queryHeaders := make([][2][]byte, 0, r.Request.Header.Len())
+	r.Request.Header.All()(func(key []byte, value []byte) bool {
+		k := make([]byte, len(key))
+		val := make([]byte, len(value))
+		queryHeaders = append(queryHeaders, [2][]byte{k, val})
+		return true
+	})
+	return queryHeaders
+}
+
+// Index is the main HTTP handler.
 func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 	var from = time.Now()
 
 	entry, err := model.NewEntry(c.cfg.Cache, r)
 	if err != nil {
-		log.Error().Err(err).Msg("error creating entry")
 		c.respondThatServiceIsTemporaryUnavailable(err, r)
 		return
 	}
 
-	v, found := c.sharededMap.Get(entry.MapKey(), entry.ShardKey())
+	var (
+		status  int
+		headers http.Header
+		body    []byte
+	)
+
+	v, found := c.cache.Get(entry.MapKey(), entry.ShardKey())
 	if !found {
-		panic("not found")
+		path := r.Path()
+		queryHeaders := c.queryHeaders(r)
+		queryString := r.QueryArgs().QueryString()
+		status, headers, body, err = c.backend.Fetch(c.ctx, path, queryString, queryHeaders)
+		if err != nil {
+			c.respondThatServiceIsTemporaryUnavailable(err, r)
+			return
+		}
+		fmt.Println(string(body))
+		entry.SetPayload(path, queryString, queryHeaders, body, headers, status)
+		entry.SetRevalidator(c.backend.RevalidatorMaker())
+		c.cache.Set(entry)
+		v = entry
 	}
-	_, _, status, headers, body := v.Payload()
 
 	// Write status, headers, and body from the cached (or fetched) response.
 	r.Response.SetStatusCode(status)
@@ -133,7 +135,10 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 	}
 
 	// Set up Last-Modified header
-	if _, err := serverutils.Write(body, r); err != nil {
+	c.setLastModifiedHeader(r, v, status)
+
+	// Write body
+	if _, err = serverutils.Write(body, r); err != nil {
 		c.respondThatServiceIsTemporaryUnavailable(err, r)
 		return
 	}
@@ -150,6 +155,20 @@ func (c *CacheController) respondThatServiceIsTemporaryUnavailable(err error, ct
 	ctx.SetStatusCode(fasthttp.StatusServiceUnavailable)
 	if _, err = serverutils.Write(c.resolveMessagePlaceholder(serviceUnavailableResponseBytes, err), ctx); err != nil {
 		log.Err(err).Msg("failed to write into *fasthttp.RequestCtx")
+	}
+}
+
+func (c *CacheController) setLastModifiedHeader(r *fasthttp.RequestCtx, entry *model.Entry, status int) {
+	if status == http.StatusOK {
+		r.Request.Header.SetBytesKV(
+			hdrLastModified,
+			time.Unix(0, entry.WillUpdateAt()-entry.Rule().TTL.Nanoseconds()).AppendFormat(nil, http.TimeFormat),
+		)
+	} else {
+		r.Request.Header.SetBytesKV(
+			hdrLastModified,
+			time.Unix(0, entry.WillUpdateAt()-entry.Rule().ErrorTTL.Nanoseconds()).AppendFormat(nil, http.TimeFormat),
+		)
 	}
 }
 

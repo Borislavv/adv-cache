@@ -28,7 +28,7 @@ type Refresh struct {
 	requestRateLimiter  *rate.Limiter
 	refreshSuccessNumCh chan struct{}
 	refreshErroredNumCh chan struct{}
-	refreshItemsCh      chan *model.Response
+	refreshItemsCh      chan *model.Entry
 }
 
 // NewRefresher constructs a Refresh.
@@ -39,9 +39,9 @@ func NewRefresher(ctx context.Context, cfg *config.Cache, balancer lru.Balancer)
 		balancer:            balancer,
 		scansRateLimiter:    rate.NewLimiter(ctx, cfg.Cache.Refresh.ScanRate, cfg.Cache.Refresh.ScanRate/10),
 		requestRateLimiter:  rate.NewLimiter(ctx, cfg.Cache.Refresh.Rate, cfg.Cache.Refresh.Rate/10),
-		refreshSuccessNumCh: make(chan struct{}, cfg.Cache.Refresh.Rate),        // Successful refreshes counter channel
-		refreshErroredNumCh: make(chan struct{}, cfg.Cache.Refresh.Rate),        // Failed refreshes counter channel
-		refreshItemsCh:      make(chan *model.Response, cfg.Cache.Refresh.Rate), // Failed refreshes counter channel
+		refreshSuccessNumCh: make(chan struct{}, cfg.Cache.Refresh.Rate),     // Successful refreshes counter channel
+		refreshErroredNumCh: make(chan struct{}, cfg.Cache.Refresh.Rate),     // Failed refreshes counter channel
+		refreshItemsCh:      make(chan *model.Entry, cfg.Cache.Refresh.Rate), // Failed refreshes counter channel
 	}
 }
 
@@ -61,7 +61,7 @@ func (r *Refresh) runProducer() {
 			case <-r.ctx.Done():
 				return
 			case <-r.scansRateLimiter.Chan():
-				if item := r.balancer.RandNode().RandItem(r.ctx); item.ShouldBeRefreshed() {
+				if item := r.balancer.RandNode().RandItem(r.ctx); item.ShouldBeRefreshed(r.cfg) {
 					r.refreshItemsCh <- item
 				}
 			}
@@ -71,30 +71,24 @@ func (r *Refresh) runProducer() {
 
 func (r *Refresh) runConsumer() {
 	go func() {
-		for resp := range r.refreshItemsCh {
-			r.refreshItem(resp)
+		for entry := range r.refreshItemsCh {
+			select {
+			case <-r.ctx.Done():
+				return
+			case <-r.requestRateLimiter.Chan():
+				go func() {
+					// IMPORTANT: r.ctx used in resp.Revalidate(r.ctx) is a correct ctx due to be able to await requests through previous iterations.
+					// Otherwise, you will have a lot of request errors (context cancelled), because in parent method ctx (from arg) has a timeout in milliseconds
+					// for be able to stop cycles in current iteration and start a new one.
+					if err := entry.Revalidate(r.ctx); err != nil {
+						r.refreshErroredNumCh <- struct{}{}
+						return
+					}
+					r.refreshSuccessNumCh <- struct{}{}
+				}()
+			}
 		}
 	}()
-}
-
-// refreshItem attempts to refreshItem the given response via Revalidate.
-// If successful, increments the refreshItem metric (in debug mode); otherwise increments the error metric.
-func (r *Refresh) refreshItem(resp *model.Response) {
-	select {
-	case <-r.ctx.Done():
-		return
-	case <-r.requestRateLimiter.Chan():
-		go func() {
-			// IMPORTANT: r.ctx used in resp.Revalidate(r.ctx) is a correct ctx due to be able to await requests through previous iterations.
-			// Otherwise, you will have a lot of request errors (context cancelled), because in parent method ctx (from arg) has a timeout in milliseconds
-			// for be able to stop cycles in current iteration and start a new one.
-			if err := resp.Revalidate(r.ctx); err != nil {
-				r.refreshErroredNumCh <- struct{}{}
-				return
-			}
-			r.refreshSuccessNumCh <- struct{}{}
-		}()
-	}
 }
 
 // runLogger periodically logs the number of successful and failed refreshItem attempts.

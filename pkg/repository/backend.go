@@ -3,9 +3,7 @@ package repository
 import (
 	"bytes"
 	"context"
-	"errors"
 	"github.com/Borislavv/advanced-cache/pkg/config"
-	"github.com/Borislavv/advanced-cache/pkg/model"
 	"io"
 	"net"
 	"net/http"
@@ -40,8 +38,8 @@ var transport = &http.Transport{
 
 // Backender defines the interface for a repository that provides SEO page data.
 type Backender interface {
-	Fetch(ctx context.Context, req *model.Request) (*model.Response, error)
-	RevalidatorMaker(req *model.Request) func(ctx context.Context) (*model.Data, error)
+	Fetch(ctx context.Context, path []byte, query []byte, queryHeaders [][2][]byte) (status int, headers http.Header, body []byte, err error)
+	RevalidatorMaker() func(ctx context.Context, path []byte, query []byte, queryHeaders [][2][]byte) (status int, headers http.Header, body []byte, err error)
 }
 
 // Backend implements the Backender interface.
@@ -64,54 +62,39 @@ func NewBackend(cfg *config.Cache) *Backend {
 	}}
 }
 
-// Fetch method fetches page data for the given request and constructs a cacheable response.
-// It also attaches a revalidator closure for future background refreshes.
-func (s *Backend) Fetch(ctx context.Context, req *model.Request) (*model.Response, error) {
-	// Fetch data from backend.
-	data, err := s.requestExternalBackend(ctx, req)
-	if err != nil {
-		return nil, errors.New("failed to request external backend: " + err.Error())
-	}
-
-	// Build a new response object, which contains the cache payload, request, config and revalidator.
-	resp, err := model.NewResponse(data, req, s.cfg, s.RevalidatorMaker(req))
-	if err != nil {
-		return nil, errors.New("failed to create response: " + err.Error())
-	}
-
-	return resp, nil
+func (s *Backend) Fetch(ctx context.Context, path []byte, query []byte, queryHeaders [][2][]byte) (status int, headers http.Header, body []byte, err error) {
+	return s.requestExternalBackend(ctx, path, query, queryHeaders)
 }
 
 // RevalidatorMaker builds a new revalidator for model.Response by catching a request into closure for be able to call backend later.
-func (s *Backend) RevalidatorMaker(req *model.Request) func(ctx context.Context) (*model.Data, error) {
-	return func(ctx context.Context) (*model.Data, error) {
-		return s.requestExternalBackend(ctx, req)
+func (s *Backend) RevalidatorMaker() func(ctx context.Context, path []byte, query []byte, queryHeaders [][2][]byte) (status int, headers http.Header, body []byte, err error) {
+	return func(ctx context.Context, path []byte, query []byte, queryHeaders [][2][]byte) (status int, headers http.Header, body []byte, err error) {
+		return s.requestExternalBackend(ctx, path, query, queryHeaders)
 	}
 }
 
 // requestExternalBackend actually performs the HTTP request to backend and parses the response.
 // Returns a Data object suitable for caching.
-func (s *Backend) requestExternalBackend(ctx context.Context, req *model.Request) (*model.Data, error) {
+func (s *Backend) requestExternalBackend(ctx context.Context, path []byte, query []byte, queryHeaders [][2][]byte) (status int, headers http.Header, body []byte, err error) {
 	// Apply a hard timeout for the HTTP request.
 	ctx, cancel := context.WithTimeout(ctx, s.cfg.Cache.Upstream.Timeout)
 	defer cancel()
 
 	url := s.cfg.Cache.Upstream.Url
-	query := req.ToQuery()
 
 	// Efficiently concatenate base URL and query.
-	queryBuf := make([]byte, 0, len(url)+len(req.Path())+len(query))
+	queryBuf := make([]byte, 0, len(url)+len(path)+len(query))
 	queryBuf = append(queryBuf, url...)
-	queryBuf = append(queryBuf, req.Path()...)
+	queryBuf = append(queryBuf, path...)
 	queryBuf = append(queryBuf, query...)
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, string(queryBuf), nil)
 	if err != nil {
-		return nil, err
+		return 0, nil, nil, err
 	}
 
-	for _, hdr := range req.Headers() {
-		request.Header.Add(string(hdr[0]), string(hdr[1]))
+	for _, header := range queryHeaders {
+		request.Header.Add(string(header[0]), string(header[1]))
 	}
 
 	client := s.clientsPool.Get().(*http.Client)
@@ -119,16 +102,16 @@ func (s *Backend) requestExternalBackend(ctx context.Context, req *model.Request
 
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, err
+		return 0, nil, nil, err
 	}
 	defer func() { _ = response.Body.Close() }()
 
 	// Read response body using a pooled reader to reduce allocations.
-	var buf bytes.Buffer
-	_, err = io.Copy(&buf, response.Body)
+	var bodyBuf bytes.Buffer
+	_, err = io.Copy(&bodyBuf, response.Body)
 	if err != nil {
-		return nil, err
+		return 0, nil, nil, err
 	}
 
-	return model.NewData(req.Rule(), response.StatusCode, response.Header, buf.Bytes()), nil
+	return response.StatusCode, response.Header, bodyBuf.Bytes(), nil
 }

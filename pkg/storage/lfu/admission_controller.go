@@ -53,9 +53,9 @@ func (t *TinyLFU) Increment(key uint64) {
 	t.doorkeeper.Allow(key)
 }
 
-func (t *TinyLFU) Admit(new, evict *model.Response) bool {
-	kNew := new.Request().MapKey()
-	kOld := evict.Request().MapKey()
+func (t *TinyLFU) Admit(new, evict *model.Entry) bool {
+	kNew := new.MapKey()
+	kOld := evict.MapKey()
 
 	// push to getBuf
 	t.buf.Push(kNew)

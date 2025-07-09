@@ -9,7 +9,6 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -30,15 +29,11 @@ var dumpEntryPool = sync.Pool{
 var dumpIsNotEnabledErr = errors.New("persistence mode is not enabled")
 
 type dumpEntry struct {
-	Unique       string      `json:"unique"`
-	StatusCode   int         `json:"statusCode"`
-	Headers      http.Header `json:"headers"`
-	Body         []byte      `json:"body"`
-	Query        []byte      `json:"query"`
-	QueryHeaders [][2][]byte `json:"queryHeaders"`
-	Path         []byte      `json:"path"`
-	MapKey       uint64      `json:"mapKey"`
-	ShardKey     uint64      `json:"shardKey"`
+	RulePath      []byte `json:"rulePath"`
+	MapKey        uint64 `json:"mapKey"`
+	ShardKey      uint64 `json:"shardKey"`
+	Payload       []byte `json:"payload"`
+	RevalidatedAt int64  `json:"revalidatedAt"`
 }
 
 type Dumper interface {
@@ -48,14 +43,14 @@ type Dumper interface {
 
 type Dump struct {
 	cfg        *config.Cache
-	shardedMap *sharded.Map[*model.Response] // Sharded storage for cache entries
+	shardedMap *sharded.Map[*model.Entry] // Sharded storage for cache entries
 	storage    Storage
 	backend    repository.Backender
 }
 
 func NewDumper(
 	cfg *config.Cache,
-	shardedMap *sharded.Map[*model.Response],
+	shardedMap *sharded.Map[*model.Entry],
 	storage Storage,
 	backend repository.Backender,
 ) *Dump {
@@ -89,9 +84,9 @@ func (d *Dump) Dump(ctx context.Context) error {
 
 	var successNum, errorNum int32
 
-	d.shardedMap.WalkShards(func(shardKey uint64, shard *sharded.Shard[*model.Response]) {
+	d.shardedMap.WalkShards(func(shardKey uint64, shard *sharded.Shard[*model.Entry]) {
 		wg.Add(1)
-		go func(shardKey uint64, shard *sharded.Shard[*model.Response]) {
+		go func(shardKey uint64, shard *sharded.Shard[*model.Entry]) {
 			defer wg.Done()
 
 			filename := fmt.Sprintf("%s/%s-shard-%d-%s.dump", cfg.Dir, cfg.Name, shardKey, timestamp)
@@ -107,18 +102,13 @@ func (d *Dump) Dump(ctx context.Context) error {
 			bw := bufio.NewWriter(f)
 			enc := gob.NewEncoder(bw)
 
-			shard.Walk(ctx, func(key uint64, resp *model.Response) bool {
+			shard.Walk(ctx, func(key uint64, entry *model.Entry) bool {
 				e := dumpEntryPool.Get().(*dumpEntry)
 				*e = dumpEntry{
-					Unique:       fmt.Sprintf("%d-%d", shardKey, key),
-					StatusCode:   resp.Data().StatusCode(),
-					Headers:      resp.Data().Headers(),
-					Body:         resp.Data().Body(),
-					Query:        resp.Request().ToQuery(),
-					QueryHeaders: resp.Request().Headers(),
-					Path:         resp.Request().Path(),
-					MapKey:       resp.Request().MapKey(),
-					ShardKey:     resp.Request().ShardKey(),
+					RulePath: entry.Rule().PathBytes,
+					MapKey:   entry.MapKey(),
+					ShardKey: entry.ShardKey(),
+					Payload:  entry.PayloadBytes(),
 				}
 
 				if err := enc.Encode(e); err != nil {
@@ -248,20 +238,11 @@ func (d *Dump) Load(ctx context.Context) error {
 	return nil
 }
 
-func (d *Dump) buildResponseFromEntry(entry *dumpEntry) (*model.Response, error) {
-	req := model.NewRawRequest(d.cfg, entry.MapKey, entry.ShardKey, entry.Query, entry.Path, entry.QueryHeaders)
-	data := model.NewData(req.Rule(), entry.StatusCode, entry.Headers, entry.Body)
-	resp, err := model.NewResponse(data, req, d.cfg, d.backend.RevalidatorMaker(req))
-	if err != nil {
-		return nil, err
-	}
-	if resp.ShardKey() != entry.ShardKey {
-		return nil, fmt.Errorf("invalid response shardKey: %d", resp.ShardKey())
-	}
-	if resp.MapKey() != entry.MapKey {
-		return nil, fmt.Errorf("invalid response mapKey: %d", resp.MapKey())
-	}
-	return resp, nil
+func (d *Dump) buildResponseFromEntry(entry *dumpEntry) (*model.Entry, error) {
+	return model.NewEntryFromField(
+		entry.MapKey, entry.ShardKey, entry.Payload, model.MatchRule(d.cfg, entry.RulePath),
+		d.backend.RevalidatorMaker(), entry.RevalidatedAt,
+	), nil
 }
 
 func extractLatestTimestamp(files []string) string {

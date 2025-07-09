@@ -35,16 +35,16 @@ func NewRistrettoStorage(maxCost int64) *RistrettoStorage {
 	return &RistrettoStorage{c: cache}
 }
 
-func (r *RistrettoStorage) Set(resp *model.Response) {
+func (r *RistrettoStorage) Set(entry *model.Entry) {
 	r.c.Set(resp.MapKey(), resp, resp.Weight())
 }
 
-func (r *RistrettoStorage) Get(req *model.Request) (*model.Response, bool) {
+func (r *RistrettoStorage) Get(req *model.Request) (*model.Entry, bool) {
 	val, ok := r.c.Get(req.MapKey())
 	if !ok {
 		return nil, false
 	}
-	return val.(*model.Response), true
+	return val.(*model.Entry), true
 }
 
 var ristrettoCfg *config.Cache

@@ -17,14 +17,14 @@ import (
 
 // Storage is a Weight-aware, sharded Storage cache with background eviction and refreshItem support.
 type Storage struct {
-	ctx             context.Context               // Main context for lifecycle control
-	cfg             *config.Cache                 // CacheBox configuration
-	shardedMap      *sharded.Map[*model.Response] // Sharded storage for cache entries
-	tinyLFU         *lfu.TinyLFU                  // Helps hold more frequency used items in cache while eviction
-	backend         repository.Backender          // Remote backend server.
-	balancer        Balancer                      // Helps pick shards to evict from
-	mem             int64                         // Current Weight usage (bytes)
-	memoryThreshold int64                         // Threshold for triggering eviction (bytes)
+	ctx             context.Context            // Main context for lifecycle control
+	cfg             *config.Cache              // CacheBox configuration
+	shardedMap      *sharded.Map[*model.Entry] // Sharded storage for cache entries
+	tinyLFU         *lfu.TinyLFU               // Helps hold more frequency used items in cache while eviction
+	backend         repository.Backender       // Remote backend server.
+	balancer        Balancer                   // Helps pick shards to evict from
+	mem             int64                      // Current Weight usage (bytes)
+	memoryThreshold int64                      // Threshold for triggering eviction (bytes)
 }
 
 // NewStorage constructs a new Storage cache instance and launches eviction and refreshItem routines.
@@ -34,7 +34,7 @@ func NewStorage(
 	balancer Balancer,
 	backend repository.Backender,
 	tinyLFU *lfu.TinyLFU,
-	shardedMap *sharded.Map[*model.Response],
+	shardedMap *sharded.Map[*model.Entry],
 ) *Storage {
 	return (&Storage{
 		ctx:             ctx,
@@ -49,7 +49,7 @@ func NewStorage(
 
 func (s *Storage) init() *Storage {
 	// Register all existing shards with the balancer.
-	s.shardedMap.WalkShards(func(shardKey uint64, shard *sharded.Shard[*model.Response]) {
+	s.shardedMap.WalkShards(func(shardKey uint64, shard *sharded.Shard[*model.Entry]) {
 		s.balancer.Register(shard)
 	})
 
@@ -62,8 +62,8 @@ func (s *Storage) Run() {
 
 // Get retrieves a response by request and bumps its Storage position.
 // Returns: (response, releaser, found).
-func (s *Storage) Get(req *model.Request) (*model.Response, bool) {
-	resp, found := s.shardedMap.Get(req.MapKey(), req.ShardKey())
+func (s *Storage) Get(key, shard uint64) (*model.Entry, bool) {
+	resp, found := s.shardedMap.Get(key, shard)
 	if found {
 		s.touch(resp)
 		return resp, true
@@ -72,9 +72,9 @@ func (s *Storage) Get(req *model.Request) (*model.Response, bool) {
 }
 
 // Set inserts or updates a response in the cache, updating Weight usage and Storage position.
-func (s *Storage) Set(new *model.Response) {
-	key := new.Request().MapKey()
-	shardKey := new.Request().ShardKey()
+func (s *Storage) Set(new *model.Entry) {
+	key := new.MapKey()
+	shardKey := new.ShardKey()
 
 	// Track access frequency
 	s.tinyLFU.Increment(key)
@@ -102,17 +102,17 @@ func (s *Storage) Set(new *model.Response) {
 }
 
 // touch bumps the Storage position of an existing entry (MoveToFront) and increases its refCount.
-func (s *Storage) touch(existing *model.Response) {
+func (s *Storage) touch(existing *model.Entry) {
 	s.balancer.Update(existing)
 }
 
 // update refreshes Weight accounting and Storage position for an updated entry.
-func (s *Storage) update(existing *model.Response) {
+func (s *Storage) update(existing *model.Entry) {
 	s.balancer.Update(existing)
 }
 
 // set inserts a new response, updates Weight usage and registers in balancer.
-func (s *Storage) set(new *model.Response) {
+func (s *Storage) set(new *model.Entry) {
 	s.shardedMap.Set(new)
 	s.balancer.Set(new)
 }
@@ -163,9 +163,9 @@ func (s *Storage) runLogger() {
 	}()
 }
 
-func (s *Storage) Remove(resp *model.Response) (freedBytes int64, isHit bool) {
-	s.balancer.Remove(resp.ShardKey(), resp.LruListElement())
-	return s.shardedMap.Remove(resp.MapKey())
+func (s *Storage) Remove(entry *model.Entry) (freedBytes int64, isHit bool) {
+	s.balancer.Remove(entry.ShardKey(), entry.LruListElement())
+	return s.shardedMap.Remove(entry.MapKey())
 }
 
 func (s *Storage) Mem() int64 {
