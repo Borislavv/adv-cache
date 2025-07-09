@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/Borislavv/advanced-cache/pkg/config"
+	"github.com/Borislavv/advanced-cache/pkg/intern"
 	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
 	"github.com/valyala/fasthttp"
 	"github.com/zeebo/xxh3"
@@ -18,6 +19,9 @@ import (
 var (
 	hasherPool        = &sync.Pool{New: func() any { return xxh3.New() }}
 	RuleNotFoundError = errors.New("rule not found")
+	PathInterner      = intern.NewInterner(8)
+	HeaderKeyInterner = intern.NewInterner(8)
+	QueryKeyInterner  = intern.NewInterner(16)
 )
 
 type Request struct {
@@ -30,8 +34,10 @@ type Request struct {
 }
 
 func NewRequestFromNetHttp(cfg *config.Cache, r *http.Request) (*Request, error) {
+	internedPath := PathInterner.InternStr(r.URL.Path)
+
 	// path must be a readonly slice, don't change it anywhere
-	req := &Request{path: unsafe.Slice(unsafe.StringData(r.URL.Path), len(r.URL.Path))} // static value (strings are immutable, so easily refer to it)
+	req := &Request{path: internedPath} // static value (strings are immutable, so easily refer to it)
 
 	rule := matchRule(cfg, req.path)
 	if rule == nil {
@@ -48,12 +54,11 @@ func NewRequestFromNetHttp(cfg *config.Cache, r *http.Request) (*Request, error)
 }
 
 func NewRequestFromFasthttp(cfg *config.Cache, r *fasthttp.RequestCtx) (*Request, error) {
-	// full separated slice bytes of path a safe for changes due to it copy
-	path := append([]byte(nil), r.Path()...) // path in the fasthttp are reusable resource, so just copy it
+	internedPath := PathInterner.Intern(r.Path())
 
-	req := &Request{path: path}
+	req := &Request{path: internedPath}
 
-	req.rule = matchRule(cfg, path)
+	req.rule = matchRule(cfg, internedPath)
 	if req.rule == nil {
 		return nil, RuleNotFoundError
 	}
@@ -67,11 +72,17 @@ func NewRequestFromFasthttp(cfg *config.Cache, r *fasthttp.RequestCtx) (*Request
 }
 
 func NewRawRequest(cfg *config.Cache, key, shard uint64, query, path []byte, headers [][2][]byte) *Request {
-	return &Request{key: key, shard: shard, query: query, path: path, headers: headers, rule: matchRule(cfg, path)}
+	internedPath := PathInterner.Intern(path)
+	rule := matchRule(cfg, internedPath)
+	if rule == nil {
+		panic("rile is nil for path: " + string(internedPath))
+	}
+	return &Request{key: key, shard: shard, query: query, path: internedPath, headers: headers, rule: rule}
 }
 
 func NewRequest(cfg *config.Cache, path []byte, argsKvPairs [][2][]byte, headersKvPairs [][2][]byte) *Request {
-	req := &Request{path: path, rule: matchRule(cfg, path)}
+	internedPath := PathInterner.Intern(path)
+	req := &Request{path: internedPath, rule: matchRule(cfg, internedPath)}
 	req.setUpManually(
 		getFilteredAndSortedKeyQueriesManual(argsKvPairs, req.rule.CacheKey.QueryBytes),
 		getFilteredAndSortedKeyHeadersManual(headersKvPairs, req.rule.CacheKey.HeadersBytes),
@@ -111,6 +122,12 @@ func (r *Request) Weight() int64 {
 	return weight
 }
 
+var bufPool = &sync.Pool{
+	New: func() interface{} {
+		return new(bytes.Buffer)
+	},
+}
+
 func (r *Request) setUpManually(argsKvPairs [][2][]byte, headersKvPairs [][2][]byte) {
 	r.headers = headersKvPairs
 
@@ -118,6 +135,16 @@ func (r *Request) setUpManually(argsKvPairs [][2][]byte, headersKvPairs [][2][]b
 	for _, pair := range argsKvPairs {
 		argsLength += len(pair[0]) + len(pair[1]) + 2
 	}
+	headersLength := 0
+	for _, pair := range headersKvPairs {
+		headersLength += len(pair[0]) + len(pair[1])
+	}
+	buf := bufPool.Get().(*bytes.Buffer)
+	defer func() {
+		buf.Reset()
+		bufPool.Put(buf)
+	}()
+	buf.Grow(argsLength + headersLength)
 
 	queryBuf := make([]byte, 0, argsLength)
 	queryBuf = append(queryBuf, []byte("?")...)
@@ -132,44 +159,26 @@ func (r *Request) setUpManually(argsKvPairs [][2][]byte, headersKvPairs [][2][]b
 	} else {
 		queryBuf = queryBuf[:0] // no parameters
 	}
+	buf.Write(queryBuf)
 
-	headersLength := 0
 	for _, pair := range headersKvPairs {
-		headersLength += len(pair[0]) + len(pair[1]) + 2
+		buf.Write(pair[0])
+		buf.Write(pair[1])
 	}
 
-	headersBuf := make([]byte, 0, headersLength)
-	for _, pair := range headersKvPairs {
-		headersBuf = append(headersBuf, pair[0]...)
-		headersBuf = append(headersBuf, []byte(":")...)
-		headersBuf = append(headersBuf, pair[1]...)
-		headersBuf = append(headersBuf, []byte("\n")...)
-	}
-	if len(headersBuf) > 0 {
-		headersBuf = headersBuf[:len(headersBuf)-1] // remove the last \n char
-	} else {
-		headersBuf = headersBuf[:0] // no headers
-	}
-
-	bufLen := len(queryBuf) + len(headersBuf) + 1
-	buf := make([]byte, 0, bufLen)
-	if bufLen > 1 {
-		buf = append(buf, queryBuf...)
-		buf = append(buf, []byte("\n")...)
-		buf = append(buf, headersBuf...)
-	}
-
-	r.key = hash(buf[:])
+	r.key = hash(buf)
 	r.query = queryBuf[:]
 	r.shard = sharded.MapShardKey(r.key)
 }
 
-func hash(buf []byte) uint64 {
+func hash(buf *bytes.Buffer) uint64 {
 	hasher := hasherPool.Get().(*xxh3.Hasher)
-	defer hasherPool.Put(hasher)
+	defer func() {
+		hasher.Reset()
+		hasherPool.Put(hasher)
+	}()
 
-	hasher.Reset()
-	if _, err := hasher.Write(buf); err != nil {
+	if _, err := hasher.Write(buf.Bytes()); err != nil {
 		panic(err)
 	}
 
@@ -198,7 +207,8 @@ func getFilteredAndSortedKeyQueriesNetHttp(r *http.Request, allowed [][]byte) (k
 			valueBytes := unsafe.Slice(unsafe.StringData(value), len(value))
 			for _, allowedKey := range allowed {
 				if bytes.HasPrefix(keyBytes, allowedKey) {
-					filtered = append(filtered, [2][]byte{keyBytes, valueBytes})
+					internedKey := HeaderKeyInterner.Intern(keyBytes)
+					filtered = append(filtered, [2][]byte{internedKey, valueBytes})
 					break
 				}
 			}
@@ -221,7 +231,8 @@ func getFilteredAndSortedKeyHeadersNetHttp(r *http.Request, allowed [][]byte) (k
 			valueBytes := unsafe.Slice(unsafe.StringData(value), len(value))
 			for _, allowedKey := range allowed {
 				if bytes.EqualFold(keyBytes, allowedKey) {
-					filtered = append(filtered, [2][]byte{keyBytes, valueBytes})
+					internedKey := HeaderKeyInterner.Intern(keyBytes)
+					filtered = append(filtered, [2][]byte{internedKey, valueBytes})
 					break
 				}
 			}
@@ -241,10 +252,9 @@ func getFilteredAndSortedKeyQueriesFastHttp(ctx *fasthttp.RequestCtx, allowed []
 	ctx.QueryArgs().VisitAll(func(k, v []byte) {
 		for _, ak := range allowed {
 			if bytes.HasPrefix(k, ak) {
-				filtered = append(filtered, [2][]byte{
-					append([]byte(nil), k...),
-					append([]byte(nil), v...),
-				})
+				internedKey := QueryKeyInterner.Intern(k)
+				filtered = append(filtered, [2][]byte{internedKey, append([]byte(nil), v...)})
+				break
 			}
 		}
 	})
@@ -262,10 +272,8 @@ func getFilteredAndSortedKeyHeadersFastHttp(r *fasthttp.RequestHeader, allowed [
 	r.VisitAll(func(key, value []byte) {
 		for _, allowedKey := range allowed {
 			if bytes.EqualFold(key, allowedKey) {
-				filtered = append(filtered, [2][]byte{
-					append([]byte(nil), key...),
-					append([]byte(nil), value...),
-				})
+				internedKey := HeaderKeyInterner.Intern(key)
+				filtered = append(filtered, [2][]byte{internedKey, append([]byte(nil), value...)})
 				break
 			}
 		}
@@ -284,10 +292,9 @@ func getFilteredAndSortedKeyQueriesManual(inputKvPairs [][2][]byte, allowed [][]
 	for _, kvPair := range inputKvPairs {
 		for _, ak := range allowed {
 			if bytes.HasPrefix(kvPair[0], ak) {
-				filtered = append(filtered, [2][]byte{
-					append([]byte(nil), kvPair[0]...),
-					append([]byte(nil), kvPair[1]...),
-				})
+				internedKey := QueryKeyInterner.Intern(kvPair[0])
+				filtered = append(filtered, [2][]byte{internedKey, append([]byte(nil), kvPair[1]...)})
+				break
 			}
 		}
 	}
@@ -305,10 +312,8 @@ func getFilteredAndSortedKeyHeadersManual(inputKvPairs [][2][]byte, allowed [][]
 	for _, kvPair := range inputKvPairs {
 		for _, allowedKey := range allowed {
 			if bytes.EqualFold(kvPair[0], allowedKey) {
-				filtered = append(filtered, [2][]byte{
-					append([]byte(nil), kvPair[0]...),
-					append([]byte(nil), kvPair[1]...),
-				})
+				internedKey := HeaderKeyInterner.Intern(kvPair[0])
+				filtered = append(filtered, [2][]byte{internedKey, append([]byte(nil), kvPair[1]...)})
 				break
 			}
 		}

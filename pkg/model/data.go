@@ -35,6 +35,12 @@ type Data struct {
 // NewData creates a new Data object, compressing body with compress if large enough.
 // Uses memory pools for buffer and writer to minimize allocations.
 func NewData(rule *config.Rule, statusCode int, headers http.Header, body []byte) *Data {
+	for headerKey, headerValues := range headers {
+		delete(headers, headerKey)
+		internedKey := HeaderKeyInterner.InternStr(headerKey)
+		headers[unsafe.String(unsafe.SliceData(internedKey), len(internedKey))] = headerValues
+	}
+
 	return (&Data{headers: headers, statusCode: statusCode}).
 		filterHeadersInPlace(rule.CacheValue.HeadersBytes).
 		setUpBody(body)
