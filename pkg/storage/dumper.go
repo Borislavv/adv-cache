@@ -33,6 +33,7 @@ type dumpEntry struct {
 	MapKey        uint64 `json:"mapKey"`
 	ShardKey      uint64 `json:"shardKey"`
 	Payload       []byte `json:"payload"`
+	IsCompressed  bool   `json:"isCompressed"`
 	RevalidatedAt int64  `json:"revalidatedAt"`
 }
 
@@ -105,10 +106,11 @@ func (d *Dump) Dump(ctx context.Context) error {
 			shard.Walk(ctx, func(key uint64, entry *model.Entry) bool {
 				e := dumpEntryPool.Get().(*dumpEntry)
 				*e = dumpEntry{
-					RulePath: entry.Rule().PathBytes,
-					MapKey:   entry.MapKey(),
-					ShardKey: entry.ShardKey(),
-					Payload:  entry.PayloadBytes(),
+					RulePath:     entry.Rule().PathBytes,
+					MapKey:       entry.MapKey(),
+					ShardKey:     entry.ShardKey(),
+					Payload:      entry.PayloadBytes(),
+					IsCompressed: entry.IsCompressed(),
 				}
 
 				if err := enc.Encode(e); err != nil {
@@ -241,7 +243,7 @@ func (d *Dump) Load(ctx context.Context) error {
 func (d *Dump) buildResponseFromEntry(entry *dumpEntry) (*model.Entry, error) {
 	return model.NewEntryFromField(
 		entry.MapKey, entry.ShardKey, entry.Payload, model.MatchRule(d.cfg, entry.RulePath),
-		d.backend.RevalidatorMaker(), entry.RevalidatedAt,
+		d.backend.RevalidatorMaker(), entry.IsCompressed, entry.RevalidatedAt,
 	), nil
 }
 

@@ -40,8 +40,13 @@ func NewEntryFromField(
 	payload []byte,
 	rule *config.Rule,
 	revalidator Revalidator,
+	isCompressed bool,
 	willUpdateAt int64,
 ) *Entry {
+	var isCompressedInt int64
+	if isCompressed {
+		isCompressedInt = 1
+	}
 	e := &Entry{
 		key:          key,
 		shard:        shard,
@@ -49,6 +54,7 @@ func NewEntryFromField(
 		rule:         rule,
 		lruListElem:  &atomic.Pointer[list.Element[*Entry]]{},
 		revalidator:  revalidator,
+		isCompressed: isCompressedInt,
 		willUpdateAt: willUpdateAt,
 	}
 	e.payload.Store(&payload)
