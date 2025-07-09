@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/Borislavv/advanced-cache/internal/cache/config"
+	"github.com/Borislavv/advanced-cache/pkg/mock"
 	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
 	serverutils "github.com/Borislavv/advanced-cache/pkg/server/utils"
@@ -68,13 +69,13 @@ func NewCacheController(
 		cache:   cache,
 		backend: backend,
 	}
-	//go func() {
-	//	log.Info().Msg("data loading")
-	//	defer log.Info().Msg("data loading finished")
-	//	for _, resp := range mock.GenerateRandomResponses(c.cfg.Cache, []byte("/api/v2/pagedata"), 10_000_000) {
-	//		c.cache.Set(resp)
-	//	}
-	//}()
+	go func() {
+		log.Info().Msg("data loading")
+		defer log.Info().Msg("data loading finished")
+		for _, resp := range mock.GenerateRandomResponses(c.cfg.Cache, []byte("/api/v2/pagedata"), 1_000_000) {
+			c.cache.Set(resp)
+		}
+	}()
 	c.runLogger(ctx)
 	return c
 }
