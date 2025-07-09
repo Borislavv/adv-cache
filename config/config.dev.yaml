@@ -45,7 +45,7 @@ cache:
   rules:
     - path: "/api/v2/pagedata"
       gzip:
-        enabled: true
+        enabled: false
         threshold: 1024
       ttl: "20m"
       error_ttl: "5m"

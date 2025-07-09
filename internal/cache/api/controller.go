@@ -67,7 +67,7 @@ func NewCacheController(
 		defer log.Info().Msg("[cache-controller] data loading finished")
 
 		path := []byte("/api/v2/pagedata")
-		for resp := range mock.StreamRandomResponses(ctx, c.cfg.Cache, path, 10_000_000) {
+		for resp := range mock.StreamRandomResponses(ctx, c.cfg.Cache, path, 1_000_000) {
 			entry, err := model.NewEntryManual(cfg.Cache, path, resp.ToQuery(), resp.Request().Headers(), c.backend.RevalidatorMaker())
 			if err != nil {
 				log.Error().Err(err).Msg("error creating entry")
@@ -85,7 +85,9 @@ func (c *CacheController) queryHeaders(r *fasthttp.RequestCtx) [][2][]byte {
 	queryHeaders := make([][2][]byte, 0, r.Request.Header.Len())
 	r.Request.Header.All()(func(key []byte, value []byte) bool {
 		k := make([]byte, len(key))
+		copy(k, key)
 		val := make([]byte, len(value))
+		copy(val, value)
 		queryHeaders = append(queryHeaders, [2][]byte{k, val})
 		return true
 	})
@@ -113,12 +115,14 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 		path := r.Path()
 		queryHeaders := c.queryHeaders(r)
 		queryString := r.QueryArgs().QueryString()
+
 		status, headers, body, err = c.backend.Fetch(c.ctx, path, queryString, queryHeaders)
 		if err != nil {
 			c.respondThatServiceIsTemporaryUnavailable(err, r)
 			return
 		}
 		entry.SetPayload(path, queryString, queryHeaders, body, headers, status)
+
 		entry.SetRevalidator(c.backend.RevalidatorMaker())
 		c.cache.Set(entry)
 		v = entry
