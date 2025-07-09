@@ -252,11 +252,10 @@ func (e *Entry) Payload() (
 	}
 
 	var rawPayload []byte
-
 	if atomic.LoadInt64(&e.isCompressed) == 1 {
 		gr, err := gzip.NewReader(bytes.NewReader(*payloadPtr))
 		if err != nil {
-			return nil, nil, nil, 0, nil, nil, fmt.Errorf("gzip reader failed: %w", err)
+			return nil, nil, nil, 0, nil, nil, fmt.Errorf("make gzip reader error: %w", err)
 		}
 		defer gr.Close()
 

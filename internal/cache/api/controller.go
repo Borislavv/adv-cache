@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"github.com/Borislavv/advanced-cache/internal/cache/config"
 	"github.com/Borislavv/advanced-cache/pkg/mock"
 	"github.com/Borislavv/advanced-cache/pkg/model"
@@ -119,11 +118,16 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 			c.respondThatServiceIsTemporaryUnavailable(err, r)
 			return
 		}
-		fmt.Println(string(body))
 		entry.SetPayload(path, queryString, queryHeaders, body, headers, status)
 		entry.SetRevalidator(c.backend.RevalidatorMaker())
 		c.cache.Set(entry)
 		v = entry
+	} else {
+		_, _, _, status, headers, body, err = v.Payload()
+		if err != nil {
+			c.respondThatServiceIsTemporaryUnavailable(err, r)
+			return
+		}
 	}
 
 	// Write status, headers, and body from the cached (or fetched) response.
