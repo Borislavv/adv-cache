@@ -1,6 +1,7 @@
 package mock
 
 import (
+	"bytes"
 	"context"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/model"
@@ -130,10 +131,6 @@ func StreamSeqEntries(ctx context.Context, cfg *config.Cache, backend repository
 					{[]byte("Content-Type"), []byte("application/json")},
 				}
 
-				headers := http.Header{}
-				headers.Add("Content-Type", "application/json")
-				headers.Add("Vary", "Accept-Encoding, Accept-Language")
-
 				responseHeaders := [][2][]byte{
 					{[]byte("Content-Type"), []byte("application/json")},
 					{[]byte("Vary"), []byte("Accept-Encoding, Accept-Language")},
@@ -144,8 +141,7 @@ func StreamSeqEntries(ctx context.Context, cfg *config.Cache, backend repository
 				if err != nil {
 					panic(err)
 				}
-
-				entry.SetPayload(path, query, queryHeaders, responseHeaders, copiedBodyBytes(), 200)
+				entry.SetPayload(path, query, queryHeaders, responseHeaders, copiedBodyBytes(i), 200)
 
 				outCh <- entry
 				i++
@@ -166,7 +162,7 @@ func StreamRandomResponses(ctx context.Context, cfg *config.Cache, path []byte, 
 			headers.Add("Content-Type", "application/json")
 			headers.Add("Vary", "Accept-Encoding, Accept-Language")
 
-			data := model.NewData(req.Rule(), http.StatusOK, headers, copiedBodyBytes())
+			data := model.NewData(req.Rule(), http.StatusOK, headers, copiedBodyBytes(0))
 			resp, err := model.NewResponse(
 				data, req, cfg,
 				func(ctx context.Context) (*model.Data, error) {
@@ -192,7 +188,7 @@ func GenerateRandomResponses(cfg *config.Cache, path []byte, num int) []*model.R
 		headers := http.Header{}
 		headers.Add("Content-Type", "application/json")
 		headers.Add("Vary", "Accept-Encoding, Accept-Language")
-		data := model.NewData(req.Rule(), http.StatusOK, headers, copiedBodyBytes())
+		data := model.NewData(req.Rule(), http.StatusOK, headers, copiedBodyBytes(0))
 		resp, err := model.NewResponse(
 			data, req, cfg,
 			func(ctx context.Context) (*model.Data, error) {
@@ -212,8 +208,8 @@ var responseBytes = []byte(`{
   "data": {
     "type": "seo/pagedata",
     "attributes": {
-      "title": "1xBet: It repeats some phrases multiple times. This is a long description for SEO page data.",
-      "description": "This is a long description for SEO page data. This description is intentionally made verbose to increase the JSON payload size.",
+      "title": "1xBet[{{...}}]: It repeats some phrases multiple times. This is a long description for SEO page data.",
+      "description": "1xBet[{{...}}]: his is a long description for SEO page data. This description is intentionally made verbose to increase the JSON payload size.",
       "metaRobots": [],
       "hierarchyMetaRobots": [
         {
@@ -233,9 +229,6 @@ var responseBytes = []byte(`{
 `)
 
 // copiedBodyBytes returns a random ASCII string of length between minStrLen and maxStrLen.
-func copiedBodyBytes() []byte {
-	length := len(responseBytes)
-	response := make([]byte, length)
-	copy(response, responseBytes)
-	return response
+func copiedBodyBytes(idx int) []byte {
+	return bytes.ReplaceAll(responseBytes, []byte("{{...}}"), []byte(strconv.Itoa(idx)))
 }
