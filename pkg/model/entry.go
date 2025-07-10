@@ -286,10 +286,7 @@ func (e *Entry) SetPayload(
 	}
 
 	// Body
-	binary.LittleEndian.PutUint32(scratch[:], uint32(len(body)))
-	payloadBuf = append(payloadBuf, scratch[:]...)
 	payloadBuf = append(payloadBuf, body...)
-	offset += len(body)
 
 	// === 4) Compress if needed ===
 	if e.rule.Gzip.Enabled && total >= e.rule.Gzip.Threshold {
