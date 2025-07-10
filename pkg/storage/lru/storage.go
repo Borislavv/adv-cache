@@ -173,7 +173,7 @@ func (s *Storage) Remove(entry *model.Entry) (freedBytes int64, isHit bool) {
 }
 
 func (s *Storage) Mem() int64 {
-	return s.shardedMap.Mem()
+	return s.shardedMap.Mem() + s.balancer.Mem()
 }
 func (s *Storage) RealMem() int64 {
 	return s.shardedMap.RealMem()

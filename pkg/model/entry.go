@@ -706,3 +706,9 @@ func (e *Entry) DumpPayload() {
 
 	fmt.Println("==================================")
 }
+
+// Dangerous - exclusively for tests.
+func (e *Entry) SetMapKey(key uint64) *Entry {
+	e.key = key
+	return e
+}

@@ -1,31 +1,56 @@
 package buffer
 
-import "sync/atomic"
+import (
+	"sync/atomic"
+)
 
-// Ring is a lock-free circular buffer for recording access keys.
-type Ring struct {
-	buffer []uint64
-	mask   uint64
-	pos    uint64 // atomic
+type RingBuffer struct {
+	buf      []uint64
+	mask     uint64
+	head     uint64 // atomic
+	tail     uint64 // atomic
+	capacity uint64
 }
 
-func NewRingBuffer(size int) *Ring {
-	if size&(size-1) != 0 {
-		panic("ring buffer size must be power of 2")
+func NewRingBuffer(size int) *RingBuffer {
+	// size must be power of 2
+	r := &RingBuffer{
+		buf:      make([]uint64, size),
+		capacity: uint64(size),
+		mask:     uint64(size - 1),
 	}
-	return &Ring{
-		buffer: make([]uint64, size),
-		mask:   uint64(size - 1),
+	return r
+}
+
+func (r *RingBuffer) Push(key uint64) bool {
+	head := atomic.LoadUint64(&r.head)
+	tail := atomic.LoadUint64(&r.tail)
+	if head-tail >= r.capacity {
+		return false // buffer full
 	}
+	idx := head & r.mask
+	r.buf[idx] = key
+	atomic.AddUint64(&r.head, 1)
+	return true
 }
 
-func (r *Ring) Push(key uint64) {
-	pos := atomic.AddUint64(&r.pos, 1) - 1
-	r.buffer[pos&r.mask] = key
-}
+func (r *RingBuffer) Drain(max int) []uint64 {
+	tail := atomic.LoadUint64(&r.tail)
+	head := atomic.LoadUint64(&r.head)
 
-func (r *Ring) Snapshot() []uint64 {
-	buf := make([]uint64, len(r.buffer))
-	copy(buf, r.buffer)
-	return buf
+	n := head - tail
+	if n == 0 {
+		return nil
+	}
+	if n > uint64(max) {
+		n = uint64(max)
+	}
+
+	result := make([]uint64, 0, n)
+	for i := uint64(0); i < n; i++ {
+		idx := (tail + i) & r.mask
+		result = append(result, r.buf[idx])
+	}
+	atomic.AddUint64(&r.tail, n)
+	return result
 }

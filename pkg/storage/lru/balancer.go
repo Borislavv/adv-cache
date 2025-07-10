@@ -6,6 +6,7 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/model"
 	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
 	"math/rand/v2"
+	"unsafe"
 )
 
 // ShardNode represents a single Shard's Storage and accounting info.
@@ -36,6 +37,7 @@ func (s *ShardNode) LruList() *list2.List[*model.Entry] {
 
 type Balancer interface {
 	Rebalance()
+	Mem() int64
 	Shards() [sharded.NumOfShards]*ShardNode
 	RandNode() *ShardNode
 	Register(shard *sharded.Shard[*model.Entry])
@@ -56,6 +58,16 @@ type Balance struct {
 	shards     [sharded.NumOfShards]*ShardNode // Shard index → *ShardNode
 	memList    *list2.List[*ShardNode]         // Doubly-linked list of shards, ordered by Memory usage (most loaded at front)
 	shardedMap *sharded.Map[*model.Entry]      // Actual underlying storage of entries
+}
+
+var ptrBytesSize uint64 = 8
+
+func (b *Balance) Mem() int64 {
+	mem := int64(uint64(unsafe.Sizeof(*b)) + (sharded.NumOfShards * ptrBytesSize) + (uint64(b.memList.Len()) * ptrBytesSize))
+	if shard := b.shards[0]; shard != nil {
+		mem += int64(uint64(unsafe.Sizeof(*shard)) * sharded.NumOfShards)
+	}
+	return mem
 }
 
 // NewBalancer creates a new Balance instance and initializes memList.
