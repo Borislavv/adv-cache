@@ -76,7 +76,7 @@ func NewRawRequest(cfg *config.Cache, key, shard uint64, query, path []byte, hea
 	internedPath := PathInterner.Intern(path)
 	rule := MatchRule(cfg, internedPath)
 	if rule == nil {
-		panic("rile is nil for path: " + string(internedPath))
+		panic("rule is nil for path: " + string(internedPath))
 	}
 	return &Request{key: key, shard: shard, query: query, path: internedPath, headers: headers, rule: rule}
 }
