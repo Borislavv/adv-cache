@@ -5,6 +5,7 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/types"
 	"github.com/Borislavv/advanced-cache/pkg/utils"
 	"github.com/rs/zerolog/log"
+	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -56,6 +57,15 @@ func (smap *Map[V]) Set(value V) {
 // found==false means the value is absent.
 func (smap *Map[V]) Get(key uint64, shardKey uint64) (value V, found bool) {
 	return smap.shards[shardKey].Get(key)
+}
+
+func (smap *Map[V]) Rnd() (value V, found bool) {
+	smap.shards[uint64(rand.Intn(int(ActiveShards)))].Walk(context.Background(), func(u uint64, v V) bool {
+		value = v
+		found = true
+		return false
+	}, false)
+	return
 }
 
 // Remove deletes a value by key, returning how much memory was freed and a pointer to its LRU/list element.

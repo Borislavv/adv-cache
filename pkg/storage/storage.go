@@ -14,6 +14,9 @@ type Storage interface {
 	// Returns the response, a releaser for safe concurrent access, and a hit/miss flag.
 	Get(key, shard uint64) (entry *model.Entry, isHit bool)
 
+	// GetRand returns a random elem from the map.
+	GetRand() (*model.Entry, bool)
+
 	// Set stores a new response in the cache and returns a releaser for managing resource lifetime.
 	Set(entry *model.Entry)
 

@@ -7,6 +7,7 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/intern"
 	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
+	"github.com/valyala/bytebufferpool"
 	"github.com/valyala/fasthttp"
 	"github.com/zeebo/xxh3"
 	"net/http"
@@ -166,12 +167,12 @@ func (r *Request) setUpManually(argsKvPairs [][2][]byte, headersKvPairs [][2][]b
 		buf.Write(pair[1])
 	}
 
-	r.key = hash(buf)
+	//r.key = hash(buf)
 	r.query = queryBuf[:]
 	r.shard = sharded.MapShardKey(r.key)
 }
 
-func hash(buf *bytes.Buffer) uint64 {
+func hash(buf *bytebufferpool.ByteBuffer) uint64 {
 	hasher := hasherPool.Get().(*xxh3.Hasher)
 	defer func() {
 		hasher.Reset()

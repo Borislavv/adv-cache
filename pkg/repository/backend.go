@@ -2,13 +2,15 @@ package repository
 
 import (
 	"bytes"
-	"context"
 	"github.com/Borislavv/advanced-cache/pkg/config"
-	"io"
+	"github.com/Borislavv/advanced-cache/pkg/pools"
+	"github.com/valyala/bytebufferpool"
+	"github.com/valyala/fasthttp"
 	"net"
 	"net/http"
 	"sync"
 	"time"
+	"unsafe"
 )
 
 var transport = &http.Transport{
@@ -38,8 +40,17 @@ var transport = &http.Transport{
 
 // Backender defines the interface for a repository that provides SEO page data.
 type Backender interface {
-	Fetch(ctx context.Context, path []byte, query []byte, queryHeaders [][2][]byte) (status int, headers http.Header, body []byte, err error)
-	RevalidatorMaker() func(ctx context.Context, path []byte, query []byte, queryHeaders [][2][]byte) (status int, headers http.Header, body []byte, err error)
+	Fetch(
+		path []byte, query []byte, queryHeaders [][2][]byte,
+	) (
+		status int, headers [][2][]byte, body []byte, releaseFn func(), err error,
+	)
+
+	RevalidatorMaker() func(
+		path []byte, query []byte, queryHeaders [][2][]byte,
+	) (
+		status int, headers [][2][]byte, body []byte, releaseFn func(), err error,
+	)
 }
 
 // Backend implements the Backender interface.
@@ -62,56 +73,95 @@ func NewBackend(cfg *config.Cache) *Backend {
 	}}
 }
 
-func (s *Backend) Fetch(ctx context.Context, path []byte, query []byte, queryHeaders [][2][]byte) (status int, headers http.Header, body []byte, err error) {
-	return s.requestExternalBackend(ctx, path, query, queryHeaders)
+func (s *Backend) Fetch(
+	path []byte, query []byte, queryHeaders [][2][]byte,
+) (
+	status int, headers [][2][]byte, body []byte, releaseFn func(), err error,
+) {
+	return s.requestExternalBackend(path, query, queryHeaders)
 }
 
 // RevalidatorMaker builds a new revalidator for model.Response by catching a request into closure for be able to call backend later.
-func (s *Backend) RevalidatorMaker() func(ctx context.Context, path []byte, query []byte, queryHeaders [][2][]byte) (status int, headers http.Header, body []byte, err error) {
-	return func(ctx context.Context, path []byte, query []byte, queryHeaders [][2][]byte) (status int, headers http.Header, body []byte, err error) {
-		return s.requestExternalBackend(ctx, path, query, queryHeaders)
+func (s *Backend) RevalidatorMaker() func(
+	path []byte, query []byte, queryHeaders [][2][]byte,
+) (
+	status int, headers [][2][]byte, body []byte, releaseFn func(), err error,
+) {
+	return func(
+		path []byte, query []byte, queryHeaders [][2][]byte,
+	) (
+		status int, headers [][2][]byte, body []byte, releaseFn func(), err error,
+	) {
+		return s.requestExternalBackend(path, query, queryHeaders)
 	}
 }
 
+var emptyReleaseFn = func() {}
+
 // requestExternalBackend actually performs the HTTP request to backend and parses the response.
-// Returns a Data object suitable for caching.
-func (s *Backend) requestExternalBackend(ctx context.Context, path []byte, query []byte, queryHeaders [][2][]byte) (status int, headers http.Header, body []byte, err error) {
-	// Apply a hard timeout for the HTTP request.
-	ctx, cancel := context.WithTimeout(ctx, s.cfg.Cache.Upstream.Timeout)
-	defer cancel()
+func (s *Backend) requestExternalBackend(
+	path []byte, query []byte, queryHeaders [][2][]byte,
+) (status int, headers [][2][]byte, body []byte, releaseFn func(), err error) {
+	req := fasthttp.AcquireRequest()
+	defer fasthttp.ReleaseRequest(req)
 
-	url := s.cfg.Cache.Upstream.Url
+	req.Header.SetMethod(fasthttp.MethodGet)
 
-	// Efficiently concatenate base URL and query.
-	queryBuf := make([]byte, 0, len(url)+len(path)+len(query))
-	queryBuf = append(queryBuf, url...)
-	queryBuf = append(queryBuf, path...)
-	queryBuf = append(queryBuf, query...)
+	url := unsafe.Slice(unsafe.StringData(s.cfg.Cache.Upstream.Url), len(s.cfg.Cache.Upstream.Url))
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, string(queryBuf), nil)
-	if err != nil {
-		return 0, nil, nil, err
+	urlBuf := bytebufferpool.Get()
+	defer func() {
+		urlBuf.Reset()
+		bytebufferpool.Put(urlBuf)
+	}()
+	if _, err = urlBuf.Write(url); err != nil {
+		return 0, nil, nil, emptyReleaseFn, err
+	}
+	if _, err = urlBuf.Write(path); err != nil {
+		return 0, nil, nil, emptyReleaseFn, err
+	}
+	if _, err = urlBuf.Write(query); err != nil {
+		return 0, nil, nil, emptyReleaseFn, err
+	}
+	req.SetRequestURI(unsafe.String(unsafe.SliceData(urlBuf.Bytes()), urlBuf.Len()))
+
+	for _, kv := range queryHeaders {
+		req.Header.SetBytesKV(kv[0], kv[1])
 	}
 
-	for _, header := range queryHeaders {
-		request.Header.Add(string(header[0]), string(header[1]))
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+
+	if err = pools.BackendHttpClientPool.DoTimeout(req, resp, s.cfg.Cache.Upstream.Timeout); err != nil {
+		return 0, nil, nil, emptyReleaseFn, err
 	}
 
-	client := s.clientsPool.Get().(*http.Client)
-	defer s.clientsPool.Put(client)
+	headers = pools.KeyValueSlicePool.Get().([][2][]byte)
+	resp.Header.All()(func(k, v []byte) bool {
+		keyCopied := pools.BackendBufPool.Get().([]byte)
+		copy(keyCopied, k)
+		valueCopied := pools.BackendBufPool.Get().([]byte)
+		copy(valueCopied, v)
+		headers = append(headers, [2][]byte{keyCopied, valueCopied})
+		return true
+	})
 
-	response, err := client.Do(request)
-	if err != nil {
-		return 0, nil, nil, err
+	buf := pools.BackendBodyBufferPool.Get().(*bytes.Buffer)
+	if _, err = buf.Write(resp.Body()); err != nil {
+		return 0, nil, nil, emptyReleaseFn, err
 	}
-	defer func() { _ = response.Body.Close() }()
 
-	// Read response body using a pooled reader to reduce allocations.
-	var bodyBuf bytes.Buffer
-	_, err = io.Copy(&bodyBuf, response.Body)
-	if err != nil {
-		return 0, nil, nil, err
-	}
+	return resp.StatusCode(), headers, buf.Bytes(), func() {
+		for _, kv := range headers {
+			kv[0] = kv[0][:0]
+			kv[1] = kv[1][:0]
+			pools.BackendBufPool.Put(kv[0])
+			pools.BackendBufPool.Put(kv[1])
+		}
+		headers = headers[:0]
+		pools.KeyValueSlicePool.Put(headers)
 
-	return response.StatusCode, response.Header, bodyBuf.Bytes(), nil
+		buf.Reset()
+		pools.BackendBodyBufferPool.Put(buf)
+	}, nil
 }

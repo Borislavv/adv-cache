@@ -3,24 +3,37 @@ package model
 import (
 	"bytes"
 	"compress/gzip"
-	"context"
 	"encoding/binary"
 	"fmt"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/list"
+	"github.com/Borislavv/advanced-cache/pkg/pools"
 	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
+	"github.com/rs/zerolog/log"
+	"github.com/valyala/bytebufferpool"
 	"github.com/valyala/fasthttp"
 	"io"
 	"math"
 	"math/rand/v2"
 	"net/http"
 	"sort"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
 )
 
-type Revalidator func(ctx context.Context, path []byte, query []byte, queryHeaders [][2][]byte) (status int, headers http.Header, body []byte, err error)
+var EntriesPool = sync.Pool{
+	New: func() interface{} {
+		return new(Entry).Init()
+	},
+}
+
+type Revalidator func(
+	path []byte, query []byte, queryHeaders [][2][]byte,
+) (
+	status int, headers [][2][]byte, body []byte, releaseFn func(), err error,
+)
 
 // Entry is the packed request+response payload
 type Entry struct {
@@ -32,6 +45,14 @@ type Entry struct {
 	revalidator  Revalidator
 	willUpdateAt int64
 	isCompressed int64
+}
+
+func (e *Entry) Init() *Entry {
+	e.lruListElem = &atomic.Pointer[list.Element[*Entry]]{}
+	e.payload = &atomic.Pointer[[]byte]{}
+	payload := make([]byte, 0, 256)
+	e.payload.Store(&payload)
+	return e
 }
 
 func NewEntryFromField(
@@ -76,71 +97,95 @@ func NewEntryFromField(
 func (e *Entry) MapKey() uint64   { return e.key }
 func (e *Entry) ShardKey() uint64 { return e.shard }
 
+type Releaser func()
+
 // NewEntry accepts path, query and request headers as bytes slices.
-func NewEntry(cfg *config.Cache, r *fasthttp.RequestCtx) (*Entry, error) {
+func NewEntry(cfg *config.Cache, r *fasthttp.RequestCtx) (*Entry, Releaser, error) {
 	rule := MatchRule(cfg, r.Path())
 	if rule == nil {
-		return nil, RuleNotFoundError
+		return nil, func() {}, RuleNotFoundError
 	}
 
-	entry := &Entry{
-		rule:        rule,
-		lruListElem: &atomic.Pointer[list.Element[*Entry]]{},
-		payload:     &atomic.Pointer[[]byte]{},
-	}
+	entry := EntriesPool.Get().(*Entry)
+	entry.rule = rule
 
-	return entry.calculateAndSetUpKeys(
-		entry.getFilteredAndSortedKeyQueries(r),
-		entry.getFilteredAndSortedKeyHeaders(r),
-	), nil
+	filteredQueries, queriesReleaser := entry.getFilteredAndSortedKeyQueries(r)
+	defer queriesReleaser()
+
+	filteredHeaders, headersReleaser := entry.getFilteredAndSortedKeyHeaders(r)
+	defer headersReleaser()
+
+	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), entry.Release, nil
 }
 
-func NewEntryManual(cfg *config.Cache, path, query []byte, headers [][2][]byte, revalidator Revalidator) (*Entry, error) {
-	entry := &Entry{
-		rule:        MatchRule(cfg, path),
-		lruListElem: &atomic.Pointer[list.Element[*Entry]]{},
-		payload:     &atomic.Pointer[[]byte]{},
-		revalidator: revalidator,
+func NewEntryManual(cfg *config.Cache, path, query []byte, headers [][2][]byte, revalidator Revalidator) (*Entry, Releaser, error) {
+	rule := MatchRule(cfg, path)
+	if rule == nil {
+		return nil, func() {}, RuleNotFoundError
 	}
-	if entry.rule == nil {
-		return nil, RuleNotFoundError
-	}
+
+	entry := EntriesPool.Get().(*Entry)
+	entry.rule = rule
+	entry.revalidator = revalidator
 
 	// initial request payload (response payload will be filled later)
 	entry.SetPayload(path, query, headers, nil, nil, 0)
 
-	entry.calculateAndSetUpKeys(parseQuery(query), headers)
+	// it's necessary due to have own query buffer inside entry, further below we will be referring to sub slices of query
+	_, payloadQuery, payloadHeaders, _, _, _, payloadReleaser, err := entry.Payload()
+	defer payloadReleaser()
+	if err != nil {
+		return nil, entry.Release, err
+	}
 
-	return entry, nil
+	queries, queriesReleaser := parseQuery(payloadQuery) // here, we are referring to the same query buffer which used in payload which have been mentioned before
+	defer queriesReleaser()                              // this is really reduce memory usage and GC pressure
+
+	return entry.calculateAndSetUpKeys(queries, payloadHeaders), entry.Release, nil
+}
+
+// Release used as a Releaser and returns buffers back to pools.
+func (e *Entry) Release() {
+	e.key = 0
+	e.shard = 0
+	e.rule = nil
+	e.willUpdateAt = 0
+	e.isCompressed = 0
+	e.revalidator = nil
+	e.lruListElem.Store(nil)
+
+	payload := e.payload.Load()
+	*payload = (*payload)[:0]
+	e.payload.Store(payload)
+
+	EntriesPool.Put(e)
 }
 
 func (e *Entry) calculateAndSetUpKeys(filteredQueries, filteredHeaders [][2][]byte) *Entry {
-	queryLen := 0
-	for _, pair := range filteredQueries {
-		queryLen += len(pair[0]) + len(pair[1])
-	}
-	headersLen := 0
-	for _, pair := range filteredHeaders {
-		headersLen += len(pair[0]) + len(pair[1])
-	}
-
-	buf := bufPool.Get().(*bytes.Buffer)
+	mainBuf := bytebufferpool.Get()
 	defer func() {
-		buf.Reset()
-		bufPool.Put(buf)
+		mainBuf.Reset()
+		bytebufferpool.Put(mainBuf)
 	}()
-	buf.Grow(queryLen + headersLen)
 
 	for _, pair := range filteredQueries {
-		buf.Write(pair[0])
-		buf.Write(pair[1])
+		if _, err := mainBuf.Write(pair[0]); err != nil {
+			log.Error().Err(err).Msg("failed to write query key")
+		}
+		if _, err := mainBuf.Write(pair[1]); err != nil {
+			log.Error().Err(err).Msg("failed to write query value")
+		}
 	}
 	for _, pair := range filteredHeaders {
-		buf.Write(pair[0])
-		buf.Write(pair[1])
+		if _, err := mainBuf.Write(pair[0]); err != nil {
+			log.Error().Err(err).Msg("failed to write header key")
+		}
+		if _, err := mainBuf.Write(pair[1]); err != nil {
+			log.Error().Err(err).Msg("failed to write header value")
+		}
 	}
 
-	e.key = hash(buf)
+	e.key = hash(mainBuf)
 	e.shard = sharded.MapShardKey(e.key)
 
 	return e
@@ -155,63 +200,72 @@ func (e *Entry) SetRevalidator(revalidator Revalidator) {
 func (e *Entry) SetPayload(
 	path, query []byte,
 	queryHeaders [][2][]byte,
+	headers [][2][]byte,
 	body []byte,
-	headers http.Header,
 	status int,
 ) {
 	numQueryHeaders := len(queryHeaders)
 	numResponseHeaders := len(headers)
 
-	estSize := 128 + len(path) + len(query) + len(body)
-	for _, kv := range queryHeaders {
-		estSize += len(kv[0]) + len(kv[1])
-	}
-	for key, vv := range headers {
-		for _, v := range vv {
-			estSize += len(key) + len(v)
-		}
-	}
-
-	buf := make([]byte, 0, estSize)
+	var scratch [4]byte
+	buf := bytebufferpool.Get()
+	defer func() {
+		buf.Reset()
+		bytebufferpool.Put(buf)
+	}()
 
 	// --- Path
-	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(path)))
-	buf = append(buf, path...)
+	binary.LittleEndian.PutUint32(scratch[:], uint32(len(path)))
+	buf.Write(scratch[:])
+	buf.Write(path)
 
 	// --- Query
-	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(query)))
-	buf = append(buf, query...)
+	binary.LittleEndian.PutUint32(scratch[:], uint32(len(query)))
+	buf.Write(scratch[:])
+	buf.Write(query)
 
 	// --- QueryHeaders
-	buf = binary.LittleEndian.AppendUint32(buf, uint32(numQueryHeaders))
+	binary.LittleEndian.PutUint32(scratch[:], uint32(numQueryHeaders))
+	buf.Write(scratch[:])
 	for _, kv := range queryHeaders {
-		buf = binary.LittleEndian.AppendUint32(buf, uint32(len(kv[0])))
-		buf = append(buf, kv[0]...)
-		buf = binary.LittleEndian.AppendUint32(buf, uint32(len(kv[1])))
-		buf = append(buf, kv[1]...)
+		binary.LittleEndian.PutUint32(scratch[:], uint32(len(kv[0])))
+		buf.Write(scratch[:])
+		buf.Write(kv[0])
+
+		binary.LittleEndian.PutUint32(scratch[:], uint32(len(kv[1])))
+		buf.Write(scratch[:])
+		buf.Write(kv[1])
 	}
 
 	// --- StatusCode
-	buf = binary.LittleEndian.AppendUint32(buf, uint32(status))
+	binary.LittleEndian.PutUint32(scratch[:], uint32(status))
+	buf.Write(scratch[:])
 
 	// --- Response Headers
-	buf = binary.LittleEndian.AppendUint32(buf, uint32(numResponseHeaders))
-	for k, vs := range headers {
-		buf = binary.LittleEndian.AppendUint32(buf, uint32(len(k)))
-		buf = append(buf, []byte(k)...)
-		buf = binary.LittleEndian.AppendUint32(buf, uint32(len(vs)))
-		for _, v := range vs {
-			buf = binary.LittleEndian.AppendUint32(buf, uint32(len(v)))
-			buf = append(buf, []byte(v)...)
-		}
+	binary.LittleEndian.PutUint32(scratch[:], uint32(numResponseHeaders))
+	buf.Write(scratch[:])
+
+	for _, kv := range headers {
+		binary.LittleEndian.PutUint32(scratch[:], uint32(len(kv[0])))
+		buf.Write(scratch[:])
+		buf.Write(kv[0])
+
+		// Для совместимости с форматом: пишем количество значений на ключ (у тебя всегда 1)
+		binary.LittleEndian.PutUint32(scratch[:], 1)
+		buf.Write(scratch[:])
+
+		binary.LittleEndian.PutUint32(scratch[:], uint32(len(kv[1])))
+		buf.Write(scratch[:])
+		buf.Write(kv[1])
 	}
 
 	// --- Body
-	buf = binary.LittleEndian.AppendUint32(buf, uint32(len(body)))
-	buf = append(buf, body...)
+	binary.LittleEndian.PutUint32(scratch[:], uint32(len(body)))
+	buf.Write(scratch[:])
+	buf.Write(body)
 
-	if e.rule.Gzip.Enabled && len(buf) >= e.rule.Gzip.Threshold {
-		// --- Compress entire payload
+	// --- Compress if needed
+	if e.rule.Gzip.Enabled && buf.Len() >= e.rule.Gzip.Threshold {
 		gzipper := GzipWriterPool.Get().(*gzip.Writer)
 		defer GzipWriterPool.Put(gzipper)
 
@@ -220,48 +274,57 @@ func (e *Entry) SetPayload(
 		bufIn.Reset()
 		gzipper.Reset(bufIn)
 
-		_, err := gzipper.Write(buf)
+		_, err := gzipper.Write(buf.Bytes())
 		closeErr := gzipper.Close()
+
 		if err == nil && closeErr == nil {
-			tmpBuf := make([]byte, bufIn.Len())
-			copy(tmpBuf, bufIn.Bytes())
-			e.payload.Store(&tmpBuf)
+			payload := e.payload.Load()
+			*payload = append(*payload, bufIn.Bytes()...)
+			e.payload.Store(payload)
 		} else {
-			e.payload.Store(&buf)
+			payload := e.payload.Load()
+			*payload = append(*payload, buf.Bytes()...)
+			e.payload.Store(payload)
 		}
 
 		atomic.StoreInt64(&e.isCompressed, 1)
 	} else {
-		e.payload.Store(&buf)
+		payload := e.payload.Load()
+		*payload = append(*payload, buf.Bytes()...)
+		e.payload.Store(payload)
 	}
 }
+
+var emptyFn = func() {}
 
 // Payload decompresses the entire payload and unpacks it into fields.
 func (e *Entry) Payload() (
 	path []byte,
 	query []byte,
 	queryHeaders [][2][]byte,
-	status int,
-	responseHeaders http.Header,
+	responseHeaders [][2][]byte,
 	body []byte,
+	status int,
+	releaseFn func(),
 	err error,
 ) {
 	payloadPtr := e.payload.Load()
 	if payloadPtr == nil {
-		return nil, nil, nil, 0, nil, nil, fmt.Errorf("payload is nil")
+		return nil, nil, nil, nil, nil, 0, emptyFn, fmt.Errorf("payload is nil")
 	}
 
 	var rawPayload []byte
 	if atomic.LoadInt64(&e.isCompressed) == 1 {
+		// TODO need to move it to sync.Pool
 		gr, err := gzip.NewReader(bytes.NewReader(*payloadPtr))
 		if err != nil {
-			return nil, nil, nil, 0, nil, nil, fmt.Errorf("make gzip reader error: %w", err)
+			return nil, nil, nil, nil, nil, 0, emptyFn, fmt.Errorf("make gzip reader error: %w", err)
 		}
 		defer gr.Close()
 
 		rawPayload, err = io.ReadAll(gr)
 		if err != nil {
-			return nil, nil, nil, 0, nil, nil, fmt.Errorf("gzip read failed: %w", err)
+			return nil, nil, nil, nil, nil, 0, emptyFn, fmt.Errorf("gzip read failed: %w", err)
 		}
 	} else {
 		rawPayload = *payloadPtr
@@ -284,7 +347,7 @@ func (e *Entry) Payload() (
 	// --- QueryHeaders
 	numQueryHeaders := binary.LittleEndian.Uint32(rawPayload[offset:])
 	offset += 4
-	queryHeaders = make([][2][]byte, numQueryHeaders)
+	queryHeaders = pools.KeyValueSlicePool.Get().([][2][]byte)
 	for i := 0; i < int(numQueryHeaders); i++ {
 		keyLen := binary.LittleEndian.Uint32(rawPayload[offset:])
 		offset += 4
@@ -296,7 +359,7 @@ func (e *Entry) Payload() (
 		v := rawPayload[offset : offset+int(valueLen)]
 		offset += int(valueLen)
 
-		queryHeaders[i] = [2][]byte{k, v}
+		queryHeaders = append(queryHeaders, [2][]byte{k, v})
 	}
 
 	// --- Status
@@ -306,11 +369,11 @@ func (e *Entry) Payload() (
 	// --- Response Headers
 	numHeaders := binary.LittleEndian.Uint32(rawPayload[offset:])
 	offset += 4
-	responseHeaders = make(http.Header)
+	responseHeaders = pools.KeyValueSlicePool.Get().([][2][]byte)
 	for i := 0; i < int(numHeaders); i++ {
 		keyLen := binary.LittleEndian.Uint32(rawPayload[offset:])
 		offset += 4
-		keyStr := string(rawPayload[offset : offset+int(keyLen)])
+		key := rawPayload[offset : offset+int(keyLen)]
 		offset += int(keyLen)
 
 		numVals := binary.LittleEndian.Uint32(rawPayload[offset:])
@@ -318,9 +381,9 @@ func (e *Entry) Payload() (
 		for v := 0; v < int(numVals); v++ {
 			valueLen := binary.LittleEndian.Uint32(rawPayload[offset:])
 			offset += 4
-			valStr := string(rawPayload[offset : offset+int(valueLen)])
+			val := rawPayload[offset : offset+int(valueLen)]
 			offset += int(valueLen)
-			responseHeaders.Add(keyStr, valStr)
+			responseHeaders = append(responseHeaders, [2][]byte{key, val})
 		}
 	}
 
@@ -328,6 +391,13 @@ func (e *Entry) Payload() (
 	bodyLen := binary.LittleEndian.Uint32(rawPayload[offset:])
 	offset += 4
 	body = rawPayload[offset : offset+int(bodyLen)]
+
+	releaseFn = func() {
+		queryHeaders = queryHeaders[:0]
+		pools.KeyValueSlicePool.Put(queryHeaders)
+		responseHeaders = responseHeaders[:0]
+		pools.KeyValueSlicePool.Put(responseHeaders)
+	}
 
 	return
 }
@@ -352,25 +422,49 @@ func (e *Entry) WillUpdateAt() int64 {
 	return atomic.LoadInt64(&e.willUpdateAt)
 }
 
-func parseQuery(b []byte) [][2][]byte {
+func parseQuery(b []byte) (queries [][2][]byte, releaseFn func()) {
 	b = bytes.TrimLeft(b, "?")
-	kvPairs := bytes.Split(b, []byte("&"))
 
-	var query [][2][]byte
-	for _, kvPair := range kvPairs {
-		kv := bytes.Split(kvPair, []byte("="))
-		if len(kv) == 2 {
-			query = append(query, [2][]byte{kv[0], kv[1]})
+	var query = pools.KeyValueSlicePool.Get().([][2][]byte)
+
+	type state struct {
+		kIdx   int
+		vIdx   int
+		kFound bool
+		vFound bool
+	}
+
+	s := state{}
+	for idx, bt := range b {
+		if bt == '&' {
+			if s.kFound && s.vFound {
+				query = append(query, [2][]byte{b[s.kIdx:s.vIdx], b[s.vIdx:idx]})
+				s.vIdx = 0
+				s.vFound = false
+			}
+			s.kIdx = idx + 1
+			s.kFound = true
+			continue
+		} else if bt == '=' {
+			s.vIdx = idx + 1
+			s.vFound = true
 		}
 	}
-	return query
+	return query, func() {
+		pools.KeyValueSlicePool.Put(query)
+	}
 }
 
-func (e *Entry) getFilteredAndSortedKeyQueries(r *fasthttp.RequestCtx) (kvPairs [][2][]byte) {
-	var filtered = make([][2][]byte, 0, len(e.rule.CacheKey.QueryBytes))
-	if cap(filtered) == 0 {
-		return filtered
+func (e *Entry) getFilteredAndSortedKeyQueries(r *fasthttp.RequestCtx) (kvPairs [][2][]byte, releaseFn func()) {
+	var filtered = pools.KeyValueSlicePool.Get().([][2][]byte)
+	releaseFn = func() {
+		filtered = filtered[:0]
+		pools.KeyValueSlicePool.Put(filtered)
 	}
+	if cap(filtered) == 0 {
+		return filtered, releaseFn
+	}
+
 	r.QueryArgs().All()(func(key, value []byte) bool {
 		for _, ak := range e.rule.CacheKey.QueryBytes {
 			if bytes.HasPrefix(key, ak) {
@@ -383,13 +477,17 @@ func (e *Entry) getFilteredAndSortedKeyQueries(r *fasthttp.RequestCtx) (kvPairs 
 	sort.Slice(filtered, func(i, j int) bool {
 		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
 	})
-	return filtered
+	return filtered, releaseFn
 }
 
-func (e *Entry) getFilteredAndSortedKeyHeaders(r *fasthttp.RequestCtx) (kvPairs [][2][]byte) {
+func (e *Entry) getFilteredAndSortedKeyHeaders(r *fasthttp.RequestCtx) (kvPairs [][2][]byte, releaseFn func()) {
 	var filtered = make([][2][]byte, 0, len(e.rule.CacheKey.HeadersBytes))
+	releaseFn = func() {
+		filtered = filtered[:0]
+		pools.KeyValueSlicePool.Put(filtered)
+	}
 	if cap(filtered) == 0 {
-		return filtered
+		return filtered, releaseFn
 	}
 	r.Request.Header.All()(func(key, value []byte) bool {
 		for _, allowedKey := range e.rule.CacheKey.HeadersBytes {
@@ -403,7 +501,7 @@ func (e *Entry) getFilteredAndSortedKeyHeaders(r *fasthttp.RequestCtx) (kvPairs 
 	sort.Slice(filtered, func(i, j int) bool {
 		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
 	})
-	return filtered
+	return filtered, releaseFn
 }
 
 // SetLruListElement sets the LRU list element pointer.
@@ -447,18 +545,19 @@ func (e *Entry) ShouldBeRefreshed(cfg *config.Cache) bool {
 }
 
 // Revalidate calls the revalidator closure to fetch fresh data and updates the timestamp.
-func (e *Entry) Revalidate(ctx context.Context) error {
-	path, query, headers, _, _, _, err := e.Payload()
+func (e *Entry) Revalidate() error {
+	path, query, headers, _, _, _, release, err := e.Payload()
+	defer release()
 	if err != nil {
 		return err
 	}
 
-	statusCode, respHeaders, body, err := e.revalidator(ctx, path, query, headers)
+	statusCode, respHeaders, body, releaser, err := e.revalidator(path, query, headers)
+	defer releaser()
 	if err != nil {
 		return err
 	}
-
-	e.SetPayload(path, query, headers, body, respHeaders, statusCode)
+	e.SetPayload(path, query, headers, respHeaders, body, statusCode)
 
 	if statusCode == http.StatusOK {
 		atomic.StoreInt64(&e.willUpdateAt, time.Now().UnixNano()+e.rule.TTL.Nanoseconds())

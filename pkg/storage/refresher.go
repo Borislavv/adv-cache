@@ -77,10 +77,7 @@ func (r *Refresh) runConsumer() {
 				return
 			case <-r.requestRateLimiter.Chan():
 				go func() {
-					// IMPORTANT: r.ctx used in resp.Revalidate(r.ctx) is a correct ctx due to be able to await requests through previous iterations.
-					// Otherwise, you will have a lot of request errors (context cancelled), because in parent method ctx (from arg) has a timeout in milliseconds
-					// for be able to stop cycles in current iteration and start a new one.
-					if err := entry.Revalidate(r.ctx); err != nil {
+					if err := entry.Revalidate(); err != nil {
 						r.refreshErroredNumCh <- struct{}{}
 						return
 					}

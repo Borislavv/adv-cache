@@ -71,6 +71,10 @@ func (s *Storage) Get(key, shard uint64) (*model.Entry, bool) {
 	return nil, false
 }
 
+func (s *Storage) GetRand() (*model.Entry, bool) {
+	return s.shardedMap.Rnd()
+}
+
 // Set inserts or updates a response in the cache, updating Weight usage and Storage position.
 func (s *Storage) Set(new *model.Entry) {
 	key := new.MapKey()
