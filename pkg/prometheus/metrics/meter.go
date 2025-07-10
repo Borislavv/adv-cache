@@ -5,6 +5,7 @@ import (
 	"github.com/VictoriaMetrics/metrics"
 	"strconv"
 	"time"
+	"unsafe"
 )
 
 // Meter defines methods for recording application metrics.
@@ -55,8 +56,9 @@ func (m *Metrics) IncTotal(path, method, status string) {
 		buf = append(buf, `"`...)
 	}
 	buf = append(buf, `}`...)
+	bufStr := *(*string)(unsafe.Pointer(&buf))
 
-	metrics.GetOrCreateCounter(string(buf)).Inc()
+	metrics.GetOrCreateCounter(bufStr).Inc()
 }
 
 // IncStatus increments a counter for HTTP response statuses.
@@ -71,8 +73,9 @@ func (m *Metrics) IncStatus(path, method, status string) {
 	buf = append(buf, `",status="`...)
 	buf = append(buf, status...)
 	buf = append(buf, `"}`...)
+	bufStr := *(*string)(unsafe.Pointer(&buf))
 
-	metrics.GetOrCreateCounter(string(buf)).Inc()
+	metrics.GetOrCreateCounter(bufStr).Inc()
 }
 
 // SetCacheMemory updates the gauge for total cache memory usage in bytes.
@@ -94,15 +97,15 @@ type Timer struct {
 // NewResponseTimeTimer creates a Timer for measuring response time of given path and method.
 func (m *Metrics) NewResponseTimeTimer(path, method string) *Timer {
 	buf := make([]byte, 0, 48)
-
 	buf = append(buf, keyword.HttpResponseTimeMsMetricName...)
 	buf = append(buf, `{path="`...)
 	buf = append(buf, path...)
 	buf = append(buf, `",method="`...)
 	buf = append(buf, method...)
 	buf = append(buf, `"}`...)
+	bufStr := *(*string)(unsafe.Pointer(&buf))
 
-	return &Timer{name: string(buf), start: time.Now()}
+	return &Timer{name: bufStr, start: time.Now()}
 }
 
 // FlushResponseTimeTimer records the elapsed time since Timer creation into a histogram.
