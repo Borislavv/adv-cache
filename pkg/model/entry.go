@@ -310,15 +310,6 @@ func (e *Entry) SetPayload(
 	payloadBuf = payloadBuf[:]
 	e.payload.Store(&payloadBuf)
 	atomic.StoreInt64(&e.isCompressed, 0)
-
-	//if status > 0 {
-	//	npath, nquery, _, _, nbody, _, _, err := e.Payload()
-	//	if err != nil {
-	//		panic(err)
-	//	}
-	//
-	//	fmt.Printf("path=%v, query=%v, body=%v\n", string(npath), string(nquery), string(nbody))
-	//}
 }
 
 var emptyFn = func() {}
@@ -414,12 +405,7 @@ func (e *Entry) Payload() (
 	}
 
 	// --- Body
-	bodyLen := binary.LittleEndian.Uint32(rawPayload[offset:])
 	offset += 4
-	if offset+int(bodyLen) > len(rawPayload) {
-		fmt.Printf("payload: '%v', part: '%v'\n", string(rawPayload), string(rawPayload[offset:]))
-		panic("found")
-	}
 	body = rawPayload[offset:]
 
 	releaseFn = func() {
