@@ -67,7 +67,7 @@ func NewCacheController(
 		log.Info().Msg("[cache-controller] mock data start loading")
 		defer log.Info().Msg("[cache-controller] mocked data finished loading")
 		path := []byte("/api/v2/pagedata")
-		for entry := range mock.StreamSeqEntries(ctx, c.cfg.Cache, c.backend, path, 1_000_000) {
+		for entry := range mock.StreamSeqEntries(ctx, c.cfg.Cache, c.backend, path, 5_000_000) {
 			c.cache.Set(entry)
 		}
 	}()
