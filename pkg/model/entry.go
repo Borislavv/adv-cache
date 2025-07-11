@@ -651,7 +651,8 @@ func (e *Entry) ShouldBeRefreshed(cfg *config.Cache) bool {
 	remaining := atomic.LoadInt64(&e.willUpdateAt) - now
 
 	if remaining < 0 {
-		remaining = 0 // it's time already
+		remaining = 0 // min clamp is zero, using only probability refresh, forced refresh does not used at all!
+		// the line above means that you must not return true value here!
 	}
 
 	interval := e.rule.TTL.Nanoseconds()
@@ -664,9 +665,14 @@ func (e *Entry) ShouldBeRefreshed(cfg *config.Cache) bool {
 		beta = cfg.Cache.Refresh.Beta
 	}
 
-	// Probability: higher as we approach ShouldRevalidatedAt
-	prob := 1 - math.Exp(-beta*(1.0-(float64(remaining)/float64(interval))))
+	x := 1.0 - float64(remaining)/float64(interval)
+	if x < 0 {
+		x = 0
+	} else if x > 1 {
+		x = 1
+	}
 
+	prob := 1 - math.Exp(-beta*x)
 	return rand.Float64() < prob
 }
 
