@@ -62,11 +62,13 @@ func (s *Storage) Run() {
 
 // Get retrieves a response by request and bumps its Storage position.
 // Returns: (response, releaser, found).
-func (s *Storage) Get(key, shard uint64) (*model.Entry, bool) {
-	resp, found := s.shardedMap.Get(key, shard)
+func (s *Storage) Get(entry *model.Entry) (*model.Entry, bool) {
+	resp, found := s.shardedMap.Get(entry.MapKey(), entry.ShardKey())
 	if found {
-		s.touch(resp)
-		return resp, true
+		if resp.IsSameFingerprint(entry) {
+			s.touch(resp)
+			return resp, true
+		}
 	}
 	return nil, false
 }
