@@ -16,6 +16,8 @@ import (
 	"github.com/rs/zerolog"
 )
 
+const maxEntriesNum = 1_000_000
+
 var cfg *config.Cache
 
 func init() {
@@ -91,18 +93,23 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 	tinyLFU := lfu.NewTinyLFU(ctx)
 	db := lru.NewStorage(ctx, cfg, balancer, backend, tinyLFU, shardedMap)
 
-	responses := mock.GenerateRandomResponses(cfg, path, b.N+1)
-	for _, resp := range responses {
+	numEntries := b.N + 1
+	if numEntries > maxEntriesNum {
+		numEntries = maxEntriesNum
+	}
+
+	entries := mock.GenerateSeqEntries(cfg, backend, path, numEntries)
+	for _, resp := range entries {
 		db.Set(resp)
 	}
-	length := len(responses)
+	length := len(entries)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
 			for j := 0; j < 1000; j++ {
-				_, _ = db.Get(responses[(i*j)%length].Request())
+				_, _ = db.Get(entries[(i*j)%length])
 			}
 			i += 1000
 		}
@@ -122,15 +129,20 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 	tinyLFU := lfu.NewTinyLFU(ctx)
 	db := lru.NewStorage(ctx, cfg, balancer, backend, tinyLFU, shardedMap)
 
-	responses := mock.GenerateRandomResponses(cfg, path, b.N+1)
-	length := len(responses)
+	numEntries := b.N + 1
+	if numEntries > maxEntriesNum {
+		numEntries = maxEntriesNum
+	}
+
+	entries := mock.GenerateSeqEntries(cfg, backend, path, numEntries)
+	length := len(entries)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
 			for j := 0; j < 1000; j++ {
-				db.Set(responses[(i*j)%length])
+				db.Set(entries[(i*j)%length])
 			}
 			i += 1000
 		}
@@ -150,12 +162,11 @@ func BenchmarkGetAllocs(b *testing.B) {
 	tinyLFU := lfu.NewTinyLFU(ctx)
 	db := lru.NewStorage(ctx, cfg, balancer, backend, tinyLFU, shardedMap)
 
-	resp := mock.GenerateRandomResponses(cfg, path, 1)[0]
-	db.Set(resp)
-	req := resp.Request()
+	entry := mock.GenerateSeqEntries(cfg, backend, path, 1)[0]
+	db.Set(entry)
 
 	allocs := testing.AllocsPerRun(100_000, func() {
-		db.Get(req)
+		db.Get(entry)
 	})
 	b.ReportMetric(allocs, "allocs/op")
 
@@ -172,10 +183,10 @@ func BenchmarkSetAllocs(b *testing.B) {
 	tinyLFU := lfu.NewTinyLFU(ctx)
 	db := lru.NewStorage(ctx, cfg, balancer, backend, tinyLFU, shardedMap)
 
-	resp := mock.GenerateRandomResponses(cfg, path, 1)[0]
+	entry := mock.GenerateSeqEntries(cfg, backend, path, 1)[0]
 
 	allocs := testing.AllocsPerRun(100_000, func() {
-		db.Set(resp)
+		db.Set(entry)
 	})
 	b.ReportMetric(allocs, "allocs/op")
 
