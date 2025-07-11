@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/Borislavv/advanced-cache/internal/cache/config"
-	"github.com/Borislavv/advanced-cache/pkg/mock"
 	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/Borislavv/advanced-cache/pkg/pools"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
@@ -39,6 +38,8 @@ var (
 var (
 	count    = &atomic.Int64{} // Num
 	duration = &atomic.Int64{} // UnixNano
+	fnd      = &atomic.Int64{}
+	notFnd   = &atomic.Int64{}
 )
 
 // CacheController handles cache API requests (read/write-through, error reporting, metrics).
@@ -63,46 +64,6 @@ func NewCacheController(
 		cache:   cache,
 		backend: backend,
 	}
-	go func() {
-		log.Info().Msg("[cache-controller] mock data start loading")
-		defer log.Info().Msg("[cache-controller] mocked data finished loading")
-		path := []byte("/api/v2/pagedata")
-		for entry := range mock.StreamSeqEntries(ctx, c.cfg.Cache, c.backend, path, 5_000_000) {
-			c.cache.Set(entry)
-		}
-	}()
-
-	//go func() {
-	//	for {
-	//		select {
-	//		case <-ctx.Done():
-	//			return
-	//		default:
-	//			entry, fnd := c.cache.GetRand()
-	//			if fnd {
-	//				path, query, qHeaders, _, _, code, releaser, err := entry.Payload()
-	//				if err != nil {
-	//					log.Error().Err(err).Msg("error getting payload: " + err.Error())
-	//					releaser()
-	//				}
-	//				header := make([]byte, 0, 128)
-	//				for _, kv := range qHeaders {
-	//					header = append(header, kv[0]...)
-	//					header = append(header, []byte(":")...)
-	//					header = append(header, kv[1]...)
-	//					header = append(header, []byte(",")...)
-	//				}
-	//				fmt.Printf(
-	//					"key: %d, shard: %dpath: %v, query: %v, qHeaders: %v, code: %d",
-	//					entry.MapKey(), entry.ShardKey(), string(path), string(query), string(header), code,
-	//				)
-	//				releaser()
-	//			}
-	//			time.Sleep(time.Second * 5)
-	//		}
-	//	}
-	//}()
-
 	c.runLogger(ctx)
 	return c
 }
@@ -136,8 +97,10 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 		releaser func()
 	)
 
-	value, found := c.cache.Get(entry.MapKey(), entry.ShardKey())
+	value, found := c.cache.Get(entry)
 	if !found {
+		notFnd.Add(1)
+
 		path := r.Path()
 		queryString := r.QueryArgs().QueryString()
 		queryHeaders, queryReleaser := c.queryHeaders(r)
@@ -155,6 +118,7 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 		c.cache.Set(entry)
 		value = entry
 	} else {
+		fnd.Add(1)
 		defer entryReleaser() // release the entry only on the case when existing entry was found in cache,
 		// otherwise created entry will escape to heap (link must be alive while entry in cache)
 
@@ -264,7 +228,7 @@ func (c *CacheController) logAndReset() {
 			Str("avgDuration", avg)
 	}
 
-	logEvent.Msgf("[controller][5s] served %d requests (rps: %s, avgDuration: %s)", cnt, rps, avg)
+	logEvent.Msgf("[controller][5s] served %d requests (rps: %s, avgDuration: %s), hits: %d, misses: %d,", cnt, rps, avg, fnd.Load(), notFnd.Load())
 
 	count.Store(0)
 	duration.Store(0)
