@@ -154,7 +154,8 @@ func (d *Dump) Load(ctx context.Context) error {
 					break
 				}
 				size := binary.LittleEndian.Uint32(sizeBuf[:])
-				buf := make([]byte, size)
+				buf := make([]byte, size) // this buffer is very important.
+				// don't use here a sync.Pool or other cache features due to this slice is a backing array for restored entries.
 				if _, err := io.ReadFull(br, buf); err != nil {
 					log.Error().Err(err).Msg("[load] read entry error")
 					atomic.AddInt32(&errorNum, 1)
