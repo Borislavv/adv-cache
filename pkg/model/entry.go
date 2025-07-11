@@ -3,11 +3,13 @@ package model
 import (
 	"bytes"
 	"compress/gzip"
+	"crypto/subtle"
 	"encoding/binary"
 	"fmt"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/list"
 	"github.com/Borislavv/advanced-cache/pkg/pools"
+	"github.com/Borislavv/advanced-cache/pkg/repository"
 	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
 	"github.com/rs/zerolog/log"
 	"github.com/valyala/fasthttp"
@@ -37,8 +39,9 @@ type Revalidator func(
 
 // Entry is the packed request+response payload
 type Entry struct {
-	key          uint64
-	shard        uint64
+	key          uint64   // 64  bit xxh
+	shard        uint64   // 64  bit xxh % NumOfShards
+	fingerprint  [16]byte // 128 bit xxh
 	rule         *config.Rule
 	payload      *atomic.Pointer[[]byte]
 	lruListElem  *atomic.Pointer[list.Element[*Entry]]
@@ -51,33 +54,6 @@ func (e *Entry) Init() *Entry {
 	e.lruListElem = &atomic.Pointer[list.Element[*Entry]]{}
 	e.payload = &atomic.Pointer[[]byte]{}
 	payload := make([]byte, 0, 8)
-	e.payload.Store(&payload)
-	return e
-}
-
-func NewEntryFromField(
-	key uint64,
-	shard uint64,
-	payload []byte,
-	rule *config.Rule,
-	revalidator Revalidator,
-	isCompressed bool,
-	willUpdateAt int64,
-) *Entry {
-	var isCompressedInt int64
-	if isCompressed {
-		isCompressedInt = 1
-	}
-	e := &Entry{
-		key:          key,
-		shard:        shard,
-		rule:         rule,
-		payload:      &atomic.Pointer[[]byte]{},
-		lruListElem:  &atomic.Pointer[list.Element[*Entry]]{},
-		revalidator:  revalidator,
-		isCompressed: isCompressedInt,
-		willUpdateAt: willUpdateAt,
-	}
 	e.payload.Store(&payload)
 	return e
 }
@@ -132,7 +108,7 @@ func NewEntryManual(cfg *config.Cache, path, query []byte, headers [][2][]byte, 
 	entry.SetPayload(path, query, headers, nil, nil, 0)
 
 	// it's necessary due to have own query buffer inside entry, further below we will be referring to sub slices of query
-	_, payloadQuery, payloadHeaders, _, _, _, payloadReleaser, err := entry.Payload()
+	_, payloadQuery, _, _, _, _, payloadReleaser, err := entry.Payload()
 	defer payloadReleaser()
 	if err != nil {
 		return nil, entry.Release, err
@@ -142,9 +118,32 @@ func NewEntryManual(cfg *config.Cache, path, query []byte, headers [][2][]byte, 
 	defer queriesReleaser()                              // this is really reduce memory usage and GC pressure
 
 	filteredQueries := entry.filteredAndSortedKeyQueriesInPlace(queries)
-	filteredHeaders := entry.filteredAndSortedKeyHeadersInPlace(payloadHeaders)
+	filteredHeaders := entry.filteredAndSortedKeyHeadersInPlace(headers)
 
 	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), entry.Release, nil
+}
+
+func NewEntryFromField(
+	key uint64,
+	shard uint64,
+	payload []byte,
+	rule *config.Rule,
+	revalidator Revalidator,
+	isCompressed int64,
+	willUpdateAt int64,
+) *Entry {
+	e := &Entry{
+		key:          key,
+		shard:        shard,
+		rule:         rule,
+		payload:      &atomic.Pointer[[]byte]{},
+		lruListElem:  &atomic.Pointer[list.Element[*Entry]]{},
+		revalidator:  revalidator,
+		isCompressed: isCompressed,
+		willUpdateAt: willUpdateAt,
+	}
+	e.payload.Store(&payload)
+	return e
 }
 
 // Release used as a Releaser and returns buffers back to pools.
@@ -187,15 +186,28 @@ func (e *Entry) calculateAndSetUpKeys(filteredQueries, filteredHeaders [][2][]by
 		hasher.Reset()
 		hasherPool.Put(hasher)
 	}()
+
+	// calculate key hash
 	if _, err := hasher.Write(buf); err != nil {
 		panic(err)
 	}
-
-	//e.key = xxh3.Hash(buf)
 	e.key = hasher.Sum64()
+
+	// calculate fingerprint hash
+	fp := hasher.Sum128()
+	var fingerprint [16]byte
+	binary.LittleEndian.PutUint64(fingerprint[0:8], fp.Lo)
+	binary.LittleEndian.PutUint64(fingerprint[8:16], fp.Hi)
+	e.fingerprint = fingerprint
+
+	// calculate shard index
 	e.shard = sharded.MapShardKey(e.key)
 
 	return e
+}
+
+func (e *Entry) IsSameFingerprint(another *Entry) bool {
+	return subtle.ConstantTimeCompare(e.fingerprint[:], another.fingerprint[:]) == 1
 }
 
 func (e *Entry) SetRevalidator(revalidator Revalidator) {
@@ -310,15 +322,6 @@ func (e *Entry) SetPayload(
 	payloadBuf = payloadBuf[:]
 	e.payload.Store(&payloadBuf)
 	atomic.StoreInt64(&e.isCompressed, 0)
-
-	//if status > 0 {
-	//	npath, nquery, _, _, nbody, _, _, err := e.Payload()
-	//	if err != nil {
-	//		panic(err)
-	//	}
-	//
-	//	fmt.Printf("path=%v, query=%v, body=%v\n", string(npath), string(nquery), string(nbody))
-	//}
 }
 
 var emptyFn = func() {}
@@ -414,12 +417,7 @@ func (e *Entry) Payload() (
 	}
 
 	// --- Body
-	bodyLen := binary.LittleEndian.Uint32(rawPayload[offset:])
 	offset += 4
-	if offset+int(bodyLen) > len(rawPayload) {
-		fmt.Printf("payload: '%v', part: '%v'\n", string(rawPayload), string(rawPayload[offset:]))
-		panic("found")
-	}
 	body = rawPayload[offset:]
 
 	releaseFn = func() {
@@ -722,6 +720,116 @@ func (e *Entry) DumpPayload() {
 	}
 
 	fmt.Println("==================================")
+}
+
+func (e *Entry) ToBytes() []byte {
+	var scratch [4]byte
+
+	rulePath := e.Rule().PathBytes
+	payload := *e.payload.Load()
+
+	// === Calculate size ===
+	total := 4 + len(rulePath) + 8 + 8 + 16 + 1 + 8 + 4 + len(payload)
+
+	buf := make([]byte, 0, total)
+
+	// RulePath
+	binary.LittleEndian.PutUint32(scratch[:], uint32(len(rulePath)))
+	buf = append(buf, scratch[:]...)
+	buf = append(buf, rulePath...)
+
+	// Key
+	b := make([]byte, 8)
+	binary.LittleEndian.PutUint64(b, e.key)
+	buf = append(buf, b...)
+
+	// Shard
+	binary.LittleEndian.PutUint64(b, e.shard)
+	buf = append(buf, b...)
+
+	// Fingerprint
+	buf = append(buf, e.fingerprint[:]...)
+
+	// IsCompressed
+	if e.IsCompressed() {
+		buf = append(buf, 1)
+	} else {
+		buf = append(buf, 0)
+	}
+
+	// WillUpdateAt
+	binary.LittleEndian.PutUint64(b, uint64(e.WillUpdateAt()))
+	buf = append(buf, b...)
+
+	// Payload
+	binary.LittleEndian.PutUint32(scratch[:], uint32(len(payload)))
+	buf = append(buf, scratch[:]...)
+	buf = append(buf, payload...)
+
+	return buf
+}
+
+func EntryFromBytes(data []byte, cfg *config.Cache, backend repository.Backender) (*Entry, error) {
+	var offset int
+
+	// RulePath
+	rulePathLen := binary.LittleEndian.Uint32(data[offset:])
+	offset += 4
+	rulePath := data[offset : offset+int(rulePathLen)]
+	offset += int(rulePathLen)
+
+	rule := MatchRule(cfg, rulePath)
+	if rule == nil {
+		return nil, fmt.Errorf("rule not found for path: %s", string(rulePath))
+	}
+
+	// Key
+	key := binary.LittleEndian.Uint64(data[offset:])
+	offset += 8
+
+	// Shard
+	shard := binary.LittleEndian.Uint64(data[offset:])
+	offset += 8
+
+	// Fingerprint
+	var fp [16]byte
+	copy(fp[:], data[offset:offset+16])
+	offset += 16
+
+	// IsCompressed
+	isCompressed := data[offset] == 1
+	offset += 1
+
+	// WillUpdateAt
+	willUpdateAt := int64(binary.LittleEndian.Uint64(data[offset:]))
+	offset += 8
+
+	// Payload
+	payloadLen := binary.LittleEndian.Uint32(data[offset:])
+	offset += 4
+
+	payload := data[offset : offset+int(payloadLen)]
+
+	entry := &Entry{
+		key:          key,
+		shard:        shard,
+		fingerprint:  fp,
+		rule:         rule,
+		payload:      &atomic.Pointer[[]byte]{},
+		lruListElem:  &atomic.Pointer[list.Element[*Entry]]{},
+		revalidator:  backend.RevalidatorMaker(),
+		isCompressed: 0,
+		willUpdateAt: willUpdateAt,
+	}
+	if isCompressed {
+		entry.isCompressed = 1
+	}
+
+	bufCopy := make([]byte, len(payload))
+	copy(bufCopy, payload)
+	entry.payload.Store(&bufCopy)
+
+	return entry, nil
 }
 
 // Dangerous - exclusively for tests.
