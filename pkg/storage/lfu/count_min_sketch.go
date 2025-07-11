@@ -31,15 +31,6 @@ func (c *countMinSketch) Increment(key uint64) {
 	}
 }
 
-func (c *countMinSketch) Reset() *countMinSketch {
-	for i := 0; i < sketchDepth; i++ {
-		for j := 0; j < sketchWidth; j++ {
-			atomic.StoreUint32(&c.table[i][j], 0)
-		}
-	}
-	return c
-}
-
 func (c *countMinSketch) estimate(key uint64) uint32 {
 	mins := ^uint32(0)
 	for i := 0; i < sketchDepth; i++ {

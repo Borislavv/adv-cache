@@ -56,14 +56,15 @@ func (t *TinyLFU) Admit(new, old *model.Entry) bool {
 }
 
 func (t *TinyLFU) Rotate() {
-	// load prev and curr, and reset prev
+	// current -> previous
 	curr := t.curr.Load()
-	prev := t.prev.Load().Reset()
-	// swap current and previous
 	t.prev.Store(curr)
-	t.curr.Store(prev)
-	// reset a doorkeeper
-	t.door.Reset()
+
+	// current -> new current (new seeds)
+	t.curr.Store(newCountMinSketch())
+
+	// doorkeeper -> new doorkeeper
+	t.door = newDoorkeeper(doorkeeperCapacity)
 }
 
 func (t *TinyLFU) estimate(key uint64) uint32 {
