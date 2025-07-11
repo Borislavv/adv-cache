@@ -510,11 +510,17 @@ func parseQuery(b []byte) (queries [][2][]byte, releaseFn func()) {
 	}
 }
 
+var kvPool = sync.Pool{
+	New: func() interface{} {
+		return make([][2][]byte, 0, 32)
+	},
+}
+
 func (e *Entry) getFilteredAndSortedKeyQueries(r *fasthttp.RequestCtx) (kvPairs [][2][]byte, releaseFn func()) {
-	var filtered = pools.KeyValueSlicePool.Get().([][2][]byte)
+	var filtered = kvPool.Get().([][2][]byte)
 	releaseFn = func() {
 		filtered = filtered[:0]
-		pools.KeyValueSlicePool.Put(filtered)
+		kvPool.Put(filtered)
 	}
 	if cap(filtered) == 0 {
 		return filtered, releaseFn
@@ -534,11 +540,17 @@ func (e *Entry) getFilteredAndSortedKeyQueries(r *fasthttp.RequestCtx) (kvPairs 
 	return filtered, releaseFn
 }
 
+var hKvPool = sync.Pool{
+	New: func() interface{} {
+		return make([][2][]byte, 0, 32)
+	},
+}
+
 func (e *Entry) getFilteredAndSortedKeyHeaders(r *fasthttp.RequestCtx) (kvPairs [][2][]byte, releaseFn func()) {
-	var filtered = make([][2][]byte, 0, len(e.rule.CacheKey.HeadersBytes))
+	var filtered = hKvPool.Get().([][2][]byte)
 	releaseFn = func() {
 		filtered = filtered[:0]
-		pools.KeyValueSlicePool.Put(filtered)
+		hKvPool.Put(filtered)
 	}
 	if cap(filtered) == 0 {
 		return filtered, releaseFn
