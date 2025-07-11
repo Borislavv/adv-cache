@@ -208,7 +208,15 @@ func (e *Entry) calculateAndSetUpKeys(filteredQueries, filteredHeaders [][2][]by
 	return e
 }
 
-func (e *Entry) IsSameFingerprint(another *Entry) bool {
+func (e *Entry) Fingerprint() [16]byte {
+	return e.fingerprint
+}
+
+func (e *Entry) IsSameFingerprint(another [16]byte) bool {
+	return subtle.ConstantTimeCompare(e.fingerprint[:], another[:]) == 1
+}
+
+func (e *Entry) IsSame(another *Entry) bool {
 	return subtle.ConstantTimeCompare(e.fingerprint[:], another.fingerprint[:]) == 1
 }
 
