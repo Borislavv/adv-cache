@@ -7,7 +7,7 @@ import (
 
 const (
 	sketchDepth = 4
-	sketchWidth = 1 << 15 // 32K
+	sketchWidth = 1 << 17 // 131K
 )
 
 type countMinSketch struct {
@@ -31,7 +31,16 @@ func (c *countMinSketch) Increment(key uint64) {
 	}
 }
 
-func (c *countMinSketch) Estimate(key uint64) uint32 {
+func (c *countMinSketch) Reset() *countMinSketch {
+	for i := 0; i < sketchDepth; i++ {
+		for j := 0; j < sketchWidth; j++ {
+			atomic.StoreUint32(&c.table[i][j], 0)
+		}
+	}
+	return c
+}
+
+func (c *countMinSketch) estimate(key uint64) uint32 {
 	mins := ^uint32(0)
 	for i := 0; i < sketchDepth; i++ {
 		h := hash64(c.seeds[i], key)

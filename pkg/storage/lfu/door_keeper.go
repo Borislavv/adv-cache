@@ -35,3 +35,9 @@ func (d *doorkeeper) Allow(key uint64) bool {
 	atomic.OrUint64(&d.bits[h2/64], 1<<(h2%64))
 	return false
 }
+
+func (d *doorkeeper) Reset() {
+	for i := range d.bits {
+		atomic.StoreUint64(&d.bits[i], 0)
+	}
+}
