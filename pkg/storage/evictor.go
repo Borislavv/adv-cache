@@ -118,8 +118,6 @@ func (e *Evict) evictUntilWithinLimit() (items int, mem int64) {
 				items++
 				evictions++
 				mem += freedMem
-				// return all buffers back to pools
-				el.Value().Release()
 			}
 
 			offset++
