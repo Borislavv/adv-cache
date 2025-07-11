@@ -12,7 +12,7 @@ type Storage interface {
 
 	// Get attempts to retrieve a cached response for the given request.
 	// Returns the response, a releaser for safe concurrent access, and a hit/miss flag.
-	Get(key, shard uint64) (entry *model.Entry, isHit bool)
+	Get(*model.Entry) (entry *model.Entry, isHit bool)
 
 	// GetRand returns a random elem from the map.
 	GetRand() (*model.Entry, bool)
