@@ -88,18 +88,20 @@ func (shard *Shard[V]) Get(entry V) (val V, isHit bool) {
 // Returns (memory_freed, pointer_to_list_element, was_found).
 func (shard *Shard[V]) Remove(key uint64) (freed int64, isHit bool) {
 	shard.Lock()
+	defer shard.Unlock()
 	v, ok := shard.items[key]
 	if ok {
 		delete(shard.items, key)
-		shard.Unlock()
 
 		weight := v.Weight()
 		atomic.AddInt64(&shard.len, -1)
 		atomic.AddInt64(&shard.mem, -weight)
 
+		// return all buffers back to pools
+		v.Release() // it's safe due to we are here alone, no one else could be here inside positive
+
 		return weight, true
 	}
-	shard.Unlock()
 
 	return 0, false
 }

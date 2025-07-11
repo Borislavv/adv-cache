@@ -18,6 +18,7 @@ const ActiveShards uint64 = 2047 // 2047 active shards
 type Value interface {
 	types.Keyed
 	types.Sized
+	types.Released
 }
 
 // Map is a sharded concurrent map for high-performance caches.
