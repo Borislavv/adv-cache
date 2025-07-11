@@ -63,12 +63,9 @@ func (s *Storage) Run() {
 // Get retrieves a response by request and bumps its Storage position.
 // Returns: (response, releaser, found).
 func (s *Storage) Get(entry *model.Entry) (*model.Entry, bool) {
-	resp, found := s.shardedMap.Get(entry.MapKey(), entry.ShardKey())
-	if found {
-		if resp.IsSameFingerprint(entry) {
-			s.touch(resp)
-			return resp, true
-		}
+	if resp, found := s.shardedMap.Get(entry); found {
+		s.touch(resp)
+		return resp, true
 	}
 	return nil, false
 }
@@ -79,25 +76,21 @@ func (s *Storage) GetRand() (*model.Entry, bool) {
 
 // Set inserts or updates a response in the cache, updating Weight usage and Storage position.
 func (s *Storage) Set(new *model.Entry) {
-	key := new.MapKey()
-	shardKey := new.ShardKey()
-
 	// Track access frequency
-	s.tinyLFU.Increment(key)
+	s.tinyLFU.Increment(new.MapKey())
 
-	existing, found := s.shardedMap.Get(key, shardKey)
-	if found {
-		s.update(existing)
+	// Attempt to find entry in cache, if found then touch and return it
+	if entry, isHit := s.shardedMap.Get(new); isHit {
+		s.update(entry)
 		return
 	}
 
 	// Admission control: if memory is over threshold, evaluate before inserting
 	if s.ShouldEvict() {
-		victim, ok := s.balancer.FindVictim(shardKey)
-		if !ok {
+		if victim, ok := s.balancer.FindVictim(new.ShardKey()); !ok {
+			// Victim not found (cannot write beyond memory limit)
 			return
-		}
-		if victim != nil && !s.tinyLFU.Admit(new, victim) {
+		} else if victim != nil && !s.tinyLFU.Admit(new, victim) {
 			// New item is less frequent than victim, skip insertion
 			return
 		}

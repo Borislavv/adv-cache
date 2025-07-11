@@ -55,8 +55,8 @@ func (smap *Map[V]) Set(value V) {
 
 // Get fetches a value and its releaser from the correct shard.
 // found==false means the value is absent.
-func (smap *Map[V]) Get(key uint64, shardKey uint64) (value V, found bool) {
-	return smap.shards[shardKey].Get(key)
+func (smap *Map[V]) Get(entry V) (value V, found bool) {
+	return smap.shards[entry.ShardKey()].Get(entry)
 }
 
 func (smap *Map[V]) Rnd() (value V, found bool) {
