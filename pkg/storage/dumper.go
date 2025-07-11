@@ -9,8 +9,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -121,16 +119,10 @@ func (d *Dump) Load(ctx context.Context) error {
 		return fmt.Errorf("no dump files found in %s", cfg.Dir)
 	}
 
-	latestTs := extractLatestTimestamp(files)
-	filesToLoad := filterFilesByTimestamp(files, latestTs)
-	if len(filesToLoad) == 0 {
-		return fmt.Errorf("no files for timestamp %s", latestTs)
-	}
-
 	var wg sync.WaitGroup
 	var successNum, errorNum int32
 
-	for _, file := range filesToLoad {
+	for _, file := range files {
 		wg.Add(1)
 		go func(file string) {
 			defer wg.Done()
@@ -185,30 +177,4 @@ func (d *Dump) Load(ctx context.Context) error {
 		return fmt.Errorf("load finished with %d errors", errorNum)
 	}
 	return nil
-}
-
-func extractLatestTimestamp(files []string) string {
-	var tsList []string
-	for _, f := range files {
-		parts := strings.Split(filepath.Base(f), "-")
-		if len(parts) >= 4 {
-			ts := strings.TrimSuffix(parts[len(parts)-1], ".dump")
-			tsList = append(tsList, ts)
-		}
-	}
-	sort.Strings(tsList)
-	if len(tsList) == 0 {
-		return ""
-	}
-	return tsList[len(tsList)-1]
-}
-
-func filterFilesByTimestamp(files []string, ts string) []string {
-	var out []string
-	for _, f := range files {
-		if strings.Contains(f, ts) {
-			out = append(out, f)
-		}
-	}
-	return out
 }
