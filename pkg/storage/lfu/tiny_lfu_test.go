@@ -15,7 +15,6 @@ func TestTinyLFUConcurrentUsage(t *testing.T) {
 
 	var wg sync.WaitGroup
 
-	// 10 воркеров параллельно дергают Increment
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
 		go func(id int) {
@@ -27,7 +26,6 @@ func TestTinyLFUConcurrentUsage(t *testing.T) {
 		}(i)
 	}
 
-	// 5 воркеров параллельно дергают Admit
 	for i := 0; i < 5; i++ {
 		wg.Add(1)
 		go func(id int) {

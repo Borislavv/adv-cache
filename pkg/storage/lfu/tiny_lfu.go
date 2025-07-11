@@ -7,6 +7,15 @@ import (
 	"time"
 )
 
+const (
+	ringBufferCapacity = 1 << 20
+	doorkeeperCapacity = 1 << 21
+	drainBatchSize     = ringBufferCapacity / 100 * 5 // 5% of whole ring buffer capacity
+	// max throughput:
+	//	need    -> max 150.000RPS -> 10 ticks per second then 150.000 / 10 = 15.000 (batch drain per iter)
+	//  current -> max 524.250RPS -> 52425 (batch drain per iter) * 10 (ticks per second)
+)
+
 type TinyLFU struct {
 	ring       *buffer.RingBuffer
 	sketch     *countMinSketch
@@ -15,24 +24,23 @@ type TinyLFU struct {
 
 func NewTinyLFU(ctx context.Context) *TinyLFU {
 	t := &TinyLFU{
-		ring:       buffer.NewRingBuffer(1 << 16),
 		sketch:     newCountMinSketch(),
-		doorkeeper: newDoorkeeper(1 << 18),
+		doorkeeper: newDoorkeeper(doorkeeperCapacity),
+		ring:       buffer.NewRingBuffer(ringBufferCapacity),
 	}
 	go t.run(ctx)
 	return t
 }
 
 func (t *TinyLFU) run(ctx context.Context) {
-	ticker := time.NewTicker(500 * time.Millisecond)
+	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			items := t.ring.Drain(1000)
-			for _, k := range items {
+			for _, k := range t.ring.Drain(drainBatchSize) {
 				t.sketch.Increment(k)
 			}
 		}
