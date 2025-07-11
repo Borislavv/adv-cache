@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"crypto/subtle"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/list"
@@ -58,17 +59,18 @@ func (e *Entry) Init() *Entry {
 	return e
 }
 
-//var (
-//	bufPool        = &sync.Pool{New: func() any { return new(bytes.Buffer) }}
-//	GzipBufferPool = &sync.Pool{New: func() any { return new(bytes.Buffer) }}
-//	GzipWriterPool = &sync.Pool{New: func() any {
-//		w, _ := gzip.NewWriterLevel(nil, gzip.BestSpeed)
-//		return w
-//	}}
-//	RuleNotFoundError = errors.New("rule not found")
-//)
-//
-//const gzipThreshold = 1024
+var (
+	bufPool        = &sync.Pool{New: func() any { return new(bytes.Buffer) }}
+	gzipBufferPool = &sync.Pool{New: func() any { return new(bytes.Buffer) }}
+	gzipWriterPool = &sync.Pool{New: func() any {
+		w, _ := gzip.NewWriterLevel(nil, gzip.BestSpeed)
+		return w
+	}}
+	hasherPool        = &sync.Pool{New: func() any { return xxh3.New() }}
+	ruleNotFoundError = errors.New("rule not found")
+)
+
+const gzipThreshold = 1024
 
 func (e *Entry) MapKey() uint64   { return e.key }
 func (e *Entry) ShardKey() uint64 { return e.shard }
@@ -79,7 +81,7 @@ type Releaser func()
 func NewEntry(cfg *config.Cache, r *fasthttp.RequestCtx) (*Entry, Releaser, error) {
 	rule := MatchRule(cfg, r.Path())
 	if rule == nil {
-		return nil, func() {}, RuleNotFoundError
+		return nil, func() {}, ruleNotFoundError
 	}
 
 	entry := EntriesPool.Get().(*Entry)
@@ -97,7 +99,7 @@ func NewEntry(cfg *config.Cache, r *fasthttp.RequestCtx) (*Entry, Releaser, erro
 func NewEntryManual(cfg *config.Cache, path, query []byte, headers [][2][]byte, revalidator Revalidator) (*Entry, Releaser, error) {
 	rule := MatchRule(cfg, path)
 	if rule == nil {
-		return nil, func() {}, RuleNotFoundError
+		return nil, func() {}, ruleNotFoundError
 	}
 
 	entry := EntriesPool.Get().(*Entry)
@@ -804,12 +806,6 @@ func EntryFromBytes(data []byte, cfg *config.Cache, backend repository.Backender
 	willUpdateAt := int64(binary.LittleEndian.Uint64(data[offset:]))
 	offset += 8
 
-	// Payload
-	payloadLen := binary.LittleEndian.Uint32(data[offset:])
-	offset += 4
-
-	payload := data[offset : offset+int(payloadLen)]
-
 	entry := &Entry{
 		key:          key,
 		shard:        shard,
@@ -825,14 +821,26 @@ func EntryFromBytes(data []byte, cfg *config.Cache, backend repository.Backender
 		entry.isCompressed = 1
 	}
 
-	bufCopy := make([]byte, len(payload))
-	copy(bufCopy, payload)
-	entry.payload.Store(&bufCopy)
+	// Payload
+	payloadLen := binary.LittleEndian.Uint32(data[offset:])
+	offset += 4
+	payload := data[offset : offset+int(payloadLen)]
+
+	entry.payload.Store(&payload)
 
 	return entry, nil
 }
 
-// Dangerous - exclusively for tests.
+func MatchRule(cfg *config.Cache, path []byte) *config.Rule {
+	for _, rule := range cfg.Cache.Rules {
+		if bytes.EqualFold(path, rule.PathBytes) {
+			return rule
+		}
+	}
+	return nil
+}
+
+// SetMapKey is really dangerous - must be used exclusively in tests.
 func (e *Entry) SetMapKey(key uint64) *Entry {
 	e.key = key
 	return e
