@@ -40,7 +40,6 @@ func TestTinyLFUConcurrentUsage(t *testing.T) {
 		}(i)
 	}
 
-	// немного дольше живет runTinyLFURunner
 	time.Sleep(2 * time.Second)
 
 	wg.Wait()

@@ -2,7 +2,6 @@ package lfu
 
 import (
 	"context"
-	"github.com/Borislavv/advanced-cache/pkg/buffer"
 	"github.com/Borislavv/advanced-cache/pkg/model"
 	"math/rand"
 	"testing"
@@ -38,30 +37,5 @@ func BenchmarkTinyLFUAdmit(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		tlfu.Admit(newEntry, oldEntry)
-	}
-}
-
-func BenchmarkRingBufferPush(b *testing.B) {
-	rb := buffer.NewRingBuffer(1 << 16)
-	keys := make([]uint64, b.N)
-	for i := 0; i < b.N; i++ {
-		keys[i] = rand.Uint64()
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		rb.Push(keys[i])
-	}
-}
-
-func BenchmarkRingBufferDrain(b *testing.B) {
-	rb := buffer.NewRingBuffer(1 << 16)
-	for i := 0; i < 100000; i++ {
-		rb.Push(uint64(i))
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = rb.Drain(1000)
 	}
 }
