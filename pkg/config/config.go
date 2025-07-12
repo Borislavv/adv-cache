@@ -38,6 +38,7 @@ type CacheBox struct {
 	Env         string        `yaml:"env"`
 	Enabled     bool          `yaml:"enabled"`
 	Logs        Logs          `yaml:"logs"`
+	ForceGC     ForceGC       `yaml:"forceGC"`
 	LifeTime    Lifetime      `yaml:"lifetime"`
 	Upstream    Upstream      `yaml:"upstream"`
 	Persistence Persistence   `yaml:"persistence"`
@@ -46,6 +47,11 @@ type CacheBox struct {
 	Refresh     Refresh       `yaml:"refresh"`
 	Storage     Storage       `yaml:"storage"`
 	Rules       []*Rule       `yaml:"rules"`
+}
+
+type ForceGC struct {
+	GCInterval        time.Duration `yaml:"gcInterval"`
+	FreeOsMemInterval time.Duration `yaml:"freeOsMemInterval"`
 }
 
 type Logs struct {
