@@ -6,6 +6,10 @@ cache:
     level: "info" # Any zerolog.Level.
     stats: true   # Should the statistic like num evictions, refreshes, rps, memory usage and so on be written in /std/out?
 
+  forceGC:
+    gcInterval: "5s"
+    freeOsMemInterval: "15s"
+
   lifetime:
     max_req_dur: "100ms"                # If a request lifetime is longer than 100ms then request will be canceled by context.
     escape_max_req_dur: "X-Google-Bot"  # If the header exists the timeout above will be skipped.
@@ -27,9 +31,9 @@ cache:
     size: 32212254720 # 32GB of maximum allowed memory for the in-memory cache (in bytes).
 
   refresh:
-    ttl: "1h"
-    error_ttl: "15m"
-    rate: 25        # Rate limiting reqs to backend per second.
+    ttl: "12h"
+    error_ttl: "3h"
+    rate: 1000        # Rate limiting reqs to backend per second.
     scan_rate: 10000  # Rate limiting of num scans items per second.
     beta: 0.4         # Controls randomness in refresh timing to avoid thundering herd (from 0 to 1).
 
