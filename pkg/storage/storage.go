@@ -26,6 +26,9 @@ type Storage interface {
 	// Stat returns bytes usage and num of items in storage.
 	Stat() (bytes int64, length int64)
 
+	// Len - return stored value (refreshes every 100ms).
+	Len() int64
+
 	// Mem - return stored value (refreshes every 100ms).
 	Mem() int64
 
