@@ -130,7 +130,7 @@ func (c *Cache) run() *Cache {
 	c.evictor.Run()
 	c.refresher.Run()
 	c.runMetricsWriter()
-	gc.Run(c.ctx)
+	gc.Run(c.ctx, c.cfg.Cache)
 
 	return c
 }
