@@ -167,9 +167,14 @@ func (s *Storage) Remove(entry *model.Entry) (freedBytes int64, isHit bool) {
 	return s.shardedMap.Remove(entry.MapKey())
 }
 
+func (s *Storage) Len() int64 {
+	return s.shardedMap.Len()
+}
+
 func (s *Storage) Mem() int64 {
 	return s.shardedMap.Mem() + s.balancer.Mem()
 }
+
 func (s *Storage) RealMem() int64 {
 	return s.shardedMap.RealMem()
 }
