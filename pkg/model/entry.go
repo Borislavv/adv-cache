@@ -87,10 +87,10 @@ func NewEntryNetHttp(cfg *config.Cache, r *http.Request) (*Entry, Releaser, erro
 	entry := EntriesPool.Get().(*Entry)
 	entry.rule = rule
 
-	filteredQueries, queriesReleaser := entry.getFilteredAndSortedKeyQueriesNetHttp(r)
+	filteredQueries, queriesReleaser := entry.GetFilteredAndSortedKeyQueriesNetHttp(r)
 	defer queriesReleaser()
 
-	filteredHeaders, headersReleaser := entry.getFilteredAndSortedKeyHeadersNetHttp(r)
+	filteredHeaders, headersReleaser := entry.GetFilteredAndSortedKeyHeadersNetHttp(r)
 	defer headersReleaser()
 
 	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), entry.Release, nil
@@ -239,7 +239,7 @@ func (e *Entry) SetRevalidator(revalidator Revalidator) {
 	e.revalidator = revalidator
 }
 
-// SetPayload packs and gzip-compresses the entire payload: Path, Query, QueryHeaders, Status, ResponseHeaders, Body.
+// SetPayload packs and gzip-compresses the entire payload: Path, Query, QueryHeaders, StatusCode, ResponseHeaders, Body.
 func (e *Entry) SetPayload(
 	path, query []byte,
 	queryHeaders [][2][]byte,
@@ -301,7 +301,7 @@ func (e *Entry) SetPayload(
 		offset += len(kv[1])
 	}
 
-	// Status
+	// StatusCode
 	binary.LittleEndian.PutUint32(scratch[:], uint32(status))
 	payloadBuf = append(payloadBuf, scratch[:]...)
 
@@ -416,7 +416,7 @@ func (e *Entry) Payload() (
 		queryHeaders = append(queryHeaders, [2][]byte{k, v})
 	}
 
-	// --- Status
+	// --- StatusCode
 	status = int(binary.LittleEndian.Uint32(rawPayload[offset:]))
 	offset += 4
 
@@ -567,7 +567,7 @@ func (e *Entry) getFilteredAndSortedKeyQueriesFastHttp(r *fasthttp.RequestCtx) (
 	}
 }
 
-func (e *Entry) getFilteredAndSortedKeyQueriesNetHttp(r *http.Request) (kvPairs [][2][]byte, releaseFn func()) {
+func (e *Entry) GetFilteredAndSortedKeyQueriesNetHttp(r *http.Request) (kvPairs [][2][]byte, releaseFn func()) {
 	// r.URL.RawQuery - is static immutable string, therefor we can easily refer to it without any allocations.
 	filtered, queryReleaser := parseQuery(unsafe.Slice(unsafe.StringData(r.URL.RawQuery), len(r.URL.RawQuery)))
 
@@ -607,7 +607,7 @@ func (e *Entry) getFilteredAndSortedKeyHeadersFastHttp(r *fasthttp.RequestCtx) (
 	}
 }
 
-func (e *Entry) getFilteredAndSortedKeyHeadersNetHttp(r *http.Request) (kvPairs [][2][]byte, releaseFn func()) {
+func (e *Entry) GetFilteredAndSortedKeyHeadersNetHttp(r *http.Request) (kvPairs [][2][]byte, releaseFn func()) {
 	var filtered = hKvPool.Get().([][2][]byte)
 
 	for key, values := range r.Header {
@@ -889,7 +889,7 @@ func (e *Entry) DumpPayload() {
 
 	fmt.Printf("Path:   %q\n", string(path))
 	fmt.Printf("Query:  %q\n", string(query))
-	fmt.Printf("Status: %d\n", status)
+	fmt.Printf("StatusCode: %d\n", status)
 
 	fmt.Printf("\nQuery Headers:\n")
 	if len(queryHeaders) == 0 {
