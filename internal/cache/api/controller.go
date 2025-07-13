@@ -113,8 +113,8 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 			return
 		}
 		entry.SetPayload(path, queryString, queryHeaders, headers, body, status)
-
 		entry.SetRevalidator(c.backend.RevalidatorMaker())
+
 		c.cache.Set(entry)
 		value = entry
 	} else {
