@@ -20,6 +20,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -52,10 +53,8 @@ type Entry struct {
 }
 
 func (e *Entry) Init() *Entry {
-	e.lruListElem = &atomic.Pointer[list.Element[*Entry]]{}
 	e.payload = &atomic.Pointer[[]byte]{}
-	payload := make([]byte, 0, 8)
-	e.payload.Store(&payload)
+	e.lruListElem = &atomic.Pointer[list.Element[*Entry]]{}
 	return e
 }
 
@@ -77,8 +76,28 @@ func (e *Entry) ShardKey() uint64 { return e.shard }
 
 type Releaser func()
 
-// NewEntry accepts path, query and request headers as bytes slices.
-func NewEntry(cfg *config.Cache, r *fasthttp.RequestCtx) (*Entry, Releaser, error) {
+// NewEntryNetHttp accepts path, query and request headers as bytes slices.
+func NewEntryNetHttp(cfg *config.Cache, r *http.Request) (*Entry, Releaser, error) {
+	// path is a string in net/http so easily refer to it inside request
+	rule := MatchRuleStr(cfg, r.URL.Path)
+	if rule == nil {
+		return nil, func() {}, ruleNotFoundError
+	}
+
+	entry := EntriesPool.Get().(*Entry)
+	entry.rule = rule
+
+	filteredQueries, queriesReleaser := entry.getFilteredAndSortedKeyQueriesNetHttp(r)
+	defer queriesReleaser()
+
+	filteredHeaders, headersReleaser := entry.getFilteredAndSortedKeyHeadersNetHttp(r)
+	defer headersReleaser()
+
+	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), entry.Release, nil
+}
+
+// NewEntryFastHttp accepts path, query and request headers as bytes slices.
+func NewEntryFastHttp(cfg *config.Cache, r *fasthttp.RequestCtx) (*Entry, Releaser, error) {
 	rule := MatchRule(cfg, r.Path())
 	if rule == nil {
 		return nil, func() {}, ruleNotFoundError
@@ -87,10 +106,10 @@ func NewEntry(cfg *config.Cache, r *fasthttp.RequestCtx) (*Entry, Releaser, erro
 	entry := EntriesPool.Get().(*Entry)
 	entry.rule = rule
 
-	filteredQueries, queriesReleaser := entry.getFilteredAndSortedKeyQueries(r)
+	filteredQueries, queriesReleaser := entry.getFilteredAndSortedKeyQueriesFastHttp(r)
 	defer queriesReleaser()
 
-	filteredHeaders, headersReleaser := entry.getFilteredAndSortedKeyHeaders(r)
+	filteredHeaders, headersReleaser := entry.getFilteredAndSortedKeyHeadersFastHttp(r)
 	defer headersReleaser()
 
 	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), entry.Release, nil
@@ -128,24 +147,23 @@ func NewEntryManual(cfg *config.Cache, path, query []byte, headers [][2][]byte, 
 func NewEntryFromField(
 	key uint64,
 	shard uint64,
+	fingerprint [16]byte,
 	payload []byte,
 	rule *config.Rule,
 	revalidator Revalidator,
 	isCompressed int64,
 	willUpdateAt int64,
 ) *Entry {
-	e := &Entry{
-		key:          key,
-		shard:        shard,
-		rule:         rule,
-		payload:      &atomic.Pointer[[]byte]{},
-		lruListElem:  &atomic.Pointer[list.Element[*Entry]]{},
-		revalidator:  revalidator,
-		isCompressed: isCompressed,
-		willUpdateAt: willUpdateAt,
-	}
-	e.payload.Store(&payload)
-	return e
+	entry := EntriesPool.Get().(*Entry)
+	entry.key = key
+	entry.shard = shard
+	entry.fingerprint = fingerprint
+	entry.rule = rule
+	entry.payload.Store(&payload)
+	entry.revalidator = revalidator
+	entry.isCompressed = isCompressed
+	entry.willUpdateAt = willUpdateAt
+	return entry
 }
 
 // Release used as a Releaser and returns buffers back to pools.
@@ -157,10 +175,7 @@ func (e *Entry) Release() {
 	e.isCompressed = 0
 	e.revalidator = nil
 	e.lruListElem.Store(nil)
-
-	payload := e.payload.Load()
-	*payload = (*payload)[:0]
-	e.payload.Store(payload)
+	e.payload.Store(nil)
 
 	EntriesPool.Put(e)
 }
@@ -347,15 +362,15 @@ func (e *Entry) Payload() (
 	releaseFn func(),
 	err error,
 ) {
-	payloadPtr := e.payload.Load()
-	if payloadPtr == nil {
-		return nil, nil, nil, nil, nil, 0, emptyFn, fmt.Errorf("payload is nil")
+	payload := e.PayloadBytes()
+	if len(payload) == 0 {
+		return nil, nil, nil, nil, nil, 0, emptyFn, fmt.Errorf("payload is empty")
 	}
 
 	var rawPayload []byte
 	if atomic.LoadInt64(&e.isCompressed) == 1 {
 		// TODO need to move it to sync.Pool
-		gr, err := gzip.NewReader(bytes.NewReader(*payloadPtr))
+		gr, err := gzip.NewReader(bytes.NewReader(payload))
 		if err != nil {
 			return nil, nil, nil, nil, nil, 0, emptyFn, fmt.Errorf("make gzip reader error: %w", err)
 		}
@@ -366,7 +381,7 @@ func (e *Entry) Payload() (
 			return nil, nil, nil, nil, nil, 0, emptyFn, fmt.Errorf("gzip read failed: %w", err)
 		}
 	} else {
-		rawPayload = *payloadPtr
+		rawPayload = payload
 	}
 
 	offset := 0
@@ -445,11 +460,16 @@ func (e *Entry) Rule() *config.Rule {
 }
 
 func (e *Entry) PayloadBytes() []byte {
-	return *e.payload.Load()
+	var payload []byte
+	ptr := e.payload.Load()
+	if ptr != nil {
+		return *ptr
+	}
+	return payload
 }
 
 func (e *Entry) Weight() int64 {
-	return int64(unsafe.Sizeof(*e)) + int64(cap(*e.payload.Load()))
+	return int64(unsafe.Sizeof(*e)) + int64(cap(e.PayloadBytes()))
 }
 
 func (e *Entry) IsCompressed() bool {
@@ -524,15 +544,9 @@ var kvPool = sync.Pool{
 	},
 }
 
-func (e *Entry) getFilteredAndSortedKeyQueries(r *fasthttp.RequestCtx) (kvPairs [][2][]byte, releaseFn func()) {
+func (e *Entry) getFilteredAndSortedKeyQueriesFastHttp(r *fasthttp.RequestCtx) (kvPairs [][2][]byte, releaseFn func()) {
 	var filtered = kvPool.Get().([][2][]byte)
-	releaseFn = func() {
-		filtered = filtered[:0]
-		kvPool.Put(filtered)
-	}
-	if cap(filtered) == 0 {
-		return filtered, releaseFn
-	}
+
 	r.QueryArgs().All()(func(key, value []byte) bool {
 		for _, ak := range e.rule.CacheKey.QueryBytes {
 			if bytes.HasPrefix(key, ak) {
@@ -542,10 +556,26 @@ func (e *Entry) getFilteredAndSortedKeyQueries(r *fasthttp.RequestCtx) (kvPairs 
 		}
 		return true
 	})
+
 	sort.Slice(filtered, func(i, j int) bool {
 		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
 	})
-	return filtered, releaseFn
+
+	return filtered, func() {
+		filtered = filtered[:0]
+		kvPool.Put(filtered)
+	}
+}
+
+func (e *Entry) getFilteredAndSortedKeyQueriesNetHttp(r *http.Request) (kvPairs [][2][]byte, releaseFn func()) {
+	// r.URL.RawQuery - is static immutable string, therefor we can easily refer to it without any allocations.
+	filtered, queryReleaser := parseQuery(unsafe.Slice(unsafe.StringData(r.URL.RawQuery), len(r.URL.RawQuery)))
+
+	sort.Slice(filtered, func(i, j int) bool {
+		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
+	})
+
+	return filtered, queryReleaser
 }
 
 var hKvPool = sync.Pool{
@@ -554,15 +584,9 @@ var hKvPool = sync.Pool{
 	},
 }
 
-func (e *Entry) getFilteredAndSortedKeyHeaders(r *fasthttp.RequestCtx) (kvPairs [][2][]byte, releaseFn func()) {
+func (e *Entry) getFilteredAndSortedKeyHeadersFastHttp(r *fasthttp.RequestCtx) (kvPairs [][2][]byte, releaseFn func()) {
 	var filtered = hKvPool.Get().([][2][]byte)
-	releaseFn = func() {
-		filtered = filtered[:0]
-		hKvPool.Put(filtered)
-	}
-	if cap(filtered) == 0 {
-		return filtered, releaseFn
-	}
+
 	r.Request.Header.All()(func(key, value []byte) bool {
 		for _, allowedKey := range e.rule.CacheKey.HeadersBytes {
 			if bytes.EqualFold(key, allowedKey) {
@@ -572,10 +596,37 @@ func (e *Entry) getFilteredAndSortedKeyHeaders(r *fasthttp.RequestCtx) (kvPairs 
 		}
 		return true
 	})
+
 	sort.Slice(filtered, func(i, j int) bool {
 		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
 	})
-	return filtered, releaseFn
+
+	return filtered, func() {
+		filtered = filtered[:0]
+		hKvPool.Put(filtered)
+	}
+}
+
+func (e *Entry) getFilteredAndSortedKeyHeadersNetHttp(r *http.Request) (kvPairs [][2][]byte, releaseFn func()) {
+	var filtered = hKvPool.Get().([][2][]byte)
+
+	for key, values := range r.Header {
+		for _, value := range values {
+			filtered = append(filtered, [2][]byte{
+				unsafe.Slice(unsafe.StringData(key), len(key)),
+				unsafe.Slice(unsafe.StringData(value), len(value)),
+			})
+		}
+	}
+
+	sort.Slice(filtered, func(i, j int) bool {
+		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
+	})
+
+	return filtered, func() {
+		filtered = filtered[:0]
+		hKvPool.Put(filtered)
+	}
 }
 
 // filteredAndSortedKeyQueriesInPlace - filters an input slice, be careful!
@@ -700,61 +751,11 @@ func (e *Entry) Revalidate() error {
 	return nil
 }
 
-func (e *Entry) DumpPayload() {
-	path, query, queryHeaders, responseHeaders, body, status, releaseFn, err := e.Payload()
-	defer releaseFn()
-	if err != nil {
-		log.Error().Err(err).Msg("[dump] failed to unpack payload")
-		return
-	}
-
-	fmt.Printf("\n========== DUMP PAYLOAD ==========\n")
-	fmt.Printf("Key:          %d\n", e.key)
-	fmt.Printf("Shard:        %d\n", e.shard)
-	fmt.Printf("IsCompressed: %v\n", e.IsCompressed())
-	fmt.Printf("WillUpdateAt: %s\n", time.Unix(0, e.WillUpdateAt()).Format(time.RFC3339Nano))
-	fmt.Printf("----------------------------------\n")
-
-	fmt.Printf("Path:   %q\n", string(path))
-	fmt.Printf("Query:  %q\n", string(query))
-	fmt.Printf("Status: %d\n", status)
-
-	fmt.Printf("\nQuery Headers:\n")
-	if len(queryHeaders) == 0 {
-		fmt.Println("  (none)")
-	} else {
-		for i, kv := range queryHeaders {
-			fmt.Printf("  [%02d] %q : %q\n", i, kv[0], kv[1])
-		}
-	}
-
-	fmt.Printf("\nResponse Headers:\n")
-	if len(responseHeaders) == 0 {
-		fmt.Println("  (none)")
-	} else {
-		for i, kv := range responseHeaders {
-			fmt.Printf("  [%02d] %q : %q\n", i, kv[0], kv[1])
-		}
-	}
-
-	fmt.Printf("\nBody (%d bytes):\n", len(body))
-	if len(body) > 0 {
-		const maxLen = 500
-		if len(body) > maxLen {
-			fmt.Printf("  %q ... [truncated, total %d bytes]\n", body[:maxLen], len(body))
-		} else {
-			fmt.Printf("  %q\n", body)
-		}
-	}
-
-	fmt.Println("==================================")
-}
-
 func (e *Entry) ToBytes() []byte {
 	var scratch [4]byte
 
+	payload := e.PayloadBytes()
 	rulePath := e.Rule().PathBytes
-	payload := *e.payload.Load()
 
 	// === Calculate size ===
 	total := 4 + len(rulePath) + 8 + 8 + 16 + 1 + 8 + 4 + len(payload)
@@ -825,36 +826,26 @@ func EntryFromBytes(data []byte, cfg *config.Cache, backend repository.Backender
 	offset += 16
 
 	// IsCompressed
-	isCompressed := data[offset] == 1
+	compressed := data[offset] == 1
+	var isCompressed int64
+	if compressed {
+		isCompressed = 1
+	}
 	offset += 1
 
 	// WillUpdateAt
 	willUpdateAt := int64(binary.LittleEndian.Uint64(data[offset:]))
 	offset += 8
 
-	entry := &Entry{
-		key:          key,
-		shard:        shard,
-		fingerprint:  fp,
-		rule:         rule,
-		payload:      &atomic.Pointer[[]byte]{},
-		lruListElem:  &atomic.Pointer[list.Element[*Entry]]{},
-		revalidator:  backend.RevalidatorMaker(),
-		isCompressed: 0,
-		willUpdateAt: willUpdateAt,
-	}
-	if isCompressed {
-		entry.isCompressed = 1
-	}
-
 	// Payload
 	payloadLen := binary.LittleEndian.Uint32(data[offset:])
 	offset += 4
 	payload := data[offset : offset+int(payloadLen)]
 
-	entry.payload.Store(&payload)
-
-	return entry, nil
+	return NewEntryFromField(
+		key, shard, fp, payload, rule,
+		backend.RevalidatorMaker(), isCompressed, willUpdateAt,
+	), nil
 }
 
 func MatchRule(cfg *config.Cache, path []byte) *config.Rule {
@@ -866,8 +857,67 @@ func MatchRule(cfg *config.Cache, path []byte) *config.Rule {
 	return nil
 }
 
+func MatchRuleStr(cfg *config.Cache, path string) *config.Rule {
+	for _, rule := range cfg.Cache.Rules {
+		if strings.EqualFold(path, rule.Path) {
+			return rule
+		}
+	}
+	return nil
+}
+
 // SetMapKey is really dangerous - must be used exclusively in tests.
 func (e *Entry) SetMapKey(key uint64) *Entry {
 	e.key = key
 	return e
+}
+
+func (e *Entry) DumpPayload() {
+	path, query, queryHeaders, responseHeaders, body, status, releaseFn, err := e.Payload()
+	defer releaseFn()
+	if err != nil {
+		log.Error().Err(err).Msg("[dump] failed to unpack payload")
+		return
+	}
+
+	fmt.Printf("\n========== DUMP PAYLOAD ==========\n")
+	fmt.Printf("Key:          %d\n", e.key)
+	fmt.Printf("Shard:        %d\n", e.shard)
+	fmt.Printf("IsCompressed: %v\n", e.IsCompressed())
+	fmt.Printf("WillUpdateAt: %s\n", time.Unix(0, e.WillUpdateAt()).Format(time.RFC3339Nano))
+	fmt.Printf("----------------------------------\n")
+
+	fmt.Printf("Path:   %q\n", string(path))
+	fmt.Printf("Query:  %q\n", string(query))
+	fmt.Printf("Status: %d\n", status)
+
+	fmt.Printf("\nQuery Headers:\n")
+	if len(queryHeaders) == 0 {
+		fmt.Println("  (none)")
+	} else {
+		for i, kv := range queryHeaders {
+			fmt.Printf("  [%02d] %q : %q\n", i, kv[0], kv[1])
+		}
+	}
+
+	fmt.Printf("\nResponse Headers:\n")
+	if len(responseHeaders) == 0 {
+		fmt.Println("  (none)")
+	} else {
+		for i, kv := range responseHeaders {
+			fmt.Printf("  [%02d] %q : %q\n", i, kv[0], kv[1])
+		}
+	}
+
+	fmt.Printf("\nBody (%d bytes):\n", len(body))
+	if len(body) > 0 {
+		const maxLen = 500
+		if len(body) > maxLen {
+			fmt.Printf("  %q ... [truncated, total %d bytes]\n", body[:maxLen], len(body))
+		} else {
+			fmt.Printf("  %q\n", body)
+		}
+	}
+
+	fmt.Println("==================================")
 }
