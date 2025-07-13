@@ -84,7 +84,7 @@ func (c *CacheController) queryHeaders(r *fasthttp.RequestCtx) (headers [][2][]b
 func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 	var from = time.Now()
 
-	entry, entryReleaser, err := model.NewEntry(c.cfg.Cache, r)
+	entry, entryReleaser, err := model.NewEntryFastHttp(c.cfg.Cache, r)
 	if err != nil {
 		c.respondThatServiceIsTemporaryUnavailable(err, r)
 		return
