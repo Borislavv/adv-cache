@@ -5,25 +5,25 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-func (middleware *CacheMiddleware) run(ctx context.Context) error {
+func (m *CacheMiddleware) run(ctx context.Context) error {
 	log.Info().Msg("[advanced-cache] starting")
 
-	middleware.ctx = ctx
+	m.ctx = ctx
 
-	if err := middleware.loadConfig(); err != nil {
+	if err := m.loadConfig(); err != nil {
 		return err
 	}
 
-	middleware.setUpCache()
+	m.setUpCache()
 
-	if err := middleware.loadDump(); err != nil {
+	if err := m.loadDump(); err != nil {
 		log.Error().Err(err).Msg("[dump] failed to load")
 	}
 
-	middleware.store.Run()
-	middleware.evictor.Run()
-	middleware.refresher.Run()
-	middleware.runControllerLogger()
+	m.store.Run()
+	m.evictor.Run()
+	m.refresher.Run()
+	m.runControllerLogger()
 
 	log.Info().Msg("[advanced-cache] has been started")
 
