@@ -3,18 +3,20 @@ package middleware
 import (
 	"context"
 	"github.com/Borislavv/advanced-cache/pkg/config"
+	"github.com/Borislavv/advanced-cache/pkg/header"
 	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
+	httpwriter "github.com/Borislavv/advanced-cache/pkg/writer"
 	"net/http"
 	"sync/atomic"
 	"time"
+	"unsafe"
 )
 
 var (
 	contentTypeKey       = "Content-Type"
 	applicationJsonValue = "application/json"
-	lastModifiedKey      = "Last-Modified"
 )
 
 type TraefikCacheMiddleware struct {
@@ -45,50 +47,92 @@ func New(ctx context.Context, next http.Handler, name string) http.Handler {
 	return cacheMiddleware
 }
 
-func (middleware *TraefikCacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (m *TraefikCacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	from := time.Now()
 
-	// Build request (return error on rule missing for current path)
-	req, err := model.NewRequestFromNetHttp(middleware.cfg, r)
+	entry, releaser, err := model.NewEntryNetHttp(m.cfg, r)
+	defer releaser()
 	if err != nil {
-		// If path does not match then process request manually without cache
-		middleware.next.ServeHTTP(w, r)
+		// Path was not matched, then handle request through upstream without cache.
+		m.next.ServeHTTP(w, r)
 		return
 	}
 
-	resp, isHit := middleware.store.Get(req)
-	if !isHit {
-		captured := newCaptureResponseWriter(w)
+	var (
+		status  int
+		headers [][2][]byte
+		body    []byte
+	)
 
-		// Handle request manually due to store it
-		middleware.next.ServeHTTP(captured, r)
+	value, found := m.store.Get(entry)
+	if !found {
+		// MISS — prepare capture writer
+		captured, releaseCapturer := httpwriter.NewCaptureResponseWriter(w)
+		defer releaseCapturer()
 
-		// Build new response
-		data := model.NewData(req.Rule(), captured.statusCode, captured.headers, captured.body.Bytes())
-		resp, _ = model.NewResponse(data, req, middleware.cfg, middleware.backend.RevalidatorMaker(req))
+		// Run downstream handler
+		m.next.ServeHTTP(captured, r)
 
-		// Store response in cache
-		middleware.store.Set(resp)
+		// path is immutable and used only inside request
+		path := unsafe.Slice(unsafe.StringData(r.URL.Path), len(r.URL.Path))
+
+		// query immutable and used only inside request
+		query := unsafe.Slice(unsafe.StringData(r.URL.RawQuery), len(r.URL.RawQuery))
+
+		// Get query headers from original request
+		queryHeaders, queryHeadersReleaser := entry.GetFilteredAndSortedKeyHeadersNetHttp(r)
+		defer queryHeadersReleaser()
+
+		var extractReleaser func()
+		status, headers, body, extractReleaser = captured.ExtractPayload()
+		defer extractReleaser()
+
+		// Save the response into the new entry
+		entry.SetPayload(path, query, queryHeaders, headers, body, status)
+		entry.SetRevalidator(m.backend.RevalidatorMaker())
+
+		m.store.Set(entry)
+
+		value = entry
 	} else {
-		// Write status code on hit
-		w.WriteHeader(resp.Data().StatusCode())
+		// Always read from cached value
+		var payloadReleaser func()
+		_, _, _, headers, body, status, payloadReleaser, err = value.Payload()
+		defer payloadReleaser()
+		if err != nil {
+			m.next.ServeHTTP(w, r)
 
-		// Write response data
-		_, _ = w.Write(resp.Data().Body())
+			// Error — prepare capture writer
+			captured, releaseCapturer := httpwriter.NewCaptureResponseWriter(w)
+			defer releaseCapturer()
 
-		// Apply custom http headers
-		for key, vv := range resp.Data().Headers() {
-			for _, value := range vv {
-				w.Header().Add(key, value)
-			}
+			var extractReleaser func()
+			status, headers, body, extractReleaser = captured.ExtractPayload()
+			defer extractReleaser()
 		}
 	}
 
-	// Apply standard http headers
-	w.Header().Add(contentTypeKey, applicationJsonValue)
-	w.Header().Add(lastModifiedKey, resp.RevalidatedAt().Format(http.TimeFormat))
+	// Write cached headers
+	for _, kv := range headers {
+		w.Header().Add(
+			unsafe.String(unsafe.SliceData(kv[0]), len(kv[0])),
+			unsafe.String(unsafe.SliceData(kv[1]), len(kv[1])),
+		)
+	}
 
-	// Record the duration in debug mode for metrics.
-	atomic.AddInt64(&middleware.count, 1)
-	atomic.AddInt64(&middleware.duration, time.Since(from).Nanoseconds())
+	// Last-Modified
+	header.SetLastModified(w, value, status)
+
+	// Content-Type
+	w.Header().Set(contentTypeKey, applicationJsonValue)
+
+	// StatusCode-code
+	w.WriteHeader(status)
+
+	// Write a response body
+	_, _ = w.Write(body)
+
+	// Metrics
+	atomic.AddInt64(&m.count, 1)
+	atomic.AddInt64(&m.duration, time.Since(from).Nanoseconds())
 }
