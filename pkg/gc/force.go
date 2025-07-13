@@ -49,7 +49,6 @@ func Run(ctx context.Context, cfg *config.Cache) {
 		)
 
 		var lastAlloc uint64
-
 		for {
 			select {
 			case <-ctx.Done():
@@ -59,7 +58,6 @@ func Run(ctx context.Context, cfg *config.Cache) {
 			case <-gcTicker.C:
 				log.Info().Msgf("[force-GC] forcing GC walkthrough")
 				runtime.GC()
-
 			case <-freeOssMemTicker.C:
 				var mem runtime.MemStats
 				runtime.ReadMemStats(&mem)
