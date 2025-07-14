@@ -251,7 +251,7 @@ func (e *Entry) SetPayload(
 	numResponseHeaders := len(headers)
 
 	// === 1) Calculate total size ===
-	total := 0
+	total := 1
 	total += 4 + len(path)
 	total += 4 + len(query)
 	total += 4
@@ -281,8 +281,9 @@ func (e *Entry) SetPayload(
 	offset += len(path)
 
 	// Query
-	binary.LittleEndian.PutUint32(scratch[:], uint32(len(query)))
+	binary.LittleEndian.PutUint32(scratch[:], uint32(len(query)+1))
 	payloadBuf = append(payloadBuf, scratch[:]...)
+	payloadBuf = append(payloadBuf, queryPrefix...)
 	payloadBuf = append(payloadBuf, query...)
 	offset += len(query)
 
