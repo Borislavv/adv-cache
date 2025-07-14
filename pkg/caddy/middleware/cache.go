@@ -59,8 +59,7 @@ func (m *CacheMiddleware) Provision(ctx caddy.Context) error {
 func (m *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	from := time.Now()
 
-	entry, releaser, err := model.NewEntryNetHttp(m.cfg, r)
-	defer releaser()
+	entry, reqEntryReleaser, err := model.NewEntryNetHttp(m.cfg, r)
 	if err != nil {
 		// Path was not matched, then handle request through upstream without cache.
 		return next.ServeHTTP(w, r)
@@ -108,6 +107,9 @@ func (m *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next
 
 		value = entry
 	} else {
+		// Release unnecessary more entry which was used as input request
+		reqEntryReleaser()
+
 		// Always read from cached value
 		var payloadReleaser func()
 		_, _, _, headers, body, status, payloadReleaser, err = value.Payload()
