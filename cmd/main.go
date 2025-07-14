@@ -4,7 +4,8 @@ import (
 	"context"
 	"github.com/Borislavv/advanced-cache/internal/cache"
 	"github.com/Borislavv/advanced-cache/internal/cache/config"
-	config2 "github.com/Borislavv/advanced-cache/pkg/config"
+	appconfig "github.com/Borislavv/advanced-cache/pkg/config"
+	"github.com/Borislavv/advanced-cache/pkg/gc"
 	"github.com/Borislavv/advanced-cache/pkg/k8s/probe/liveness"
 	"github.com/Borislavv/advanced-cache/pkg/shutdown"
 	"github.com/joho/godotenv"
@@ -63,7 +64,7 @@ func loadCfg() *config.Config {
 		panic(err)
 	}
 
-	cacheConfig, err := config2.LoadConfig(cfgPath.ConfigPath)
+	cacheConfig, err := appconfig.LoadConfig(cfgPath.ConfigPath)
 	if err != nil {
 		log.Err(err).Msg("[main] failed to load config from envs")
 		panic(err)
@@ -87,7 +88,7 @@ func main() {
 
 	// Setup gracefulShutdown shutdown handler (SIGTERM, SIGINT, etc).
 	gracefulShutdown := shutdown.NewGraceful(ctx, cancel)
-	gracefulShutdown.SetGracefulTimeout(time.Second * 300) // 9.0s
+	gracefulShutdown.SetGracefulTimeout(time.Minute * 5)
 
 	// Initialize liveness probe for Kubernetes/Cloud health checks.
 	probe := liveness.NewProbe(cfg.LivenessTimeout())
@@ -100,6 +101,10 @@ func main() {
 		gracefulShutdown.Add(1)
 		go app.Start(gracefulShutdown)
 	}
+
+	gcCtx, gcCancel := context.WithCancel(context.Background())
+	defer gcCancel()
+	go gc.Run(gcCtx, cfg.Cache)
 
 	// Listen for OS signals or context cancellation and wait for gracefulShutdown shutdown.
 	if err := gracefulShutdown.ListenCancelAndAwait(); err != nil {

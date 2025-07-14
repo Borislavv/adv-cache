@@ -6,7 +6,7 @@ import (
 	"github.com/spf13/viper"
 )
 
-func (middleware *TraefikCacheMiddleware) loadConfig() (*config.Cache, error) {
+func (m *TraefikCacheMiddleware) loadConfig() (*config.Cache, error) {
 	type configPath struct {
 		ConfigPath string `envconfig:"CACHE_CONFIG_PATH" mapstructure:"CACHE_CONFIG_PATH" default:"/config/config.dev.yaml"`
 	}

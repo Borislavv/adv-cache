@@ -6,18 +6,18 @@ import (
 	"time"
 )
 
-func (middleware *CacheMiddleware) loadDump() error {
-	if err := middleware.dumper.Load(middleware.ctx); err != nil {
+func (m *CacheMiddleware) loadDump() error {
+	if err := m.dumper.Load(m.ctx); err != nil {
 		return err
 	}
 
 	go func() {
-		<-middleware.ctx.Done()
+		<-m.ctx.Done()
 
 		dCtx, dCancel := context.WithTimeout(context.Background(), 9*time.Second)
 		defer dCancel()
 
-		if err := middleware.dumper.Dump(dCtx); err != nil {
+		if err := m.dumper.Dump(dCtx); err != nil {
 			log.Error().Err(err).Msg("[dump] failed to store dump")
 		}
 	}()

@@ -38,6 +38,7 @@ type CacheBox struct {
 	Env         string        `yaml:"env"`
 	Enabled     bool          `yaml:"enabled"`
 	Logs        Logs          `yaml:"logs"`
+	ForceGC     ForceGC       `yaml:"forceGC"`
 	LifeTime    Lifetime      `yaml:"lifetime"`
 	Upstream    Upstream      `yaml:"upstream"`
 	Persistence Persistence   `yaml:"persistence"`
@@ -46,6 +47,10 @@ type CacheBox struct {
 	Refresh     Refresh       `yaml:"refresh"`
 	Storage     Storage       `yaml:"storage"`
 	Rules       []*Rule       `yaml:"rules"`
+}
+
+type ForceGC struct {
+	Interval time.Duration `yaml:"interval"`
 }
 
 type Logs struct {
@@ -108,7 +113,13 @@ type Refresh struct {
 	MinStale time.Duration // computed=time.Duration(float64(TTL/ErrorTTL) * Beta)
 }
 
+type Gzip struct {
+	Enabled   bool `yaml:"enabled"`
+	Threshold int  `yaml:"threshold"`
+}
+
 type Rule struct {
+	Gzip       Gzip   `yaml:"gzip"`
 	Path       string `yaml:"path"`
 	PathBytes  []byte
 	TTL        time.Duration `yaml:"ttl"`       // TTL for this rule.

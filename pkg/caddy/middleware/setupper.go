@@ -9,12 +9,13 @@ import (
 	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
 )
 
-func (middleware *CacheMiddleware) setUpCache() {
-	shardedMap := sharded.NewMap[*model.Response](middleware.ctx, middleware.cfg.Cache.Preallocate.PerShard)
-	middleware.backend = repository.NewBackend(middleware.cfg)
-	balancer := lru.NewBalancer(middleware.ctx, shardedMap)
-	middleware.refresher = storage.NewRefresher(middleware.ctx, middleware.cfg, balancer)
-	middleware.store = lru.NewStorage(middleware.ctx, middleware.cfg, balancer, middleware.backend, lfu.NewTinyLFU(middleware.ctx), shardedMap)
-	middleware.dumper = storage.NewDumper(middleware.cfg, shardedMap, middleware.store, middleware.backend)
-	middleware.evictor = storage.NewEvictor(middleware.ctx, middleware.cfg, middleware.store, balancer)
+func (m *CacheMiddleware) setUpCache() {
+	shardedMap := sharded.NewMap[*model.Entry](m.ctx, m.cfg.Cache.Preallocate.PerShard)
+	m.backend = repository.NewBackend(m.cfg)
+	balancer := lru.NewBalancer(m.ctx, shardedMap)
+	tinyLFU := lfu.NewTinyLFU(m.ctx)
+	m.store = lru.NewStorage(m.ctx, m.cfg, balancer, m.backend, tinyLFU, shardedMap)
+	m.refresher = storage.NewRefresher(m.ctx, m.cfg, balancer, m.store)
+	m.dumper = storage.NewDumper(m.cfg, shardedMap, m.store, m.backend)
+	m.evictor = storage.NewEvictor(m.ctx, m.cfg, m.store, balancer)
 }

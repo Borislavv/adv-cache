@@ -3,15 +3,18 @@ package advancedcache
 import (
 	"context"
 	"github.com/Borislavv/advanced-cache/pkg/config"
+	"github.com/Borislavv/advanced-cache/pkg/header"
 	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
+	httpwriter "github.com/Borislavv/advanced-cache/pkg/writer"
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"net/http"
 	"sync/atomic"
 	"time"
+	"unsafe"
 )
 
 var _ caddy.Module = (*CacheMiddleware)(nil)
@@ -50,57 +53,107 @@ func (*CacheMiddleware) CaddyModule() caddy.ModuleInfo {
 	}
 }
 
-func (middleware *CacheMiddleware) Provision(ctx caddy.Context) error {
-	return middleware.run(ctx.Context)
+func (m *CacheMiddleware) Provision(ctx caddy.Context) error {
+	return m.run(ctx.Context)
 }
 
-func (middleware *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
+func (m *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	from := time.Now()
 
-	// Build request (return error on rule missing for current path)
-	req, err := model.NewRequestFromNetHttp(middleware.cfg, r)
+	entry, releaser, err := model.NewEntryNetHttp(m.cfg, r)
+	defer releaser()
 	if err != nil {
-		// If path does not match then process request manually without cache
+		// Path was not matched, then handle request through upstream without cache.
 		return next.ServeHTTP(w, r)
 	}
 
-	resp, isHit := middleware.store.Get(req)
-	if !isHit {
-		captured := newCaptureRW()
+	var (
+		status  int
+		headers [][2][]byte
+		body    []byte
+	)
 
-		// Handle request manually due to store it
+	value, found := m.store.Get(entry)
+	if !found {
+		// MISS — prepare capture writer
+		captured, releaseCapturer := httpwriter.NewCaptureResponseWriter(w)
+		defer releaseCapturer()
+
+		// Run downstream handler
 		if srvErr := next.ServeHTTP(captured, r); srvErr != nil {
-			captured.header = make(http.Header)
-			captured.body.Reset()
-			captured.status = http.StatusServiceUnavailable
-			captured.WriteHeader(captured.status)
+			captured.Reset()
+			captured.SetStatusCode(http.StatusServiceUnavailable)
+			captured.WriteHeader(captured.StatusCode())
 			_, _ = captured.Write(serviceTemporaryUnavailableBody)
 		}
 
-		// Build new response
-		data := model.NewData(req.Rule(), captured.status, captured.header, captured.body.Bytes())
-		resp, _ = model.NewResponse(data, req, middleware.cfg, middleware.backend.RevalidatorMaker(req))
-		middleware.store.Set(resp)
-	}
+		// path is immutable and used only inside request
+		path := unsafe.Slice(unsafe.StringData(r.URL.Path), len(r.URL.Path))
 
-	// Apply custom http headers
-	for key, vv := range resp.Data().Headers() {
-		for _, value := range vv {
-			w.Header().Add(key, value)
+		// query immutable and used only inside request
+		query := unsafe.Slice(unsafe.StringData(r.URL.RawQuery), len(r.URL.RawQuery))
+
+		// Get query headers from original request
+		queryHeaders, queryHeadersReleaser := entry.GetFilteredAndSortedKeyHeadersNetHttp(r)
+		defer queryHeadersReleaser()
+
+		var extractReleaser func()
+		status, headers, body, extractReleaser = captured.ExtractPayload()
+		defer extractReleaser()
+
+		// Save the response into the new entry
+		entry.SetPayload(path, query, queryHeaders, headers, body, status)
+		entry.SetRevalidator(m.backend.RevalidatorMaker())
+
+		m.store.Set(entry)
+
+		value = entry
+	} else {
+		// Always read from cached value
+		var payloadReleaser func()
+		_, _, _, headers, body, status, payloadReleaser, err = value.Payload()
+		defer payloadReleaser()
+		if err != nil {
+			// ERROR — prepare capture writer
+			captured, releaseCapturer := httpwriter.NewCaptureResponseWriter(w)
+			defer releaseCapturer()
+
+			if srvErr := next.ServeHTTP(captured, r); srvErr != nil {
+				captured.Reset()
+				captured.SetStatusCode(http.StatusServiceUnavailable)
+				captured.WriteHeader(captured.StatusCode())
+				_, _ = captured.Write(serviceTemporaryUnavailableBody)
+			}
+
+			var extractReleaser func()
+			status, headers, body, extractReleaser = captured.ExtractPayload()
+			defer extractReleaser()
 		}
 	}
 
-	// Apply standard http headers
-	w.Header().Add(contentTypeKey, applicationJsonValue)
-	w.Header().Add(lastModifiedKey, resp.RevalidatedAt().Format(http.TimeFormat))
-	w.WriteHeader(resp.Data().StatusCode())
+	// Write cached headers
+	for _, kv := range headers {
+		w.Header().Add(
+			unsafe.String(unsafe.SliceData(kv[0]), len(kv[0])),
+			unsafe.String(unsafe.SliceData(kv[1]), len(kv[1])),
+		)
+	}
 
-	// Write response data
-	_, _ = w.Write(resp.Data().Body())
+	// Last-Modified
+	header.SetLastModified(w, value, status)
 
-	// Record the duration in debug mode for metrics.
-	atomic.AddInt64(&middleware.count, 1)
-	atomic.AddInt64(&middleware.duration, time.Since(from).Nanoseconds())
+	// Content-Type
+	w.Header().Set(contentTypeKey, applicationJsonValue)
 
-	return err
+	// StatusCode-code
+	w.WriteHeader(status)
+
+	// Write a response body
+	_, _ = w.Write(body)
+
+	// Metrics
+	atomic.AddInt64(&m.count, 1)
+	atomic.AddInt64(&m.duration, time.Since(from).Nanoseconds())
+
+	return nil
 }

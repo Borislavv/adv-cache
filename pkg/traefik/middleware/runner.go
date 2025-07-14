@@ -2,31 +2,33 @@ package middleware
 
 import (
 	"context"
+	"github.com/Borislavv/advanced-cache/pkg/gc"
 	"github.com/rs/zerolog/log"
 )
 
-func (middleware *TraefikCacheMiddleware) run(ctx context.Context) error {
+func (m *TraefikCacheMiddleware) run(ctx context.Context) error {
 	log.Info().Msg("[advanced-cache] starting")
 
-	middleware.ctx = ctx
+	m.ctx = ctx
 
-	cfg, err := middleware.loadConfig()
+	cfg, err := m.loadConfig()
 	if err != nil {
 		log.Error().Err(err).Msg("[advanced-cache] failed to load config")
 		return err
 	}
-	middleware.cfg = cfg
+	m.cfg = cfg
 
-	middleware.setUpCache()
+	m.setUpCache()
 
-	if err := middleware.loadDump(); err != nil {
+	if err := m.loadDump(); err != nil {
 		log.Error().Err(err).Msg("[dump] failed to load")
 	}
 
-	middleware.store.Run()
-	middleware.evictor.Run()
-	middleware.refresher.Run()
-	middleware.runControllerLogger()
+	m.store.Run()
+	m.evictor.Run()
+	m.refresher.Run()
+	m.runControllerLogger()
+	gc.Run(ctx, cfg)
 
 	log.Info().Msg("[advanced-cache] has been started")
 

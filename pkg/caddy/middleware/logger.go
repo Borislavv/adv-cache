@@ -9,28 +9,28 @@ import (
 )
 
 // runControllerLogger runs a goroutine to periodically log RPS and avg duration per window, if debug enabled.
-func (middleware *CacheMiddleware) runControllerLogger() {
+func (m *CacheMiddleware) runControllerLogger() {
 	go func() {
-		t := utils.NewTicker(middleware.ctx, time.Second*5)
+		t := utils.NewTicker(m.ctx, time.Second*5)
 		for {
 			select {
-			case <-middleware.ctx.Done():
+			case <-m.ctx.Done():
 				return
 			case <-t:
-				middleware.logAndReset()
+				m.logAndReset()
 			}
 		}
 	}()
 }
 
 // logAndReset prints and resets stat counters for a given window (5s).
-func (middleware *CacheMiddleware) logAndReset() {
+func (m *CacheMiddleware) logAndReset() {
 	const secs int64 = 5
 
 	var (
 		avg string
-		cnt = atomic.LoadInt64(&middleware.count)
-		dur = time.Duration(atomic.LoadInt64(&middleware.duration))
+		cnt = atomic.LoadInt64(&m.count)
+		dur = time.Duration(atomic.LoadInt64(&m.duration))
 		rps = strconv.Itoa(int(cnt / secs))
 	)
 
@@ -42,7 +42,7 @@ func (middleware *CacheMiddleware) logAndReset() {
 
 	logEvent := log.Info()
 
-	if middleware.cfg.IsProd() {
+	if m.cfg.IsProd() {
 		logEvent.
 			Str("target", "controller").
 			Str("rps", rps).
@@ -53,6 +53,6 @@ func (middleware *CacheMiddleware) logAndReset() {
 
 	logEvent.Msgf("[controller][5s] served %d requests (rps: %s, avgDuration: %s)", cnt, rps, avg)
 
-	atomic.StoreInt64(&middleware.count, 0)
-	atomic.StoreInt64(&middleware.duration, 0)
+	atomic.StoreInt64(&m.count, 0)
+	atomic.StoreInt64(&m.duration, 0)
 }
