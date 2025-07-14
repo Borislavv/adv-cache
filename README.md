@@ -129,21 +129,19 @@ cache:
       cache_key:
         query: ['user', 'available', 'language', 'nodes'] # Match query parameters by prefix.
         headers:
-          - Accept-Encoding     # Обязательно! gzip / br / deflate.
-          - Accept-Language     # Если у тебя мультиязычный контент.
+          - Accept-Encoding   
+          - Accept-Language  
       cache_value:
         headers:
-          - Content-Type        # Тип ответа. Например: application/json.
-          - Content-Encoding    # Указывает, что тело сжатое (gzip, br).
-          - Cache-Control       # Если отдаёшь клиенту max-age, public/private.
-          - Vary                # Если ты варьируешь по Accept-Encoding или Accept-Language.
+          - Content-Type     
+          - Content-Encoding  
+          - Cache-Control      
+          - Vary                
           - Strict-Transport-Security
-          - Date
           - Content-Length
           - Cache-Control
           - X-Content-Digest
           - Age
-          - Server-Timing
 
     - path: "/api/v1/pagecontent"
       gzip:
