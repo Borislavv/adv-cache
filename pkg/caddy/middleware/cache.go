@@ -22,7 +22,6 @@ var _ caddy.Module = (*CacheMiddleware)(nil)
 var (
 	contentTypeKey                  = "Content-Type"
 	applicationJsonValue            = "application/json"
-	lastModifiedKey                 = "Last-Modified"
 	serviceTemporaryUnavailableBody = []byte(`{"error":{"message":"Service temporarily unavailable."}}`)
 )
 
