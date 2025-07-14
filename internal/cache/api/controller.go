@@ -228,7 +228,10 @@ func (c *CacheController) logAndReset() {
 			Str("avgDuration", avg)
 	}
 
-	logEvent.Msgf("[controller][5s] served %d requests (rps: %s, avgDuration: %s), hits: %d, misses: %d,", cnt, rps, avg, fnd.Load(), notFnd.Load())
+	logEvent.Msgf(
+		"[controller][5s] served %d requests (rps: %s, avgDuration: %s), hits: %d, misses: %d",
+		cnt, rps, avg, fnd.Load(), notFnd.Load(),
+	)
 
 	count.Store(0)
 	duration.Store(0)
