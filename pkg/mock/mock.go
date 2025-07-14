@@ -60,6 +60,7 @@ func GenerateSeqEntries(cfg *config.Cache, backend repository.Backender, path []
 func StreamSeqEntries(ctx context.Context, cfg *config.Cache, backend repository.Backender, path []byte, num int) <-chan *model.Entry {
 	outCh := make(chan *model.Entry, runtime.GOMAXPROCS(0)*4)
 	go func() {
+		defer close(outCh)
 		i := 0
 		for {
 			select {
@@ -70,7 +71,7 @@ func StreamSeqEntries(ctx context.Context, cfg *config.Cache, backend repository
 					return
 				}
 				query := make([]byte, 0, 512)
-				query = append(query, []byte("?project[id]=285")...)
+				query = append(query, []byte("project[id]=285")...)
 				query = append(query, []byte("&domain=1x001.com")...)
 				query = append(query, []byte("&language=en")...)
 				query = append(query, []byte("&choice[name]=betting")...)
