@@ -92,13 +92,16 @@ func (d *Dump) Dump(ctx context.Context) error {
 			bw := bufio.NewWriterSize(f, 512*1024)
 
 			shard.Walk(ctx, func(key uint64, entry *model.Entry) bool {
-				data := entry.ToBytes()
-				size := uint32(len(data))
+				data, releaser := entry.ToBytes()
+				defer releaser()
+
 				var scratch [4]byte
-				binary.LittleEndian.PutUint32(scratch[:], size)
+				binary.LittleEndian.PutUint32(scratch[:], uint32(len(data)))
 				bw.Write(scratch[:])
 				bw.Write(data)
+
 				atomic.AddInt32(&successNum, 1)
+
 				return true
 			}, true)
 

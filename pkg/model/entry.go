@@ -751,51 +751,57 @@ func (e *Entry) Revalidate() error {
 	return nil
 }
 
-func (e *Entry) ToBytes() []byte {
-	var scratch [4]byte
+func (e *Entry) ToBytes() (data []byte, releaseFn func()) {
+	var scratch8 [8]byte
+	var scratch4 [4]byte
 
 	payload := e.PayloadBytes()
 	rulePath := e.Rule().PathBytes
 
-	// === Calculate size ===
-	total := 4 + len(rulePath) + 8 + 8 + 16 + 1 + 8 + 4 + len(payload)
+	// Забираем buffer из пула и очищаем
+	buf := bufPool.Get().(*bytes.Buffer)
+	buf.Reset()
 
-	buf := make([]byte, 0, total)
-
-	// RulePath
-	binary.LittleEndian.PutUint32(scratch[:], uint32(len(rulePath)))
-	buf = append(buf, scratch[:]...)
-	buf = append(buf, rulePath...)
-
-	// Key
-	b := make([]byte, 8)
-	binary.LittleEndian.PutUint64(b, e.key)
-	buf = append(buf, b...)
-
-	// Shard
-	binary.LittleEndian.PutUint64(b, e.shard)
-	buf = append(buf, b...)
-
-	// Fingerprint
-	buf = append(buf, e.fingerprint[:]...)
-
-	// IsCompressed
-	if e.IsCompressed() {
-		buf = append(buf, 1)
-	} else {
-		buf = append(buf, 0)
+	// Определяем функцию Release
+	releaseFn = func() {
+		buf.Reset()
+		bufPool.Put(buf)
 	}
 
-	// WillUpdateAt
-	binary.LittleEndian.PutUint64(b, uint64(e.WillUpdateAt()))
-	buf = append(buf, b...)
+	// === RulePath ===
+	binary.LittleEndian.PutUint32(scratch4[:], uint32(len(rulePath)))
+	buf.Write(scratch4[:])
+	buf.Write(rulePath)
 
-	// Payload
-	binary.LittleEndian.PutUint32(scratch[:], uint32(len(payload)))
-	buf = append(buf, scratch[:]...)
-	buf = append(buf, payload...)
+	// === Key ===
+	binary.LittleEndian.PutUint64(scratch8[:], e.key)
+	buf.Write(scratch8[:])
 
-	return buf
+	// === Shard ===
+	binary.LittleEndian.PutUint64(scratch8[:], e.shard)
+	buf.Write(scratch8[:])
+
+	// === Fingerprint ===
+	buf.Write(e.fingerprint[:])
+
+	// === IsCompressed ===
+	if e.IsCompressed() {
+		buf.WriteByte(1)
+	} else {
+		buf.WriteByte(0)
+	}
+
+	// === WillUpdateAt ===
+	binary.LittleEndian.PutUint64(scratch8[:], uint64(e.WillUpdateAt()))
+	buf.Write(scratch8[:])
+
+	// === Payload ===
+	binary.LittleEndian.PutUint32(scratch4[:], uint32(len(payload)))
+	buf.Write(scratch4[:])
+	buf.Write(payload)
+
+	// Возвращаем готовый []byte и release
+	return buf.Bytes(), releaseFn
 }
 
 func EntryFromBytes(data []byte, cfg *config.Cache, backend repository.Backender) (*Entry, error) {
