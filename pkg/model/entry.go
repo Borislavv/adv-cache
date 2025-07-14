@@ -125,20 +125,9 @@ func NewEntryManual(cfg *config.Cache, path, query []byte, headers [][2][]byte, 
 	entry.rule = rule
 	entry.revalidator = revalidator
 
-	// initial request payload (response payload will be filled later)
-	entry.SetPayload(path, query, headers, nil, nil, 0)
+	filteredQueries, queriesReleaser := entry.parseAndFilterQuery(query) // here, we are referring to the same query buffer which used in payload which have been mentioned before
+	defer queriesReleaser()                                              // this is really reduce memory usage and GC pressure
 
-	// it's necessary due to have own query buffer inside entry, further below we will be referring to sub slices of query
-	_, payloadQuery, _, _, _, _, payloadReleaser, err := entry.Payload()
-	defer payloadReleaser()
-	if err != nil {
-		return nil, entry.Release, err
-	}
-
-	queries, queriesReleaser := parseQuery(payloadQuery) // here, we are referring to the same query buffer which used in payload which have been mentioned before
-	defer queriesReleaser()                              // this is really reduce memory usage and GC pressure
-
-	filteredQueries := entry.filteredAndSortedKeyQueriesInPlace(queries)
 	filteredHeaders := entry.filteredAndSortedKeyHeadersInPlace(headers)
 
 	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), entry.Release, nil
@@ -238,6 +227,8 @@ func (e *Entry) IsSame(another *Entry) bool {
 func (e *Entry) SetRevalidator(revalidator Revalidator) {
 	e.revalidator = revalidator
 }
+
+var queryPrefix = []byte("?")
 
 // SetPayload packs and gzip-compresses the entire payload: Path, Query, QueryHeaders, StatusCode, ResponseHeaders, Body.
 func (e *Entry) SetPayload(
@@ -481,7 +472,7 @@ func (e *Entry) WillUpdateAt() int64 {
 	return atomic.LoadInt64(&e.willUpdateAt)
 }
 
-func parseQuery(b []byte) (queries [][2][]byte, releaseFn func()) {
+func (e *Entry) parseAndFilterQuery(b []byte) (queries [][2][]byte, releaseFn func()) {
 	b = bytes.TrimLeft(b, "?")
 
 	queries = pools.KeyValueSlicePool.Get().([][2][]byte)
@@ -494,6 +485,7 @@ func parseQuery(b []byte) (queries [][2][]byte, releaseFn func()) {
 		vFound bool
 	}
 
+	// parsing
 	s := state{}
 	for idx, bt := range b {
 		if bt == '&' {
@@ -533,6 +525,22 @@ func parseQuery(b []byte) (queries [][2][]byte, releaseFn func()) {
 		queries = append(queries, [2][]byte{key, val})
 	}
 
+	// filtering
+	filtered := queries[:0]
+	for _, kv := range queries {
+		keep := false
+		for _, allowedKey := range e.rule.CacheKey.QueryBytes {
+			if bytes.HasPrefix(kv[0], allowedKey) {
+				keep = true
+				break
+			}
+		}
+		if keep {
+			filtered = append(filtered, kv)
+		}
+	}
+	queries = filtered
+
 	return queries, func() {
 		queries = queries[:0]
 		pools.KeyValueSlicePool.Put(queries)
@@ -546,15 +554,23 @@ var kvPool = sync.Pool{
 }
 
 func (e *Entry) getFilteredAndSortedKeyQueriesFastHttp(r *fasthttp.RequestCtx) (kvPairs [][2][]byte, releaseFn func()) {
-	var filtered = kvPool.Get().([][2][]byte)
+	filtered := kvPool.Get().([][2][]byte)
+	filtered = filtered[:0]
+
+	allowedKeys := e.rule.CacheKey.QueryBytes
 
 	r.QueryArgs().All()(func(key, value []byte) bool {
-		for _, ak := range e.rule.CacheKey.QueryBytes {
+		allowed := false
+		for _, ak := range allowedKeys {
 			if bytes.HasPrefix(key, ak) {
-				filtered = append(filtered, [2][]byte{key, value})
+				allowed = true
 				break
 			}
 		}
+		if !allowed {
+			return true
+		}
+		filtered = append(filtered, [2][]byte{key, value})
 		return true
 	})
 
@@ -570,7 +586,7 @@ func (e *Entry) getFilteredAndSortedKeyQueriesFastHttp(r *fasthttp.RequestCtx) (
 
 func (e *Entry) GetFilteredAndSortedKeyQueriesNetHttp(r *http.Request) (kvPairs [][2][]byte, releaseFn func()) {
 	// r.URL.RawQuery - is static immutable string, therefor we can easily refer to it without any allocations.
-	filtered, queryReleaser := parseQuery(unsafe.Slice(unsafe.StringData(r.URL.RawQuery), len(r.URL.RawQuery)))
+	filtered, queryReleaser := e.parseAndFilterQuery(unsafe.Slice(unsafe.StringData(r.URL.RawQuery), len(r.URL.RawQuery)))
 
 	sort.Slice(filtered, func(i, j int) bool {
 		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
@@ -586,15 +602,21 @@ var hKvPool = sync.Pool{
 }
 
 func (e *Entry) getFilteredAndSortedKeyHeadersFastHttp(r *fasthttp.RequestCtx) (kvPairs [][2][]byte, releaseFn func()) {
-	var filtered = hKvPool.Get().([][2][]byte)
+	filtered := hKvPool.Get().([][2][]byte)
+	allowedKeys := e.rule.CacheKey.HeadersBytes
 
 	r.Request.Header.All()(func(key, value []byte) bool {
-		for _, allowedKey := range e.rule.CacheKey.HeadersBytes {
+		allowed := false
+		for _, allowedKey := range allowedKeys {
 			if bytes.EqualFold(key, allowedKey) {
-				filtered = append(filtered, [2][]byte{key, value})
+				allowed = true
 				break
 			}
 		}
+		if !allowed {
+			return true
+		}
+		filtered = append(filtered, [2][]byte{key, value})
 		return true
 	})
 
@@ -609,14 +631,26 @@ func (e *Entry) getFilteredAndSortedKeyHeadersFastHttp(r *fasthttp.RequestCtx) (
 }
 
 func (e *Entry) GetFilteredAndSortedKeyHeadersNetHttp(r *http.Request) (kvPairs [][2][]byte, releaseFn func()) {
-	var filtered = hKvPool.Get().([][2][]byte)
+	filtered := hKvPool.Get().([][2][]byte)
+	allowedKeys := e.rule.CacheKey.HeadersBytes
 
-	for key, values := range r.Header {
-		for _, value := range values {
-			filtered = append(filtered, [2][]byte{
-				unsafe.Slice(unsafe.StringData(key), len(key)),
-				unsafe.Slice(unsafe.StringData(value), len(value)),
-			})
+	for key, vv := range r.Header {
+		keyBytes := unsafe.Slice(unsafe.StringData(key), len(key))
+
+		allowed := false
+		for _, allowedKey := range allowedKeys {
+			if bytes.EqualFold(keyBytes, allowedKey) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			continue
+		}
+
+		for _, value := range vv {
+			valBytes := unsafe.Slice(unsafe.StringData(value), len(value))
+			filtered = append(filtered, [2][]byte{keyBytes, valBytes})
 		}
 	}
 
