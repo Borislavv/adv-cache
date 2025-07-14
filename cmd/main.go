@@ -5,6 +5,7 @@ import (
 	"github.com/Borislavv/advanced-cache/internal/cache"
 	"github.com/Borislavv/advanced-cache/internal/cache/config"
 	appconfig "github.com/Borislavv/advanced-cache/pkg/config"
+	"github.com/Borislavv/advanced-cache/pkg/gc"
 	"github.com/Borislavv/advanced-cache/pkg/k8s/probe/liveness"
 	"github.com/Borislavv/advanced-cache/pkg/shutdown"
 	"github.com/joho/godotenv"
@@ -100,6 +101,10 @@ func main() {
 		gracefulShutdown.Add(1)
 		go app.Start(gracefulShutdown)
 	}
+
+	gcCtx, gcCancel := context.WithCancel(context.Background())
+	defer gcCancel()
+	go gc.Run(gcCtx, cfg.Cache)
 
 	// Listen for OS signals or context cancellation and wait for gracefulShutdown shutdown.
 	if err := gracefulShutdown.ListenCancelAndAwait(); err != nil {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"github.com/Borislavv/advanced-cache/internal/cache/config"
 	"github.com/Borislavv/advanced-cache/internal/cache/server"
-	"github.com/Borislavv/advanced-cache/pkg/gc"
 	"github.com/Borislavv/advanced-cache/pkg/k8s/probe/liveness"
 	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
@@ -130,7 +129,6 @@ func (c *Cache) run() *Cache {
 	c.evictor.Run()
 	c.refresher.Run()
 	c.runMetricsWriter()
-	gc.Run(c.ctx, c.cfg.Cache)
 
 	return c
 }
