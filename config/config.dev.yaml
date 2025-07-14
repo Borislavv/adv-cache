@@ -16,12 +16,12 @@ cache:
 
   upstream:
     url: "https://seo-master.lux.kube.xbet.lan" # downstream reverse proxy host:port
-    rate: 500                                   # Rate limiting reqs to backend per second.
+    rate: 80                                    # Rate limiting reqs to backend per second.
     timeout: "10s"                              # Timeout for requests to backend.
 
   preallocate:
     num_shards: 2048  # Fixed constant (see `NumOfShards` in code). Controls the number of sharded maps.
-    per_shard: 256   # Preallocated map size per shard. Without resizing, this supports 2048*8196=~16785408 keys in total.
+    per_shard: 256    # Preallocated map size per shard. Without resizing, this supports 2048*8196=~16785408 keys in total.
     # Note: this is an upper-bound estimate and may vary depending on hash distribution quality.
 
   eviction:
@@ -33,7 +33,7 @@ cache:
   refresh:
     ttl: "12h"
     error_ttl: "3h"
-    rate: 1000        # Rate limiting reqs to backend per second.
+    rate: 80          # Rate limiting reqs to backend per second.
     scan_rate: 10000  # Rate limiting of num scans items per second.
     beta: 0.4         # Controls randomness in refresh timing to avoid thundering herd (from 0 to 1).
 
