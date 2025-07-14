@@ -50,8 +50,7 @@ type CacheBox struct {
 }
 
 type ForceGC struct {
-	GCInterval        time.Duration `yaml:"gcInterval"`
-	FreeOsMemInterval time.Duration `yaml:"freeOsMemInterval"`
+	Interval time.Duration `yaml:"interval"`
 }
 
 type Logs struct {
