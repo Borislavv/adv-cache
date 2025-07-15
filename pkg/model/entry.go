@@ -168,22 +168,26 @@ func (e *Entry) Release() {
 	EntriesPool.Put(e)
 }
 
+var keysBufPool = sync.Pool{
+	New: func() interface{} {
+		return new(bytes.Buffer)
+	},
+}
+
 func (e *Entry) calculateAndSetUpKeys(filteredQueries, filteredHeaders [][2][]byte) *Entry {
-	l := 0
+	buf := keysBufPool.Get().(*bytes.Buffer)
+	defer func() {
+		buf.Reset()
+		keysBufPool.Put(buf)
+	}()
+
 	for _, pair := range filteredQueries {
-		l += len(pair[0]) + len(pair[1])
+		buf.Write(pair[0])
+		buf.Write(pair[1])
 	}
 	for _, pair := range filteredHeaders {
-		l += len(pair[0]) + len(pair[1])
-	}
-	buf := make([]byte, 0, l)
-	for _, pair := range filteredQueries {
-		buf = append(buf, pair[0]...)
-		buf = append(buf, pair[1]...)
-	}
-	for _, pair := range filteredHeaders {
-		buf = append(buf, pair[0]...)
-		buf = append(buf, pair[1]...)
+		buf.Write(pair[0])
+		buf.Write(pair[1])
 	}
 
 	hasher := hasherPool.Get().(*xxh3.Hasher)
@@ -193,7 +197,7 @@ func (e *Entry) calculateAndSetUpKeys(filteredQueries, filteredHeaders [][2][]by
 	}()
 
 	// calculate key hash
-	if _, err := hasher.Write(buf); err != nil {
+	if _, err := hasher.Write(buf.Bytes()); err != nil {
 		panic(err)
 	}
 	e.key = hasher.Sum64()
@@ -824,7 +828,8 @@ func EntryFromBytes(data []byte, cfg *config.Cache, backend repository.Backender
 
 	rule := MatchRule(cfg, rulePath)
 	if rule == nil {
-		return nil, fmt.Errorf("rule not found for path: %s", string(rulePath))
+		panic(string(data))
+		return nil, fmt.Errorf("rule not found for path: '%s'", string(rulePath))
 	}
 
 	// Key
