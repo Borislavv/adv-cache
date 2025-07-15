@@ -20,7 +20,6 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -34,7 +33,7 @@ var EntriesPool = sync.Pool{
 }
 
 type Revalidator func(
-	path []byte, query []byte, queryHeaders [][2][]byte,
+	rule *config.Rule, path []byte, query []byte, queryHeaders [][2][]byte,
 ) (
 	status int, headers [][2][]byte, body []byte, releaseFn func(), err error,
 )
@@ -603,20 +602,12 @@ var hKvPool = sync.Pool{
 
 func (e *Entry) getFilteredAndSortedKeyHeadersFastHttp(r *fasthttp.RequestCtx) (kvPairs [][2][]byte, releaseFn func()) {
 	filtered := hKvPool.Get().([][2][]byte)
-	allowedKeys := e.rule.CacheKey.HeadersBytes
+	allowedKeysMap := e.rule.CacheKey.HeadersMap
 
 	r.Request.Header.All()(func(key, value []byte) bool {
-		allowed := false
-		for _, allowedKey := range allowedKeys {
-			if bytes.EqualFold(key, allowedKey) {
-				allowed = true
-				break
-			}
+		if _, ok := allowedKeysMap[unsafe.String(unsafe.SliceData(key), len(key))]; ok {
+			filtered = append(filtered, [2][]byte{key, value})
 		}
-		if !allowed {
-			return true
-		}
-		filtered = append(filtered, [2][]byte{key, value})
 		return true
 	})
 
@@ -632,25 +623,16 @@ func (e *Entry) getFilteredAndSortedKeyHeadersFastHttp(r *fasthttp.RequestCtx) (
 
 func (e *Entry) GetFilteredAndSortedKeyHeadersNetHttp(r *http.Request) (kvPairs [][2][]byte, releaseFn func()) {
 	filtered := hKvPool.Get().([][2][]byte)
-	allowedKeys := e.rule.CacheKey.HeadersBytes
+	allowedKeysMap := e.rule.CacheKey.HeadersMap
 
 	for key, vv := range r.Header {
 		keyBytes := unsafe.Slice(unsafe.StringData(key), len(key))
 
-		allowed := false
-		for _, allowedKey := range allowedKeys {
-			if bytes.EqualFold(keyBytes, allowedKey) {
-				allowed = true
-				break
+		if _, ok := allowedKeysMap[key]; ok {
+			for _, value := range vv {
+				valBytes := unsafe.Slice(unsafe.StringData(value), len(value))
+				filtered = append(filtered, [2][]byte{keyBytes, valBytes})
 			}
-		}
-		if !allowed {
-			continue
-		}
-
-		for _, value := range vv {
-			valBytes := unsafe.Slice(unsafe.StringData(value), len(value))
-			filtered = append(filtered, [2][]byte{keyBytes, valBytes})
 		}
 	}
 
@@ -693,18 +675,10 @@ func (e *Entry) filteredAndSortedKeyQueriesInPlace(queries [][2][]byte) (kvPairs
 // filteredAndSortedKeyHeadersInPlace - filters an input slice, be careful!
 func (e *Entry) filteredAndSortedKeyHeadersInPlace(headers [][2][]byte) (kvPairs [][2][]byte) {
 	filtered := headers[:0]
-	allowed := e.rule.CacheKey.HeadersBytes
+	allowedMap := e.rule.CacheKey.HeadersMap
 
 	for _, pair := range headers {
-		key := pair[0]
-		keep := false
-		for _, ak := range allowed {
-			if bytes.EqualFold(key, ak) {
-				keep = true
-				break
-			}
-		}
-		if keep {
+		if _, ok := allowedMap[unsafe.String(unsafe.SliceData(pair[0]), len(pair[0]))]; ok {
 			filtered = append(filtered, pair)
 		}
 	}
@@ -770,7 +744,7 @@ func (e *Entry) Revalidate() error {
 		return err
 	}
 
-	statusCode, respHeaders, body, releaser, err := e.revalidator(path, query, headers)
+	statusCode, respHeaders, body, releaser, err := e.revalidator(e.rule, path, query, headers)
 	defer releaser()
 	if err != nil {
 		return err
@@ -890,19 +864,15 @@ func EntryFromBytes(data []byte, cfg *config.Cache, backend repository.Backender
 }
 
 func MatchRule(cfg *config.Cache, path []byte) *config.Rule {
-	for _, rule := range cfg.Cache.Rules {
-		if bytes.EqualFold(path, rule.PathBytes) {
-			return rule
-		}
+	if rule, ok := cfg.Cache.Rules[unsafe.String(unsafe.SliceData(path), len(path))]; ok {
+		return rule
 	}
 	return nil
 }
 
 func MatchRuleStr(cfg *config.Cache, path string) *config.Rule {
-	for _, rule := range cfg.Cache.Rules {
-		if strings.EqualFold(path, rule.Path) {
-			return rule
-		}
+	if rule, ok := cfg.Cache.Rules[path]; ok {
+		return rule
 	}
 	return nil
 }

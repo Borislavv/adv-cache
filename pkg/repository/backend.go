@@ -41,13 +41,13 @@ var transport = &http.Transport{
 // Backender defines the interface for a repository that provides SEO page data.
 type Backender interface {
 	Fetch(
-		path []byte, query []byte, queryHeaders [][2][]byte,
+		rule *config.Rule, path []byte, query []byte, queryHeaders [][2][]byte,
 	) (
 		status int, headers [][2][]byte, body []byte, releaseFn func(), err error,
 	)
 
 	RevalidatorMaker() func(
-		path []byte, query []byte, queryHeaders [][2][]byte,
+		rule *config.Rule, path []byte, query []byte, queryHeaders [][2][]byte,
 	) (
 		status int, headers [][2][]byte, body []byte, releaseFn func(), err error,
 	)
@@ -74,25 +74,25 @@ func NewBackend(cfg *config.Cache) *Backend {
 }
 
 func (s *Backend) Fetch(
-	path []byte, query []byte, queryHeaders [][2][]byte,
+	rule *config.Rule, path []byte, query []byte, queryHeaders [][2][]byte,
 ) (
 	status int, headers [][2][]byte, body []byte, releaseFn func(), err error,
 ) {
-	return s.requestExternalBackend(path, query, queryHeaders)
+	return s.requestExternalBackend(rule, path, query, queryHeaders)
 }
 
 // RevalidatorMaker builds a new revalidator for model.Response by catching a request into closure for be able to call backend later.
 func (s *Backend) RevalidatorMaker() func(
-	path []byte, query []byte, queryHeaders [][2][]byte,
+	rule *config.Rule, path []byte, query []byte, queryHeaders [][2][]byte,
 ) (
 	status int, headers [][2][]byte, body []byte, releaseFn func(), err error,
 ) {
 	return func(
-		path []byte, query []byte, queryHeaders [][2][]byte,
+		rule *config.Rule, path []byte, query []byte, queryHeaders [][2][]byte,
 	) (
 		status int, headers [][2][]byte, body []byte, releaseFn func(), err error,
 	) {
-		return s.requestExternalBackend(path, query, queryHeaders)
+		return s.requestExternalBackend(rule, path, query, queryHeaders)
 	}
 }
 
@@ -100,7 +100,7 @@ var emptyReleaseFn = func() {}
 
 // requestExternalBackend actually performs the HTTP request to backend and parses the response.
 func (s *Backend) requestExternalBackend(
-	path []byte, query []byte, queryHeaders [][2][]byte,
+	rule *config.Rule, path []byte, query []byte, queryHeaders [][2][]byte,
 ) (status int, headers [][2][]byte, body []byte, releaseFn func(), err error) {
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)
@@ -137,12 +137,18 @@ func (s *Backend) requestExternalBackend(
 	}
 
 	headers = pools.KeyValueSlicePool.Get().([][2][]byte)
+
+	allowedHeadersMap := rule.CacheValue.HeadersMap
 	resp.Header.All()(func(k, v []byte) bool {
-		keyCopied := pools.BackendBufPool.Get().([]byte)
-		copy(keyCopied, k)
-		valueCopied := pools.BackendBufPool.Get().([]byte)
-		copy(valueCopied, v)
-		headers = append(headers, [2][]byte{keyCopied, valueCopied})
+		if _, ok := allowedHeadersMap[unsafe.String(unsafe.SliceData(k), len(k))]; ok {
+			keyBuf := pools.BackendBufPool.Get().([]byte)[:0]
+			keyBuf = append(keyBuf, k...) // Copy it! Don't use unsafe here due to fasthttp will reuse buffers when request will end.
+
+			valBuf := pools.BackendBufPool.Get().([]byte)[:0]
+			valBuf = append(valBuf, v...) // Copy it! Don't use unsafe here due to fasthttp will reuse buffers when request will end.
+
+			headers = append(headers, [2][]byte{keyBuf, valBuf})
+		}
 		return true
 	})
 
