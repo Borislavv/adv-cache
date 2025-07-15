@@ -124,8 +124,8 @@ func NewEntryManual(cfg *config.Cache, path, query []byte, headers [][2][]byte, 
 	entry.rule = rule
 	entry.revalidator = revalidator
 
-	filteredQueries, queriesReleaser := entry.parseAndFilterQuery(query) // here, we are referring to the same query buffer which used in payload which have been mentioned before
-	defer queriesReleaser()                                              // this is really reduce memory usage and GC pressure
+	filteredQueries, queriesReleaser := entry.parseFilterAndSortQuery(query) // here, we are referring to the same query buffer which used in payload which have been mentioned before
+	defer queriesReleaser()                                                  // this is really reduce memory usage and GC pressure
 
 	filteredHeaders := entry.filteredAndSortedKeyHeadersInPlace(headers)
 
@@ -471,7 +471,7 @@ func (e *Entry) WillUpdateAt() int64 {
 	return atomic.LoadInt64(&e.willUpdateAt)
 }
 
-func (e *Entry) parseAndFilterQuery(b []byte) (queries [][2][]byte, releaseFn func()) {
+func (e *Entry) parseFilterAndSortQuery(b []byte) (queries [][2][]byte, releaseFn func()) {
 	b = bytes.TrimLeft(b, "?")
 
 	queries = pools.KeyValueSlicePool.Get().([][2][]byte)
@@ -540,6 +540,12 @@ func (e *Entry) parseAndFilterQuery(b []byte) (queries [][2][]byte, releaseFn fu
 	}
 	queries = filtered
 
+	if len(queries) > 1 {
+		sort.Slice(queries, func(i, j int) bool {
+			return bytes.Compare(queries[i][0], queries[j][0]) < 0
+		})
+	}
+
 	return queries, func() {
 		queries = queries[:0]
 		pools.KeyValueSlicePool.Put(queries)
@@ -585,13 +591,7 @@ func (e *Entry) getFilteredAndSortedKeyQueriesFastHttp(r *fasthttp.RequestCtx) (
 
 func (e *Entry) GetFilteredAndSortedKeyQueriesNetHttp(r *http.Request) (kvPairs [][2][]byte, releaseFn func()) {
 	// r.URL.RawQuery - is static immutable string, therefor we can easily refer to it without any allocations.
-	filtered, queryReleaser := e.parseAndFilterQuery(unsafe.Slice(unsafe.StringData(r.URL.RawQuery), len(r.URL.RawQuery)))
-
-	sort.Slice(filtered, func(i, j int) bool {
-		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
-	})
-
-	return filtered, queryReleaser
+	return e.parseFilterAndSortQuery(unsafe.Slice(unsafe.StringData(r.URL.RawQuery), len(r.URL.RawQuery)))
 }
 
 var hKvPool = sync.Pool{
