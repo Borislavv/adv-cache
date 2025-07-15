@@ -125,6 +125,20 @@ func (d *Dump) Dump(ctx context.Context) error {
 }
 
 func (d *Dump) Load(ctx context.Context) error {
+	var successNum int32
+	defer func() {
+		if successNum == 0 {
+			go func() {
+				log.Info().Msg("[dump] dump restored 0 keys, mock data start loading")
+				defer log.Info().Msg("[dump] mocked data finished loading")
+				path := []byte("/api/v2/pagedata")
+				for entry := range mock.StreamSeqEntries(ctx, d.cfg, d.backend, path, 10_000_000) {
+					d.storage.Set(entry)
+				}
+			}()
+		}
+	}()
+
 	start := time.Now()
 
 	cfg := d.cfg.Cache.Persistence.Dump
@@ -135,14 +149,6 @@ func (d *Dump) Load(ctx context.Context) error {
 	// Find latest version directory
 	latestVersionDir := getLatestVersionDir(cfg.Dir)
 	if latestVersionDir == "" {
-		go func() {
-			log.Info().Msg("[dump] dump restored 0 keys, mock data start loading")
-			defer log.Info().Msg("[dump] mocked data finished loading")
-			path := []byte("/api/v2/pagedata")
-			for entry := range mock.StreamSeqEntries(ctx, d.cfg, d.backend, path, 10_000_000) {
-				d.storage.Set(entry)
-			}
-		}()
 		return fmt.Errorf("no versioned dump dirs found in %s", cfg.Dir)
 	}
 
@@ -158,7 +164,7 @@ func (d *Dump) Load(ctx context.Context) error {
 	filesToLoad := filterFilesByTimestamp(files, latestTs)
 
 	var wg sync.WaitGroup
-	var successNum, errorNum int32
+	var errorNum int32
 
 	for _, file := range filesToLoad {
 		wg.Add(1)
