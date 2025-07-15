@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/pools"
-	"github.com/valyala/bytebufferpool"
 	"github.com/valyala/fasthttp"
 	"net"
 	"net/http"
@@ -96,7 +95,15 @@ func (s *Backend) RevalidatorMaker() func(
 	}
 }
 
-var emptyReleaseFn = func() {}
+var (
+	emptyReleaseFn = func() {}
+	urlBufPool     = sync.Pool{
+		New: func() interface{} {
+			return new(bytes.Buffer)
+		},
+	}
+	queryPrefix = []byte("?")
+)
 
 // requestExternalBackend actually performs the HTTP request to backend and parses the response.
 func (s *Backend) requestExternalBackend(
@@ -109,15 +116,19 @@ func (s *Backend) requestExternalBackend(
 
 	url := unsafe.Slice(unsafe.StringData(s.cfg.Cache.Upstream.Url), len(s.cfg.Cache.Upstream.Url))
 
-	urlBuf := bytebufferpool.Get()
+	urlBuf := urlBufPool.Get().(*bytes.Buffer)
+	urlBuf.Grow(len(url) + len(path) + len(query) + 1)
 	defer func() {
 		urlBuf.Reset()
-		bytebufferpool.Put(urlBuf)
+		urlBufPool.Put(urlBuf)
 	}()
 	if _, err = urlBuf.Write(url); err != nil {
 		return 0, nil, nil, emptyReleaseFn, err
 	}
 	if _, err = urlBuf.Write(path); err != nil {
+		return 0, nil, nil, emptyReleaseFn, err
+	}
+	if _, err = urlBuf.Write(queryPrefix); err != nil {
 		return 0, nil, nil, emptyReleaseFn, err
 	}
 	if _, err = urlBuf.Write(query); err != nil {

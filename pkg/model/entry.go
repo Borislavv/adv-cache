@@ -231,8 +231,6 @@ func (e *Entry) SetRevalidator(revalidator Revalidator) {
 	e.revalidator = revalidator
 }
 
-var queryPrefix = []byte("?")
-
 // SetPayload packs and gzip-compresses the entire payload: Path, Query, QueryHeaders, StatusCode, ResponseHeaders, Body.
 func (e *Entry) SetPayload(
 	path, query []byte,
@@ -245,7 +243,7 @@ func (e *Entry) SetPayload(
 	numResponseHeaders := len(headers)
 
 	// === 1) Calculate total size ===
-	total := 1
+	total := 0
 	total += 4 + len(path)
 	total += 4 + len(query)
 	total += 4
@@ -275,9 +273,8 @@ func (e *Entry) SetPayload(
 	offset += len(path)
 
 	// Query
-	binary.LittleEndian.PutUint32(scratch[:], uint32(len(query)+1))
+	binary.LittleEndian.PutUint32(scratch[:], uint32(len(query)))
 	payloadBuf = append(payloadBuf, scratch[:]...)
-	payloadBuf = append(payloadBuf, queryPrefix...)
 	payloadBuf = append(payloadBuf, query...)
 	offset += len(query)
 
@@ -773,9 +770,6 @@ func (e *Entry) ToBytes() (data []byte, releaseFn func()) {
 
 	// Забираем buffer из пула и очищаем
 	buf := bufPool.Get().(*bytes.Buffer)
-	buf.Reset()
-
-	// Определяем функцию Release
 	releaseFn = func() {
 		buf.Reset()
 		bufPool.Put(buf)
@@ -828,7 +822,6 @@ func EntryFromBytes(data []byte, cfg *config.Cache, backend repository.Backender
 
 	rule := MatchRule(cfg, rulePath)
 	if rule == nil {
-		panic(string(data))
 		return nil, fmt.Errorf("rule not found for path: '%s'", string(rulePath))
 	}
 
