@@ -119,8 +119,7 @@ type Gzip struct {
 }
 
 type Rule struct {
-	Gzip       Gzip   `yaml:"gzip"`
-	Path       string `yaml:"path"`
+	Gzip       Gzip `yaml:"gzip"`
 	PathBytes  []byte
 	TTL        time.Duration `yaml:"ttl"`       // TTL for this rule.
 	ErrorTTL   time.Duration `yaml:"error_ttl"` // ErrorTTL for this rule.
@@ -167,8 +166,8 @@ func LoadConfig(path string) (*Cache, error) {
 		return nil, fmt.Errorf("unmarshal yaml from %s: %w", path, err)
 	}
 
-	for _, rule := range cfg.Cache.Rules {
-		rule.PathBytes = []byte(rule.Path)
+	for rulePath, rule := range cfg.Cache.Rules {
+		rule.PathBytes = []byte(rulePath)
 
 		// Query
 		for _, query := range rule.CacheKey.Query {
