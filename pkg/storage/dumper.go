@@ -135,6 +135,14 @@ func (d *Dump) Load(ctx context.Context) error {
 	// Find latest version directory
 	latestVersionDir := getLatestVersionDir(cfg.Dir)
 	if latestVersionDir == "" {
+		go func() {
+			log.Info().Msg("[dump] dump restored 0 keys, mock data start loading")
+			defer log.Info().Msg("[dump] mocked data finished loading")
+			path := []byte("/api/v2/pagedata")
+			for entry := range mock.StreamSeqEntries(ctx, d.cfg, d.backend, path, 10_000_000) {
+				d.storage.Set(entry)
+			}
+		}()
 		return fmt.Errorf("no versioned dump dirs found in %s", cfg.Dir)
 	}
 
@@ -205,17 +213,6 @@ func (d *Dump) Load(ctx context.Context) error {
 		successNum, errorNum, time.Since(start))
 	if errorNum > 0 {
 		return fmt.Errorf("load finished with %d errors", errorNum)
-	}
-
-	if successNum == 0 {
-		go func() {
-			log.Info().Msg("[dump] dump restored 0 keys, mock data start loading")
-			defer log.Info().Msg("[dump] mocked data finished loading")
-			path := []byte("/api/v2/pagedata")
-			for entry := range mock.StreamSeqEntries(ctx, d.cfg, d.backend, path, 10_000_000) {
-				d.storage.Set(entry)
-			}
-		}()
 	}
 
 	return nil
