@@ -128,6 +128,10 @@ func NewEntryManual(cfg *config.Cache, path, query []byte, headers [][2][]byte, 
 	filteredQueries, queriesReleaser := entry.parseAndFilterQuery(query) // here, we are referring to the same query buffer which used in payload which have been mentioned before
 	defer queriesReleaser()                                              // this is really reduce memory usage and GC pressure
 
+	sort.Slice(filteredQueries, func(i, j int) bool {
+		return bytes.Compare(filteredQueries[i][0], filteredQueries[j][0]) < 0
+	})
+
 	filteredHeaders := entry.filteredAndSortedKeyHeadersInPlace(headers)
 
 	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), entry.Release, nil
@@ -169,6 +173,12 @@ func (e *Entry) Release() {
 	EntriesPool.Put(e)
 }
 
+var keyBufPool = sync.Pool{
+	New: func() interface{} {
+		return new(bytes.Buffer)
+	},
+}
+
 func (e *Entry) calculateAndSetUpKeys(filteredQueries, filteredHeaders [][2][]byte) *Entry {
 	l := 0
 	for _, pair := range filteredQueries {
@@ -177,14 +187,21 @@ func (e *Entry) calculateAndSetUpKeys(filteredQueries, filteredHeaders [][2][]by
 	for _, pair := range filteredHeaders {
 		l += len(pair[0]) + len(pair[1])
 	}
-	buf := make([]byte, 0, l)
+
+	buf := keyBufPool.Get().(*bytes.Buffer)
+	buf.Grow(l)
+	defer func() {
+		buf.Reset()
+		keyBufPool.Put(buf)
+	}()
+
 	for _, pair := range filteredQueries {
-		buf = append(buf, pair[0]...)
-		buf = append(buf, pair[1]...)
+		buf.Write(pair[0])
+		buf.Write(pair[1])
 	}
 	for _, pair := range filteredHeaders {
-		buf = append(buf, pair[0]...)
-		buf = append(buf, pair[1]...)
+		buf.Write(pair[0])
+		buf.Write(pair[1])
 	}
 
 	hasher := hasherPool.Get().(*xxh3.Hasher)
@@ -194,7 +211,7 @@ func (e *Entry) calculateAndSetUpKeys(filteredQueries, filteredHeaders [][2][]by
 	}()
 
 	// calculate key hash
-	if _, err := hasher.Write(buf); err != nil {
+	if _, err := hasher.Write(buf.Bytes()); err != nil {
 		panic(err)
 	}
 	e.key = hasher.Sum64()
