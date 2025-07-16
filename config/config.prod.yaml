@@ -46,7 +46,7 @@ cache:
       max_files: 7
 
   rules:
-    - path: "/api/v2/pagedata"
+    /api/v2/pagedata:
       gzip:
         enabled: true
         threshold: 1024
@@ -56,16 +56,16 @@ cache:
       cache_key:
         query: ['project[id]', 'domain', 'language', 'choice'] # Match query parameters by prefix.
         headers:
-          - Accept-Encoding  # Обязательно! gzip / br / deflate.
-          - Accept-Language  # Если у тебя мультиязычный контент.
+          - Accept-Encoding
+          - Accept-Language
       cache_value:
         headers:
-          - Content-Type       # Тип ответа. Например: application/json.
-          - Content-Encoding   # Указывает, что тело сжатое (gzip, br).
-          - Cache-Control      # Если отдаёшь клиенту max-age, public/private.
-          - Vary               # Если ты варьируешь по Accept-Encoding или Accept-Language.
+          - Content-Type
+          - Content-Encoding
+          - Cache-Control
+          - Vary
 
-    - path: "/api/v1/pagecontent"
+    /api/v1/pagecontent:
       gzip:
         enabled: true
         threshold: 1024
@@ -75,11 +75,11 @@ cache:
       cache_key:
         query: ['project[id]', 'domain', 'language', 'choice'] # Match query parameters by prefix.
         headers:
-          - Accept-Encoding  # Обязательно! gzip / br / deflate.
-          - Accept-Language  # Если у тебя мультиязычный контент.
+          - Accept-Encoding
+          - Accept-Language
       cache_value:
         headers:
-          - Content-Type       # Тип ответа. Например: application/json.
-          - Content-Encoding   # Указывает, что тело сжатое (gzip, br).
-          - Cache-Control      # Если отдаёшь клиенту max-age, public/private.
-          - Vary               # Если ты варьируешь по Accept-Encoding или Accept-Language.
+          - Content-Type
+          - Content-Encoding
+          - Cache-Control
+          - Vary
