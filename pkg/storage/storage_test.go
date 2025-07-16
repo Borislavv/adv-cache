@@ -50,9 +50,8 @@ func init() {
 				Type: "malloc",
 				Size: 1024 * 1024 * 5, // 5 MB
 			},
-			Rules: []*config.Rule{
-				{
-					Path:      "/api/v2/pagedata",
+			Rules: map[string]*config.Rule{
+				"/api/v2/pagedata": {
 					PathBytes: []byte("/api/v2/pagedata"),
 					TTL:       time.Hour,
 					ErrorTTL:  time.Minute * 15,
