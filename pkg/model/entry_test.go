@@ -6,8 +6,84 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/stretchr/testify/require"
 	"io"
+	"math/rand"
+	"sync"
 	"testing"
+	"time"
 )
+
+func TestRefCountingNew(t *testing.T) {
+	var (
+		db   = make(map[int]*VersionedPointer)
+		mu   sync.Mutex
+		done = make(chan struct{})
+	)
+
+	for idx := 0; idx < 150; idx++ {
+		e := NewEntryFromField(0, 0, [16]byte{}, []byte(""), nil, nil, 0, 0)
+		db[idx] = &VersionedPointer{
+			V:   e.Version(),
+			Ptr: nil,
+		}
+	}
+
+	go func() {
+		time.Sleep(5 * time.Second)
+		close(done)
+	}()
+
+	// Readers
+	for i := 0; i < 5; i++ {
+		go func() {
+			for {
+				select {
+				case <-done:
+					return
+				default:
+					idx := rand.Intn(150)
+					mu.Lock()
+					te := db[idx]
+					mu.Unlock()
+					if te.Ptr.Acquire(te.Version()) {
+						payload := te.Ptr.payload.Load()
+						if payload == nil {
+							panic("payload is nil")
+						}
+						te.Ptr.Release()
+					}
+				}
+			}
+		}()
+	}
+
+	// Writers
+	for i := 0; i < 10; i++ {
+		go func() {
+			for {
+				select {
+				case <-done:
+					return
+				default:
+					idx := rand.Intn(150)
+					mu.Lock()
+					old := db[idx]
+					delete(db, idx)
+					if old.Ptr.Acquire(old.V) {
+						old.Ptr.Remove()
+					}
+					e := NewEntryFromField(0, 0, [16]byte{}, []byte(""), nil, nil, 0, 0)
+					db[idx] = &VersionedPointer{
+						V:   e.Version(),
+						Ptr: nil,
+					}
+					mu.Unlock()
+				}
+			}
+		}()
+	}
+
+	time.Sleep(6 * time.Second)
+}
 
 func TestEntryPayloadRoundTrip(t *testing.T) {
 	rule := &config.Rule{

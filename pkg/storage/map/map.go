@@ -19,6 +19,7 @@ type Value interface {
 	types.Keyed
 	types.Sized
 	types.Released
+	types.Versioned
 }
 
 // Map is a sharded concurrent map for high-performance caches.
@@ -56,7 +57,7 @@ func (smap *Map[V]) Set(value V) {
 
 // Get fetches a value and its releaser from the correct shard.
 // found==false means the value is absent.
-func (smap *Map[V]) Get(entry V) (value V, rel *Releaser[V], found bool) {
+func (smap *Map[V]) Get(entry V) (value V, releaser func(), found bool) {
 	return smap.shards[entry.ShardKey()].Get(entry)
 }
 

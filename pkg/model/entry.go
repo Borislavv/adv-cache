@@ -38,6 +38,19 @@ type Revalidator func(
 	status int, headers [][2][]byte, body []byte, releaseFn func(), err error,
 )
 
+type VersionedPointer struct {
+	V   uint64
+	Ptr *Entry
+}
+
+func NewVersionedPointer(e *Entry) *VersionedPointer {
+	return &VersionedPointer{Ptr: e, V: atomic.LoadUint64(&e.version)}
+}
+
+func (v *VersionedPointer) Version() uint64 {
+	return v.V
+}
+
 // Entry is the packed request+response payload
 type Entry struct {
 	key          uint64   // 64  bit xxh
@@ -47,10 +60,12 @@ type Entry struct {
 	payload      *atomic.Pointer[[]byte]
 	lruListElem  *atomic.Pointer[list.Element[*Entry]]
 	revalidator  Revalidator
-	willUpdateAt int64 // atomic: unix nano
-	isCompressed int64 // atomic: bool as int64
-	isDoomed     int64 // atomic: bool as int64
-	refCount     int64 // atomic: simple counter
+	willUpdateAt int64  // atomic: unix nano
+	isCompressed int64  // atomic: bool as int64
+	isDoomed     int64  // atomic: bool as int64
+	refCount     int64  // atomic: simple counter
+	version      uint64 // atomic: solves ABA problem (pattern: version pointers)
+	// (when you already changed an object in storage but someone just now try to do Acquire on already finalized and reused object)
 }
 
 func (e *Entry) Init() *Entry {
@@ -60,22 +75,15 @@ func (e *Entry) Init() *Entry {
 }
 
 var (
-	bufPool        = &sync.Pool{New: func() any { return new(bytes.Buffer) }}
-	gzipBufferPool = &sync.Pool{New: func() any { return new(bytes.Buffer) }}
-	gzipWriterPool = &sync.Pool{New: func() any {
-		w, _ := gzip.NewWriterLevel(nil, gzip.BestSpeed)
-		return w
-	}}
+	bufPool           = &sync.Pool{New: func() any { return new(bytes.Buffer) }}
 	hasherPool        = &sync.Pool{New: func() any { return xxh3.New() }}
 	ruleNotFoundError = errors.New("rule not found")
 )
 
-const gzipThreshold = 1024
-
 func (e *Entry) MapKey() uint64   { return e.key }
 func (e *Entry) ShardKey() uint64 { return e.shard }
 
-type Releaser func() (freedMem int64, isHit bool)
+type Releaser func()
 
 var emptyReleaser Releaser
 
@@ -172,43 +180,63 @@ const (
 	doomed    = 1
 )
 
-func (e *Entry) Acquire() (isAcquired bool) {
+func (e *Entry) Acquire(expectedVersion uint64) bool {
 	if e == nil {
 		return false
 	}
 	for {
-		if old := atomic.LoadInt64(&e.refCount); old == doomedRefCount {
+		curVersion := atomic.LoadUint64(&e.version)
+		if curVersion != expectedVersion {
 			return false
-		} else if atomic.CompareAndSwapInt64(&e.refCount, old, old+1) {
+		}
+		ref := atomic.LoadInt64(&e.refCount)
+		if ref < 0 {
+			return false
+		}
+		if atomic.CompareAndSwapInt64(&e.refCount, ref, ref+1) {
+			// double-check V to catch finalize()
+			if atomic.LoadUint64(&e.version) != expectedVersion {
+				e.Release()
+				return false
+			}
 			return true
 		}
 	}
 }
 
-func (e *Entry) Release() (freedMem int64, isHit bool) {
+func (e *Entry) Release() {
+	if e == nil {
+		return
+	}
 	for {
 		if old := atomic.LoadInt64(&e.refCount); atomic.CompareAndSwapInt64(&e.refCount, old, old-1) {
 			if old == preDoomedCount && atomic.LoadInt64(&e.isDoomed) == doomed {
 				if atomic.CompareAndSwapInt64(&e.refCount, zeroRefCount, doomedRefCount) {
-					return e.finalize(), true
+					e.finalize()
+					return
 				}
 			}
-			return 0, false
+			return
 		}
 	}
 }
 
-func (e *Entry) Remove() (freedMem int64, isHit bool) {
-	if atomic.CompareAndSwapInt64(&e.isDoomed, notDoomed, doomed) {
-		return e.Release()
+func (e *Entry) Remove() {
+	if e == nil {
+		return
 	}
-	return 0, false
+	if atomic.CompareAndSwapInt64(&e.isDoomed, notDoomed, doomed) {
+		e.Release()
+		return
+	}
+	return
 }
 
 // finalize - after this action you cannot use this Entry!
 // if you will, you will receive errors which are extremely hard-debug like "nil pointer dereference" and "non-consistent data into entry"
 // due to the Entry which was returned into pool will be used again in other threads.
 func (e *Entry) finalize() (freedMem int64) {
+	e.version += 1
 	e.key = 0
 	e.shard = 0
 	e.rule = nil
@@ -220,9 +248,15 @@ func (e *Entry) finalize() (freedMem int64) {
 	e.lruListElem.Store(nil)
 	e.payload.Store(nil)
 	freedMem = e.Weight()
+
 	// return back to pool
 	EntriesPool.Put(e)
+
 	return
+}
+
+func (e *Entry) Version() uint64 {
+	return atomic.LoadUint64(&e.version)
 }
 
 var keyBufPool = sync.Pool{
