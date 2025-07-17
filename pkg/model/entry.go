@@ -47,8 +47,10 @@ type Entry struct {
 	payload      *atomic.Pointer[[]byte]
 	lruListElem  *atomic.Pointer[list.Element[*Entry]]
 	revalidator  Revalidator
-	willUpdateAt int64
-	isCompressed int64
+	willUpdateAt int64 // atomic: unix nano
+	isCompressed int64 // atomic: bool as int64
+	isDoomed     int64 // atomic: bool as int64
+	refCount     int64 // atomic: simple counter
 }
 
 func (e *Entry) Init() *Entry {
@@ -73,14 +75,16 @@ const gzipThreshold = 1024
 func (e *Entry) MapKey() uint64   { return e.key }
 func (e *Entry) ShardKey() uint64 { return e.shard }
 
-type Releaser func()
+type Releaser func() (freedMem int64, isHit bool)
+
+var emptyReleaser Releaser
 
 // NewEntryNetHttp accepts path, query and request headers as bytes slices.
 func NewEntryNetHttp(cfg *config.Cache, r *http.Request) (*Entry, Releaser, error) {
 	// path is a string in net/http so easily refer to it inside request
 	rule := MatchRuleStr(cfg, r.URL.Path)
 	if rule == nil {
-		return nil, func() {}, ruleNotFoundError
+		return nil, emptyReleaser, ruleNotFoundError
 	}
 
 	entry := EntriesPool.Get().(*Entry)
@@ -99,7 +103,7 @@ func NewEntryNetHttp(cfg *config.Cache, r *http.Request) (*Entry, Releaser, erro
 func NewEntryFastHttp(cfg *config.Cache, r *fasthttp.RequestCtx) (*Entry, Releaser, error) {
 	rule := MatchRule(cfg, r.Path())
 	if rule == nil {
-		return nil, func() {}, ruleNotFoundError
+		return nil, emptyReleaser, ruleNotFoundError
 	}
 
 	entry := EntriesPool.Get().(*Entry)
@@ -117,7 +121,7 @@ func NewEntryFastHttp(cfg *config.Cache, r *fasthttp.RequestCtx) (*Entry, Releas
 func NewEntryManual(cfg *config.Cache, path, query []byte, headers [][2][]byte, revalidator Revalidator) (*Entry, Releaser, error) {
 	rule := MatchRule(cfg, path)
 	if rule == nil {
-		return nil, func() {}, ruleNotFoundError
+		return nil, emptyReleaser, ruleNotFoundError
 	}
 
 	entry := EntriesPool.Get().(*Entry)
@@ -158,18 +162,67 @@ func NewEntryFromField(
 	return entry
 }
 
-// Release used as a Releaser and returns buffers back to pools.
-func (e *Entry) Release() {
+const (
+	// refCount values
+	preDoomedCount = 1
+	zeroRefCount   = 0
+	doomedRefCount = -1
+	// isDoomed values
+	notDoomed = 0
+	doomed    = 1
+)
+
+func (e *Entry) Acquire() (isAcquired bool) {
+	if e == nil {
+		return false
+	}
+	for {
+		if old := atomic.LoadInt64(&e.refCount); old == doomedRefCount {
+			return false
+		} else if atomic.CompareAndSwapInt64(&e.refCount, old, old+1) {
+			return true
+		}
+	}
+}
+
+func (e *Entry) Release() (freedMem int64, isHit bool) {
+	for {
+		if old := atomic.LoadInt64(&e.refCount); atomic.CompareAndSwapInt64(&e.refCount, old, old-1) {
+			if old == preDoomedCount && atomic.LoadInt64(&e.isDoomed) == doomed {
+				if atomic.CompareAndSwapInt64(&e.refCount, zeroRefCount, doomedRefCount) {
+					return e.finalize(), true
+				}
+			}
+			return 0, false
+		}
+	}
+}
+
+func (e *Entry) Remove() (freedMem int64, isHit bool) {
+	if atomic.CompareAndSwapInt64(&e.isDoomed, notDoomed, doomed) {
+		return e.Release()
+	}
+	return 0, false
+}
+
+// finalize - after this action you cannot use this Entry!
+// if you will, you will receive errors which are extremely hard-debug like "nil pointer dereference" and "non-consistent data into entry"
+// due to the Entry which was returned into pool will be used again in other threads.
+func (e *Entry) finalize() (freedMem int64) {
 	e.key = 0
 	e.shard = 0
 	e.rule = nil
 	e.willUpdateAt = 0
 	e.isCompressed = 0
 	e.revalidator = nil
+	e.isDoomed = 0
+	e.refCount = 0
 	e.lruListElem.Store(nil)
 	e.payload.Store(nil)
-
+	freedMem = e.Weight()
+	// return back to pool
 	EntriesPool.Put(e)
+	return
 }
 
 var keyBufPool = sync.Pool{

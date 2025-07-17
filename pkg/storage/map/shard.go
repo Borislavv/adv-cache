@@ -13,6 +13,7 @@ type Shard[V Value] struct {
 	id            uint64       // Shard ID (index)
 	mem           int64        // Weight usage in bytes (atomic)
 	len           int64        // Length as int64 for use it as atomic
+	releasersPool *sync.Pool
 }
 
 // NewShard creates a new shard with its own lock, value map, and releaser pool.
@@ -21,6 +22,11 @@ func NewShard[V Value](id uint64, defaultLen int) *Shard[V] {
 		id:      id,
 		RWMutex: &sync.RWMutex{},
 		items:   make(map[uint64]V, defaultLen),
+		releasersPool: &sync.Pool{
+			New: func() interface{} {
+				return new(Releaser[V])
+			},
+		},
 	}
 }
 
@@ -40,68 +46,75 @@ func (shard *Shard[V]) Len() int64 {
 
 // Set inserts or updates a value by key, resets refCount, and updates counters.
 // Returns a releaser for the inserted value.
-func (shard *Shard[V]) Set(key uint64, value V) (takenMem int64) {
+func (shard *Shard[V]) Set(key uint64, value V) (takenMem int64, releaser *Releaser[V]) {
 	shard.RLock()
 	entry, isHit := shard.items[key]
 	shard.RUnlock()
 
 	if isHit {
-		if !entry.IsSameFingerprint(value.Fingerprint()) {
-			// hash collision, just rewrite by new data
-			shard.Lock()
-			shard.items[key] = value
-			shard.Unlock()
-			atomic.AddInt64(&shard.len, 0)
-			atomic.AddInt64(&shard.mem, value.Weight()-entry.Weight())
-			return
+		if entry.Acquire() {
+			if entry.IsSameFingerprint(value.Fingerprint()) {
+				return 0, newReleaser(entry, shard.releasersPool)
+			} else {
+				// hash collision was found
+				entry.Remove()
+
+				// prepare new value for insert
+				if !value.Acquire() {
+					//return 0, func() {}
+				}
+			}
 		}
+
+		takenMem = value.Weight() - entry.Weight()
+		atomic.AddInt64(&shard.mem, takenMem)
+
+		// release the entry which we are rewriting
+		entry.Remove()
 	} else {
-		// insert new element due to it was not found in cache
-		shard.Lock()
-		shard.items[key] = value
-		shard.Unlock()
+		takenMem = value.Weight()
 		atomic.AddInt64(&shard.len, 1)
 		atomic.AddInt64(&shard.mem, value.Weight())
-		return
 	}
 
-	// found the same, no changes has been made
-	return 0
+	value.Acquire()
+	shard.Lock()
+	shard.items[key] = value
+	shard.Unlock()
+
+	return takenMem, newReleaser(value, shard.releasersPool)
 }
 
 // Get retrieves a value and returns a releaser for it, incrementing its refCount.
 // Returns (value, releaser, true) if found; otherwise (zero, nil, false).
-func (shard *Shard[V]) Get(entry V) (val V, isHit bool) {
+func (shard *Shard[V]) Get(entry V) (val V, rel *Releaser[V], isHit bool) {
 	shard.RLock()
 	value, ok := shard.items[entry.MapKey()]
 	shard.RUnlock()
 
-	if ok && value.IsSameFingerprint(entry.Fingerprint()) {
-		return value, ok
+	if ok && value.IsSameFingerprint(entry.Fingerprint()) && value.Acquire() {
+		return value, newReleaser(value, shard.releasersPool), ok
 	}
 
-	// not found or hash collision
-	return val, false
+	// not found or hash collision or already removed
+	return val, nil, false
 }
 
 // Remove removes a value from the shard, decrements counters, and may trigger full resource cleanup.
 // Returns (memory_freed, pointer_to_list_element, was_found).
-func (shard *Shard[V]) Remove(key uint64) (freed int64, isHit bool) {
+func (shard *Shard[V]) Remove(key uint64) (freed int64, removed bool) {
 	shard.Lock()
-	defer shard.Unlock()
 	v, ok := shard.items[key]
 	if ok {
 		delete(shard.items, key)
+		shard.Unlock()
 
-		weight := v.Weight()
+		freed = v.Weight()
 		atomic.AddInt64(&shard.len, -1)
-		atomic.AddInt64(&shard.mem, -weight)
+		atomic.AddInt64(&shard.mem, -freed)
 
-		// return all buffers back to pools
-		v.Release() // it's safe due to we are here alone, no one else could be here inside positive
-
-		return weight, true
+		return freed, v.Remove()
 	}
-
+	shard.Unlock()
 	return 0, false
 }
