@@ -28,12 +28,6 @@ var client = &fasthttp.Client{
 	NoDefaultUserAgentHeader:      true,
 }
 
-var uriPool = sync.Pool{
-	New: func() any {
-		return fasthttp.AcquireURI()
-	},
-}
-
 var reqPool = sync.Pool{
 	New: func() any {
 		return fasthttp.AcquireRequest()

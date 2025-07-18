@@ -132,8 +132,8 @@ func (d *Dump) Load(ctx context.Context) error {
 				log.Info().Msg("[dump] dump restored 0 keys, mock data start loading")
 				defer log.Info().Msg("[dump] mocked data finished loading")
 				path := []byte("/api/v2/pagedata")
-				for entry := range mock.StreamSeqEntries(ctx, d.cfg, d.backend, path, 10_000_000) {
-					d.storage.Set(model.NewVersionPointer(entry))
+				for entry := range mock.StreamEntryPointersConsecutive(ctx, d.cfg, d.backend, path, 10_000_000) {
+					d.storage.Set(entry)
 				}
 			}()
 		}

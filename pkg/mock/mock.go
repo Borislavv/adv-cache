@@ -10,8 +10,32 @@ import (
 	"strconv"
 )
 
-func GenerateSeqEntries(cfg *config.Cache, backend repository.Backender, path []byte, num int) []*model.Entry {
-	res := make([]*model.Entry, 0, num)
+var responseBytes = []byte(`{
+  "data": {
+    "type": "seo/pagedata",
+    "attributes": {
+      "title": "1xBet[{{...}}]: It repeats some phrases multiple times. This is a long description for SEO page data.",
+      "description": "1xBet[{{...}}]: his is a long description for SEO page data. This description is intentionally made verbose to increase the JSON payload size.",
+      "metaRobots": [],
+      "hierarchyMetaRobots": [
+        {
+          "name": "robots",
+          "content": "noindex, nofollow"
+        }
+      ],
+      "ampPageUrl": null,
+      "alternativeLinks": [],
+      "alternateMedia": [],
+      "customCanonical": null,
+      "metas": [],
+      "siteName": null
+    }
+  }
+}
+`)
+
+func GenerateEntryPointersConsecutive(cfg *config.Cache, backend repository.Backender, path []byte, num int) []*model.VersionPointer {
+	res := make([]*model.VersionPointer, 0, num)
 
 	i := 0
 	for {
@@ -49,7 +73,7 @@ func GenerateSeqEntries(cfg *config.Cache, backend repository.Backender, path []
 		}
 		entry.SetPayload(path, query, queryHeaders, responseHeaders, copiedBodyBytes(i), 200)
 
-		res = append(res, entry)
+		res = append(res, model.NewVersionPointer(entry))
 
 		i++
 	}
@@ -57,8 +81,8 @@ func GenerateSeqEntries(cfg *config.Cache, backend repository.Backender, path []
 	return res
 }
 
-func StreamSeqEntries(ctx context.Context, cfg *config.Cache, backend repository.Backender, path []byte, num int) <-chan *model.Entry {
-	outCh := make(chan *model.Entry, runtime.GOMAXPROCS(0)*4)
+func StreamEntryPointersConsecutive(ctx context.Context, cfg *config.Cache, backend repository.Backender, path []byte, num int) <-chan *model.VersionPointer {
+	outCh := make(chan *model.VersionPointer, runtime.GOMAXPROCS(0)*4)
 	go func() {
 		defer close(outCh)
 		i := 0
@@ -101,37 +125,13 @@ func StreamSeqEntries(ctx context.Context, cfg *config.Cache, backend repository
 				}
 				entry.SetPayload(path, query, queryHeaders, responseHeaders, copiedBodyBytes(i), 200)
 
-				outCh <- entry
+				outCh <- model.NewVersionPointer(entry)
 				i++
 			}
 		}
 	}()
 	return outCh
 }
-
-var responseBytes = []byte(`{
-  "data": {
-    "type": "seo/pagedata",
-    "attributes": {
-      "title": "1xBet[{{...}}]: It repeats some phrases multiple times. This is a long description for SEO page data.",
-      "description": "1xBet[{{...}}]: his is a long description for SEO page data. This description is intentionally made verbose to increase the JSON payload size.",
-      "metaRobots": [],
-      "hierarchyMetaRobots": [
-        {
-          "name": "robots",
-          "content": "noindex, nofollow"
-        }
-      ],
-      "ampPageUrl": null,
-      "alternativeLinks": [],
-      "alternateMedia": [],
-      "customCanonical": null,
-      "metas": [],
-      "siteName": null
-    }
-  }
-}
-`)
 
 // copiedBodyBytes returns a random ASCII string of length between minStrLen and maxStrLen.
 func copiedBodyBytes(idx int) []byte {
