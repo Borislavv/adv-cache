@@ -97,7 +97,8 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 		releaser func()
 	)
 
-	value, found := c.cache.Get(entry)
+	value, valueReleaser, found := c.cache.Get(entry)
+	defer valueReleaser()
 	if !found {
 		notFnd.Add(1)
 
@@ -115,8 +116,10 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 		entry.SetPayload(path, queryString, queryHeaders, headers, body, status)
 		entry.SetRevalidator(c.backend.RevalidatorMaker())
 
-		c.cache.Set(entry)
-		value = entry
+		pointer := model.NewVersionPointer(entry)
+		_, setValueReleaser := c.cache.Set(pointer)
+		defer setValueReleaser()
+		value = pointer
 	} else {
 		fnd.Add(1)
 		defer entryReleaser() // release the entry only on the case when existing entry was found in cache,
@@ -160,7 +163,7 @@ func (c *CacheController) respondThatServiceIsTemporaryUnavailable(err error, ct
 	}
 }
 
-func (c *CacheController) setLastModifiedHeader(r *fasthttp.RequestCtx, entry *model.Entry, status int) {
+func (c *CacheController) setLastModifiedHeader(r *fasthttp.RequestCtx, entry *model.VersionPointer, status int) {
 	if status == http.StatusOK {
 		r.Request.Header.SetBytesKV(
 			hdrLastModified,
