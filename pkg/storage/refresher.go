@@ -32,7 +32,7 @@ type Refresh struct {
 	rateLogCh           chan int
 	refreshSuccessNumCh chan struct{}
 	refreshErroredNumCh chan struct{}
-	refreshItemsCh      chan *model.Entry
+	refreshItemsCh      chan *model.VersionPointer
 }
 
 // NewRefresher constructs a Refresh.
@@ -52,9 +52,9 @@ func NewRefresher(ctx context.Context, cfg *config.Cache, balancer lru.Balancer,
 		storage:             storage,
 		balancer:            balancer,
 		rateLogCh:           make(chan int, cfg.Cache.Refresh.Rate),
-		refreshSuccessNumCh: make(chan struct{}, cfg.Cache.Refresh.Rate),     // Successful refreshes counter channel
-		refreshErroredNumCh: make(chan struct{}, cfg.Cache.Refresh.Rate),     // Failed refreshes counter channel
-		refreshItemsCh:      make(chan *model.Entry, cfg.Cache.Refresh.Rate), // Failed refreshes counter channel
+		refreshSuccessNumCh: make(chan struct{}, cfg.Cache.Refresh.Rate),              // Successful refreshes counter channel
+		refreshErroredNumCh: make(chan struct{}, cfg.Cache.Refresh.Rate),              // Failed refreshes counter channel
+		refreshItemsCh:      make(chan *model.VersionPointer, cfg.Cache.Refresh.Rate), // Failed refreshes counter channel
 	}
 }
 
@@ -62,9 +62,11 @@ func NewRefresher(ctx context.Context, cfg *config.Cache, balancer lru.Balancer,
 // It runs a logger (if debugging is enabled), spawns a provider for sampling shards,
 // and continuously processes shard samples for candidate responses to refreshItem.
 func (r *Refresh) Run() {
-	r.runLogger()    // handle consumer stats and print logs
-	r.runConsumers() // scans rand items and checks whether they should be refreshed
-	r.runProducers() // produces items which should be refreshed on processing
+	if r.cfg.Cache.Refresh.Enabled {
+		r.runLogger()    // handle consumer stats and print logs
+		r.runConsumers() // scans rand items and checks whether they should be refreshed
+		r.runProducers() // produces items which should be refreshed on processing
+	}
 }
 
 func (r *Refresh) runProducers() {
