@@ -51,11 +51,15 @@ func NewVersionPointer(entry *Entry) *VersionPointer {
 }
 
 func (v *VersionPointer) Acquire() bool {
-	return v.Entry.Acquire(v.version)
+	return v != nil && v.Entry.Acquire(v.version)
 }
 
 func (v *VersionPointer) Version() uint64 {
 	return v.version
+}
+
+func (v *VersionPointer) ShouldBeRefreshed(cfg *config.Cache) bool {
+	return v != nil && v.Entry.ShouldBeRefreshed(cfg)
 }
 
 // Entry is the packed request+response payload
@@ -65,7 +69,7 @@ type Entry struct {
 	fingerprint  [16]byte // 128 bit xxh
 	rule         *config.Rule
 	payload      *atomic.Pointer[[]byte]
-	lruListElem  *atomic.Pointer[list.Element[*Entry]]
+	lruListElem  *atomic.Pointer[list.Element[*VersionPointer]]
 	revalidator  Revalidator
 	willUpdateAt int64  // atomic: unix nano
 	isCompressed int64  // atomic: bool as int64
@@ -77,7 +81,7 @@ type Entry struct {
 
 func (e *Entry) Init() *Entry {
 	e.payload = &atomic.Pointer[[]byte]{}
-	e.lruListElem = &atomic.Pointer[list.Element[*Entry]]{}
+	e.lruListElem = &atomic.Pointer[list.Element[*VersionPointer]]{}
 	return e
 }
 
@@ -805,12 +809,12 @@ func (e *Entry) filteredAndSortedKeyHeadersInPlace(headers [][2][]byte) (kvPairs
 }
 
 // SetLruListElement sets the LRU list element pointer.
-func (e *Entry) SetLruListElement(el *list.Element[*Entry]) {
+func (e *Entry) SetLruListElement(el *list.Element[*VersionPointer]) {
 	e.lruListElem.Store(el)
 }
 
 // LruListElement returns the LRU list element pointer (for LRU cache management).
-func (e *Entry) LruListElement() *list.Element[*Entry] {
+func (e *Entry) LruListElement() *list.Element[*VersionPointer] {
 	return e.lruListElem.Load()
 }
 
