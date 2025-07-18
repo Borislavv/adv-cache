@@ -26,41 +26,12 @@ import (
 	"unsafe"
 )
 
-var EntriesPool = sync.Pool{
-	New: func() interface{} {
-		return new(Entry).Init()
-	},
-}
-
-type Revalidator func(
-	rule *config.Rule, path []byte, query []byte, queryHeaders [][2][]byte,
-) (
-	status int, headers [][2][]byte, body []byte, releaseFn func(), err error,
+var (
+	entriesPool       = sync.Pool{New: func() interface{} { return new(Entry).Init() }}
+	bufPool           = &sync.Pool{New: func() any { return new(bytes.Buffer) }}
+	hasherPool        = &sync.Pool{New: func() any { return xxh3.New() }}
+	ruleNotFoundError = errors.New("rule not found")
 )
-
-type VersionPointer struct {
-	version uint64
-	*Entry
-}
-
-func NewVersionPointer(entry *Entry) *VersionPointer {
-	return &VersionPointer{
-		version: atomic.LoadUint64(&entry.version),
-		Entry:   entry,
-	}
-}
-
-func (v *VersionPointer) Acquire() bool {
-	return v != nil && v.Entry.Acquire(v.version)
-}
-
-func (v *VersionPointer) Version() uint64 {
-	return v.version
-}
-
-func (v *VersionPointer) ShouldBeRefreshed(cfg *config.Cache) bool {
-	return v != nil && v.Entry.ShouldBeRefreshed(cfg)
-}
 
 // Entry is the packed request+response payload
 type Entry struct {
@@ -85,21 +56,8 @@ func (e *Entry) Init() *Entry {
 	return e
 }
 
-var (
-	bufPool           = &sync.Pool{New: func() any { return new(bytes.Buffer) }}
-	hasherPool        = &sync.Pool{New: func() any { return xxh3.New() }}
-	ruleNotFoundError = errors.New("rule not found")
-)
-
-func (e *Entry) MapKey() uint64   { return e.key }
-func (e *Entry) ShardKey() uint64 { return e.shard }
-
-type Releaser func()
-
-var emptyReleaser Releaser
-
 func drainEntryPool() *Entry {
-	e := EntriesPool.Get().(*Entry)
+	e := entriesPool.Get().(*Entry)
 	atomic.StoreInt64(&e.isDoomed, 0)
 	atomic.StoreInt64(&e.refCount, 0)
 	return e
@@ -188,6 +146,9 @@ func NewEntryFromField(
 	return entry
 }
 
+func (e *Entry) MapKey() uint64   { return e.key }
+func (e *Entry) ShardKey() uint64 { return e.shard }
+
 const (
 	// refCount values
 	preDoomedCount = 1
@@ -267,7 +228,7 @@ func (e *Entry) finalize() (freedMem int64) {
 	freedMem = e.Weight()
 
 	// return back to pool
-	EntriesPool.Put(e)
+	entriesPool.Put(e)
 
 	return
 }
