@@ -51,23 +51,18 @@ func MapShardKey(key uint64) uint64 {
 }
 
 // Set inserts or updates a value in the correct shard. Returns a releaser for ref counting.
-func (smap *Map[V]) Set(value V) {
-	smap.shards[value.ShardKey()].Set(value.MapKey(), value)
+func (smap *Map[V]) Set(key uint64, value V) (takenMem int64, releaser func()) {
+	return smap.Shard(key).Set(key, value)
 }
 
 // Get fetches a value and its releaser from the correct shard.
 // found==false means the value is absent.
-func (smap *Map[V]) Get(entry V) (value V, releaser func(), found bool) {
-	return smap.shards[entry.ShardKey()].Get(entry)
+func (smap *Map[V]) Get(key uint64) (value V, releaser func(), found bool) {
+	return smap.Shard(key).Get(key)
 }
 
-func (smap *Map[V]) Rnd() (value V, found bool) {
-	smap.shards[uint64(rand.Intn(int(ActiveShards)))].Walk(context.Background(), func(u uint64, v V) bool {
-		value = v
-		found = true
-		return false
-	}, false)
-	return
+func (smap *Map[V]) Rnd() (value V, releaser func(), found bool) {
+	return smap.shards[uint64(rand.Intn(int(ActiveShards)))].GetRand()
 }
 
 // Remove deletes a value by key, returning how much memory was freed and a pointer to its LRU/list element.
