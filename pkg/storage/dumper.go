@@ -34,12 +34,12 @@ type Dumper interface {
 
 type Dump struct {
 	cfg        *config.Cache
-	shardedMap *sharded.Map[*model.Entry]
+	shardedMap *sharded.Map[*model.VersionPointer]
 	storage    Storage
 	backend    repository.Backender
 }
 
-func NewDumper(cfg *config.Cache, sm *sharded.Map[*model.Entry], storage Storage, backend repository.Backender) *Dump {
+func NewDumper(cfg *config.Cache, sm *sharded.Map[*model.VersionPointer], storage Storage, backend repository.Backender) *Dump {
 	return &Dump{
 		cfg:        cfg,
 		shardedMap: sm,
@@ -72,7 +72,7 @@ func (d *Dump) Dump(ctx context.Context) error {
 	var wg sync.WaitGroup
 	var successNum, errorNum int32
 
-	d.shardedMap.WalkShards(func(shardKey uint64, shard *sharded.Shard[*model.Entry]) {
+	d.shardedMap.WalkShards(func(shardKey uint64, shard *sharded.Shard[*model.VersionPointer]) {
 		wg.Add(1)
 		go func(shardKey uint64) {
 			defer wg.Done()
@@ -91,7 +91,7 @@ func (d *Dump) Dump(ctx context.Context) error {
 
 			bw := bufio.NewWriterSize(f, 512*1024)
 
-			shard.Walk(ctx, func(key uint64, entry *model.Entry) bool {
+			shard.Walk(ctx, func(key uint64, entry *model.VersionPointer) bool {
 				data, releaser := entry.ToBytes()
 				defer releaser()
 
@@ -133,7 +133,7 @@ func (d *Dump) Load(ctx context.Context) error {
 				defer log.Info().Msg("[dump] mocked data finished loading")
 				path := []byte("/api/v2/pagedata")
 				for entry := range mock.StreamSeqEntries(ctx, d.cfg, d.backend, path, 10_000_000) {
-					d.storage.Set(entry)
+					d.storage.Set(model.NewVersionPointer(entry))
 				}
 			}()
 		}
@@ -202,7 +202,7 @@ func (d *Dump) Load(ctx context.Context) error {
 					atomic.AddInt32(&errorNum, 1)
 					continue
 				}
-				d.storage.Set(entry)
+				d.storage.Set(model.NewVersionPointer(entry))
 				atomic.AddInt32(&successNum, 1)
 
 				select {
