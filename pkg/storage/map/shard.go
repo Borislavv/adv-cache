@@ -57,6 +57,10 @@ func (shard *Shard[V]) Set(key uint64, new V) (takenMem int64, releaser func()) 
 		takenMem = new.Weight() - old.Weight()
 		atomic.AddInt64(&shard.mem, takenMem)
 		old.Remove()
+	} else {
+		takenMem = new.Weight()
+		atomic.AddInt64(&shard.len, 1)
+		atomic.AddInt64(&shard.mem, takenMem)
 	}
 
 	return takenMem, new.Release
@@ -64,16 +68,27 @@ func (shard *Shard[V]) Set(key uint64, new V) (takenMem int64, releaser func()) 
 
 // Get retrieves a value and returns a releaser for it, incrementing its refCount.
 // Returns (value, releaser, true) if found; otherwise (zero, nil, false).
-func (shard *Shard[V]) Get(entry V) (val V, releaser func(), isHit bool) {
+func (shard *Shard[V]) Get(key uint64) (val V, releaser func(), isHit bool) {
 	shard.RLock()
-	pointer, ok := shard.items[entry.MapKey()]
+	item, ok := shard.items[key]
 	shard.RUnlock()
 
-	if pointer.Acquire() && pointer.IsSameFingerprint(entry.Fingerprint()) {
-		return pointer, pointer.Release, ok
+	if item.Acquire() {
+		return item, item.Release, ok
 	}
 
 	// not found or hash collision or already removed
+	return val, emptyReleaser, false
+}
+
+func (shard *Shard[V]) GetRand() (val V, releaser func(), isHit bool) {
+	shard.RLock()
+	defer shard.RUnlock()
+	for _, item := range shard.items {
+		if item.Acquire() {
+			return item, item.Release, true
+		}
+	}
 	return val, emptyReleaser, false
 }
 
