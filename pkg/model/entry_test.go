@@ -14,17 +14,14 @@ import (
 
 func TestRefCountingNew(t *testing.T) {
 	var (
-		db   = make(map[int]*VersionedPointer)
+		db   = make(map[int]*VersionPointer)
 		mu   sync.Mutex
 		done = make(chan struct{})
 	)
 
 	for idx := 0; idx < 150; idx++ {
 		e := NewEntryFromField(0, 0, [16]byte{}, []byte(""), nil, nil, 0, 0)
-		db[idx] = &VersionedPointer{
-			V:   e.Version(),
-			Ptr: nil,
-		}
+		db[idx] = NewVersionPointer(e)
 	}
 
 	go func() {
@@ -43,13 +40,15 @@ func TestRefCountingNew(t *testing.T) {
 					idx := rand.Intn(150)
 					mu.Lock()
 					te := db[idx]
-					mu.Unlock()
-					if te.Ptr.Acquire(te.Version()) {
-						payload := te.Ptr.payload.Load()
+					if te.Acquire() {
+						mu.Unlock()
+						payload := te.payload.Load()
 						if payload == nil {
 							panic("payload is nil")
 						}
-						te.Ptr.Release()
+						te.Release()
+					} else {
+						mu.Unlock()
 					}
 				}
 			}
@@ -68,14 +67,11 @@ func TestRefCountingNew(t *testing.T) {
 					mu.Lock()
 					old := db[idx]
 					delete(db, idx)
-					if old.Ptr.Acquire(old.V) {
-						old.Ptr.Remove()
+					if old.Acquire() {
+						old.Remove()
 					}
 					e := NewEntryFromField(0, 0, [16]byte{}, []byte(""), nil, nil, 0, 0)
-					db[idx] = &VersionedPointer{
-						V:   e.Version(),
-						Ptr: nil,
-					}
+					db[idx] = NewVersionPointer(e)
 					mu.Unlock()
 				}
 			}

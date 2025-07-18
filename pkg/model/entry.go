@@ -38,17 +38,24 @@ type Revalidator func(
 	status int, headers [][2][]byte, body []byte, releaseFn func(), err error,
 )
 
-type VersionedPointer struct {
-	V   uint64
-	Ptr *Entry
+type VersionPointer struct {
+	version uint64
+	*Entry
 }
 
-func NewVersionedPointer(e *Entry) *VersionedPointer {
-	return &VersionedPointer{Ptr: e, V: atomic.LoadUint64(&e.version)}
+func NewVersionPointer(entry *Entry) *VersionPointer {
+	return &VersionPointer{
+		version: atomic.LoadUint64(&entry.version),
+		Entry:   entry,
+	}
 }
 
-func (v *VersionedPointer) Version() uint64 {
-	return v.V
+func (v *VersionPointer) Acquire() bool {
+	return v.Entry.Acquire(v.version)
+}
+
+func (v *VersionPointer) Version() uint64 {
+	return v.version
 }
 
 // Entry is the packed request+response payload
@@ -87,6 +94,13 @@ type Releaser func()
 
 var emptyReleaser Releaser
 
+func drainEntryPool() *Entry {
+	e := EntriesPool.Get().(*Entry)
+	atomic.StoreInt64(&e.isDoomed, 0)
+	atomic.StoreInt64(&e.refCount, 0)
+	return e
+}
+
 // NewEntryNetHttp accepts path, query and request headers as bytes slices.
 func NewEntryNetHttp(cfg *config.Cache, r *http.Request) (*Entry, Releaser, error) {
 	// path is a string in net/http so easily refer to it inside request
@@ -95,7 +109,7 @@ func NewEntryNetHttp(cfg *config.Cache, r *http.Request) (*Entry, Releaser, erro
 		return nil, emptyReleaser, ruleNotFoundError
 	}
 
-	entry := EntriesPool.Get().(*Entry)
+	entry := drainEntryPool()
 	entry.rule = rule
 
 	filteredQueries, queriesReleaser := entry.GetFilteredAndSortedKeyQueriesNetHttp(r)
@@ -114,7 +128,7 @@ func NewEntryFastHttp(cfg *config.Cache, r *fasthttp.RequestCtx) (*Entry, Releas
 		return nil, emptyReleaser, ruleNotFoundError
 	}
 
-	entry := EntriesPool.Get().(*Entry)
+	entry := drainEntryPool()
 	entry.rule = rule
 
 	filteredQueries, queriesReleaser := entry.getFilteredAndSortedKeyQueriesFastHttp(r)
@@ -132,7 +146,7 @@ func NewEntryManual(cfg *config.Cache, path, query []byte, headers [][2][]byte, 
 		return nil, emptyReleaser, ruleNotFoundError
 	}
 
-	entry := EntriesPool.Get().(*Entry)
+	entry := drainEntryPool()
 	entry.rule = rule
 	entry.revalidator = revalidator
 
@@ -158,7 +172,7 @@ func NewEntryFromField(
 	isCompressed int64,
 	willUpdateAt int64,
 ) *Entry {
-	entry := EntriesPool.Get().(*Entry)
+	entry := drainEntryPool()
 	entry.key = key
 	entry.shard = shard
 	entry.fingerprint = fingerprint
@@ -194,7 +208,7 @@ func (e *Entry) Acquire(expectedVersion uint64) bool {
 			return false
 		}
 		if atomic.CompareAndSwapInt64(&e.refCount, ref, ref+1) {
-			// double-check V to catch finalize()
+			// double-check Version to catch finalize()
 			if atomic.LoadUint64(&e.version) != expectedVersion {
 				e.Release()
 				return false
@@ -236,15 +250,14 @@ func (e *Entry) Remove() {
 // if you will, you will receive errors which are extremely hard-debug like "nil pointer dereference" and "non-consistent data into entry"
 // due to the Entry which was returned into pool will be used again in other threads.
 func (e *Entry) finalize() (freedMem int64) {
-	e.version += 1
+	atomic.AddUint64(&e.version, 1)
+
 	e.key = 0
 	e.shard = 0
 	e.rule = nil
 	e.willUpdateAt = 0
 	e.isCompressed = 0
 	e.revalidator = nil
-	e.isDoomed = 0
-	e.refCount = 0
 	e.lruListElem.Store(nil)
 	e.payload.Store(nil)
 	freedMem = e.Weight()
