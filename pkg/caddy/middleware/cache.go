@@ -36,7 +36,7 @@ type CacheMiddleware struct {
 	ConfigPath string
 	ctx        context.Context
 	cfg        *config.Cache
-	store      storage.Storage
+	storage    storage.Storage
 	backend    repository.Backender
 	refresher  storage.Refresher
 	evictor    storage.Evictor
@@ -71,7 +71,8 @@ func (m *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next
 		body    []byte
 	)
 
-	value, found := m.store.Get(entry)
+	value, valueReleaser, found := m.storage.Get(entry)
+	defer valueReleaser()
 	if !found {
 		// MISS — prepare capture writer
 		captured, releaseCapturer := httpwriter.NewCaptureResponseWriter(w)
@@ -103,12 +104,13 @@ func (m *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next
 		entry.SetPayload(path, query, queryHeaders, headers, body, status)
 		entry.SetRevalidator(m.backend.RevalidatorMaker())
 
-		m.store.Set(entry)
-
-		value = entry
+		pointer := model.NewVersionPointer(entry)
+		_, setValueReleaser := m.storage.Set(pointer)
+		defer setValueReleaser()
+		value = pointer
 	} else {
-		// Release unnecessary more entry which was used as input request
-		reqEntryReleaser()
+		defer reqEntryReleaser() // release the entry only on the case when existing entry was found in cache,
+		// otherwise created entry will escape to heap (link must be alive while entry in cache)
 
 		// Always read from cached value
 		var payloadReleaser func()

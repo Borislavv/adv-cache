@@ -50,8 +50,7 @@ func New(ctx context.Context, next http.Handler, name string) http.Handler {
 func (m *TraefikCacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	from := time.Now()
 
-	entry, releaser, err := model.NewEntryNetHttp(m.cfg, r)
-	defer releaser()
+	entry, reqEntryReleaser, err := model.NewEntryNetHttp(m.cfg, r)
 	if err != nil {
 		// Path was not matched, then handle request through upstream without cache.
 		m.next.ServeHTTP(w, r)
@@ -64,7 +63,8 @@ func (m *TraefikCacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		body    []byte
 	)
 
-	value, found := m.store.Get(entry)
+	value, valueReleaser, found := m.store.Get(entry)
+	defer valueReleaser()
 	if !found {
 		// MISS — prepare capture writer
 		captured, releaseCapturer := httpwriter.NewCaptureResponseWriter(w)
@@ -91,10 +91,14 @@ func (m *TraefikCacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		entry.SetPayload(path, query, queryHeaders, headers, body, status)
 		entry.SetRevalidator(m.backend.RevalidatorMaker())
 
-		m.store.Set(entry)
-
-		value = entry
+		pointer := model.NewVersionPointer(entry)
+		_, setValueReleaser := m.store.Set(pointer)
+		defer setValueReleaser()
+		value = pointer
 	} else {
+		defer reqEntryReleaser() // release the entry only on the case when existing entry was found in cache,
+		// otherwise created entry will escape to heap (link must be alive while entry in cache)
+
 		// Always read from cached value
 		var payloadReleaser func()
 		_, _, _, headers, body, status, payloadReleaser, err = value.Payload()

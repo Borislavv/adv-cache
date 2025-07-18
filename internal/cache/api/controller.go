@@ -84,7 +84,7 @@ func (c *CacheController) queryHeaders(r *fasthttp.RequestCtx) (headers [][2][]b
 func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 	var from = time.Now()
 
-	entry, entryReleaser, err := model.NewEntryFastHttp(c.cfg.Cache, r)
+	entry, reqEntryReleaser, err := model.NewEntryFastHttp(c.cfg.Cache, r)
 	if err != nil {
 		c.respondThatServiceIsTemporaryUnavailable(err, r)
 		return
@@ -122,7 +122,7 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 		value = pointer
 	} else {
 		fnd.Add(1)
-		defer entryReleaser() // release the entry only on the case when existing entry was found in cache,
+		defer reqEntryReleaser() // release the entry only on the case when existing entry was found in cache,
 		// otherwise created entry will escape to heap (link must be alive while entry in cache)
 
 		_, _, _, headers, body, status, releaser, err = value.Payload()
