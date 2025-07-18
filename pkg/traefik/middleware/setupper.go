@@ -10,7 +10,7 @@ import (
 )
 
 func (m *TraefikCacheMiddleware) setUpCache() {
-	shardedMap := sharded.NewMap[*model.Entry](m.ctx, m.cfg.Cache.Preallocate.PerShard)
+	shardedMap := sharded.NewMap[*model.VersionPointer](m.ctx, m.cfg.Cache.Preallocate.PerShard)
 	m.backend = repository.NewBackend(m.cfg)
 	balancer := lru.NewBalancer(m.ctx, shardedMap)
 	tinyLFU := lfu.NewTinyLFU(m.ctx)
