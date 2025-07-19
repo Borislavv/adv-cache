@@ -30,7 +30,7 @@ type Cache struct {
 	cancel     context.CancelFunc
 	probe      liveness.Prober
 	server     server.Http
-	metrics    metrics.Meter
+	metrics    metrics.Meterics
 	db         storage.Storage
 	dumper     storage.Dumper
 	balancer   lru.Balancer
