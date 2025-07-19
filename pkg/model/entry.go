@@ -59,16 +59,16 @@ func (e *Entry) Init() *Entry {
 func drainEntryPool() *Entry {
 	e := entriesPool.Get().(*Entry)
 	atomic.StoreInt64(&e.isDoomed, 0)
-	atomic.StoreInt64(&e.refCount, 0)
+	atomic.StoreInt64(&e.refCount, 1)
 	return e
 }
 
 // NewEntryNetHttp accepts path, query and request headers as bytes slices.
-func NewEntryNetHttp(cfg *config.Cache, r *http.Request) (*Entry, Releaser, error) {
+func NewEntryNetHttp(cfg *config.Cache, r *http.Request) (*Entry, error) {
 	// path is a string in net/http so easily refer to it inside request
 	rule := MatchRuleStr(cfg, r.URL.Path)
 	if rule == nil {
-		return nil, emptyReleaser, ruleNotFoundError
+		return nil, ruleNotFoundError
 	}
 
 	entry := drainEntryPool()
@@ -80,14 +80,14 @@ func NewEntryNetHttp(cfg *config.Cache, r *http.Request) (*Entry, Releaser, erro
 	filteredHeaders, headersReleaser := entry.GetFilteredAndSortedKeyHeadersNetHttp(r)
 	defer headersReleaser()
 
-	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), entry.Release, nil
+	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), nil
 }
 
 // NewEntryFastHttp accepts path, query and request headers as bytes slices.
-func NewEntryFastHttp(cfg *config.Cache, r *fasthttp.RequestCtx) (*Entry, Releaser, error) {
+func NewEntryFastHttp(cfg *config.Cache, r *fasthttp.RequestCtx) (*Entry, error) {
 	rule := MatchRule(cfg, r.Path())
 	if rule == nil {
-		return nil, emptyReleaser, ruleNotFoundError
+		return nil, ruleNotFoundError
 	}
 
 	entry := drainEntryPool()
@@ -99,13 +99,13 @@ func NewEntryFastHttp(cfg *config.Cache, r *fasthttp.RequestCtx) (*Entry, Releas
 	filteredHeaders, headersReleaser := entry.getFilteredAndSortedKeyHeadersFastHttp(r)
 	defer headersReleaser()
 
-	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), entry.Release, nil
+	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), nil
 }
 
-func NewEntryManual(cfg *config.Cache, path, query []byte, headers [][2][]byte, revalidator Revalidator) (*Entry, Releaser, error) {
+func NewEntryManual(cfg *config.Cache, path, query []byte, headers [][2][]byte, revalidator Revalidator) (*Entry, error) {
 	rule := MatchRule(cfg, path)
 	if rule == nil {
-		return nil, emptyReleaser, ruleNotFoundError
+		return nil, ruleNotFoundError
 	}
 
 	entry := drainEntryPool()
@@ -121,7 +121,7 @@ func NewEntryManual(cfg *config.Cache, path, query []byte, headers [][2][]byte, 
 
 	filteredHeaders := entry.filteredAndSortedKeyHeadersInPlace(headers)
 
-	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), entry.Release, nil
+	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), nil
 }
 
 func NewEntryFromField(
@@ -301,12 +301,26 @@ func (e *Entry) IsSameFingerprint(another [16]byte) bool {
 	return subtle.ConstantTimeCompare(e.fingerprint[:], another[:]) == 1
 }
 
-func (e *Entry) IsSame(another *Entry) bool {
-	return subtle.ConstantTimeCompare(e.fingerprint[:], another.fingerprint[:]) == 1
+func (e *Entry) IsSameEntry(another *Entry) bool {
+	return subtle.ConstantTimeCompare(e.fingerprint[:], another.fingerprint[:]) == 1 &&
+		e.isPayloadsAreEquals(e.PayloadBytes(), another.PayloadBytes())
 }
 
 func (e *Entry) SetRevalidator(revalidator Revalidator) {
 	e.revalidator = revalidator
+}
+
+func (e *Entry) isPayloadsAreEquals(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	if len(a) < 32 {
+		return bytes.Equal(a, b)
+	}
+
+	ha := xxh3.Hash(a[:8]) ^ xxh3.Hash(a[len(a)/2:len(a)/2+8]) ^ xxh3.Hash(a[len(a)-8:])
+	hb := xxh3.Hash(b[:8]) ^ xxh3.Hash(b[len(b)/2:len(b)/2+8]) ^ xxh3.Hash(b[len(b)-8:])
+	return ha == hb
 }
 
 // SetPayload packs and gzip-compresses the entire payload: Path, Query, QueryHeaders, StatusCode, ResponseHeaders, Body.

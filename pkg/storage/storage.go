@@ -12,13 +12,14 @@ type Storage interface {
 
 	// Get attempts to retrieve a cached response for the given request.
 	// Returns the response, a releaser for safe concurrent access, and a hit/miss flag.
-	Get(*model.Entry) (entry *model.VersionPointer, releaser func(), isHit bool)
+	Get(*model.Entry) (entry *model.VersionPointer, ok bool)
 
 	// GetRand returns a random elem from the map.
-	GetRand() (entry *model.VersionPointer, releaser func(), isHit bool)
+	GetRand() (entry *model.VersionPointer, ok bool)
 
 	// Set stores a new response in the cache and returns a releaser for managing resource lifetime.
-	Set(*model.VersionPointer) (takenMem int64, releaser func())
+	// 1. You definitely cannot use 'request' after use in Set due to it can be removed, you will receive a cache entry on hit!
+	Set(request *model.VersionPointer) (entry *model.VersionPointer)
 
 	// Remove is removes one element.
 	Remove(*model.VersionPointer) (freedBytes int64, isHit bool)

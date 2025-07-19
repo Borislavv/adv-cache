@@ -51,22 +51,22 @@ func MapShardKey(key uint64) uint64 {
 }
 
 // Set inserts or updates a value in the correct shard. Returns a releaser for ref counting.
-func (smap *Map[V]) Set(key uint64, value V) (takenMem int64, releaser func()) {
+func (smap *Map[V]) Set(key uint64, value V) (ok bool) {
 	return smap.Shard(key).Set(key, value)
 }
 
 // Get fetches a value and its releaser from the correct shard.
 // found==false means the value is absent.
-func (smap *Map[V]) Get(key uint64) (value V, releaser func(), found bool) {
+func (smap *Map[V]) Get(key uint64) (value V, ok bool) {
 	return smap.Shard(key).Get(key)
 }
 
-func (smap *Map[V]) Rnd() (value V, releaser func(), found bool) {
+func (smap *Map[V]) Rnd() (value V, ok bool) {
 	return smap.shards[uint64(rand.Intn(int(ActiveShards)))].GetRand()
 }
 
 // Remove deletes a value by key, returning how much memory was freed and a pointer to its LRU/list element.
-func (smap *Map[V]) Remove(key uint64) (freed int64, isHit bool) {
+func (smap *Map[V]) Remove(key uint64) (freed int64, ok bool) {
 	return smap.Shard(key).Remove(key)
 }
 
@@ -80,11 +80,16 @@ func (shard *Shard[V]) Walk(ctx context.Context, fn func(uint64, V) bool, lockRe
 		defer shard.RUnlock()
 	}
 	for k, v := range shard.items {
+		if !v.Acquire() {
+			continue
+		}
 		select {
 		case <-ctx.Done():
+			v.Release()
 			return
 		default:
 			ok := fn(k, v)
+			v.Release()
 			if !ok {
 				return
 			}

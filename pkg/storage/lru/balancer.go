@@ -17,13 +17,8 @@ type ShardNode struct {
 	Shard       *sharded.Shard[*model.VersionPointer] // Reference to the actual Shard (map + sync)
 }
 
-func (s *ShardNode) RandItem(ctx context.Context) *model.VersionPointer {
-	var entry *model.VersionPointer
-	s.Shard.Walk(ctx, func(u uint64, entryIter *model.VersionPointer) bool {
-		entry = entryIter
-		return false
-	}, false)
-	return entry
+func (s *ShardNode) RandItem() (*model.VersionPointer, bool) {
+	return s.Shard.GetRand()
 }
 
 // Weight returns an approximate Weight usage of this ShardNode structure.

@@ -67,7 +67,7 @@ func GenerateEntryPointersConsecutive(cfg *config.Cache, backend repository.Back
 		}
 
 		// releaser is unnecessary due to all entries will escape to heap
-		entry, _, err := model.NewEntryManual(cfg, path, query, queryHeaders, backend.RevalidatorMaker())
+		entry, err := model.NewEntryManual(cfg, path, query, queryHeaders, backend.RevalidatorMaker())
 		if err != nil {
 			panic(err)
 		}
@@ -119,7 +119,7 @@ func StreamEntryPointersConsecutive(ctx context.Context, cfg *config.Cache, back
 				}
 
 				// releaser is unnecessary due to all entries will escape to heap
-				entry, _, err := model.NewEntryManual(cfg, path, query, queryHeaders, backend.RevalidatorMaker())
+				entry, err := model.NewEntryManual(cfg, path, query, queryHeaders, backend.RevalidatorMaker())
 				if err != nil {
 					panic(err)
 				}

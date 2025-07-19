@@ -133,7 +133,7 @@ func (d *Dump) Load(ctx context.Context) error {
 				defer log.Info().Msg("[dump] mocked data finished loading")
 				path := []byte("/api/v2/pagedata")
 				for entry := range mock.StreamEntryPointersConsecutive(ctx, d.cfg, d.backend, path, 10_000_000) {
-					d.storage.Set(entry)
+					d.storage.Set(entry).Release()
 				}
 			}()
 		}
@@ -202,7 +202,7 @@ func (d *Dump) Load(ctx context.Context) error {
 					atomic.AddInt32(&errorNum, 1)
 					continue
 				}
-				d.storage.Set(model.NewVersionPointer(entry))
+				d.storage.Set(model.NewVersionPointer(entry)).Release()
 				atomic.AddInt32(&successNum, 1)
 
 				select {

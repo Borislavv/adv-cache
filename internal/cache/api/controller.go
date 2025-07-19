@@ -84,66 +84,71 @@ func (c *CacheController) queryHeaders(r *fasthttp.RequestCtx) (headers [][2][]b
 func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 	var from = time.Now()
 
-	entry, reqEntryReleaser, err := model.NewEntryFastHttp(c.cfg.Cache, r)
+	// make a lightweight request Entry (contains only key, shardKey and fingerprint)
+	newEntry, err := model.NewEntryFastHttp(c.cfg.Cache, r) // must be removed on hit and release on miss
 	if err != nil {
 		c.respondThatServiceIsTemporaryUnavailable(err, r)
 		return
 	}
 
 	var (
-		status   int
-		headers  [][2][]byte
-		body     []byte
-		releaser func()
+		payloadStatus   int
+		payloadHeaders  [][2][]byte
+		payloadBody     []byte
+		payloadReleaser func()
 	)
 
-	value, valueReleaser, found := c.cache.Get(entry)
-	defer valueReleaser()
+	foundEntry, found := c.cache.Get(newEntry)
 	if !found {
 		notFnd.Add(1)
 
+		// extract request data
 		path := r.Path()
+		rule := newEntry.Rule()
 		queryString := r.QueryArgs().QueryString()
 		queryHeaders, queryReleaser := c.queryHeaders(r)
 		defer queryReleaser()
 
-		status, headers, body, releaser, err = c.backend.Fetch(entry.Rule(), path, queryString, queryHeaders)
-		defer releaser()
+		// fetch data from upstream
+		payloadStatus, payloadHeaders, payloadBody, payloadReleaser, err = c.backend.Fetch(rule, path, queryString, queryHeaders)
+		defer payloadReleaser()
 		if err != nil {
 			c.respondThatServiceIsTemporaryUnavailable(err, r)
 			return
 		}
-		entry.SetPayload(path, queryString, queryHeaders, headers, body, status)
-		entry.SetRevalidator(c.backend.RevalidatorMaker())
+		newEntry.SetPayload(path, queryString, queryHeaders, payloadHeaders, payloadBody, payloadStatus)
+		newEntry.SetRevalidator(c.backend.RevalidatorMaker())
 
-		pointer := model.NewVersionPointer(entry)
-		_, setValueReleaser := c.cache.Set(pointer)
-		defer setValueReleaser()
-		value = pointer
+		// build and store new Entry in cache
+		foundEntry = c.cache.Set(model.NewVersionPointer(newEntry))
+		defer foundEntry.Release() // an Entry stored in the cache must be released after use
 	} else {
 		fnd.Add(1)
-		defer reqEntryReleaser() // release the entry only on the case when existing entry was found in cache,
-		// otherwise created entry will escape to heap (link must be alive while entry in cache)
 
-		_, _, _, headers, body, status, releaser, err = value.Payload()
-		defer releaser()
+		// deferred release and remove
+		newEntry.Remove()          // new Entry which was used as request for query cache does not need anymore
+		defer foundEntry.Release() // an Entry retrieved from the cache must be released after use
+
+		// unpack found Entry data
+		_, _, _, payloadHeaders, payloadBody, payloadStatus, payloadReleaser, err = foundEntry.Payload()
+		defer payloadReleaser()
 		if err != nil {
 			c.respondThatServiceIsTemporaryUnavailable(err, r)
 			return
 		}
 	}
 
-	// Write status, headers, and body from the cached (or fetched) response.
-	r.Response.SetStatusCode(status)
-	for _, kv := range headers {
+	// Write payloadStatus, payloadHeaders, and payloadBody from the cached (or fetched) response.
+	r.Response.SetStatusCode(payloadStatus)
+	for _, kv := range payloadHeaders {
 		r.Response.Header.AddBytesKV(kv[0], kv[1])
 	}
 
 	// Set up Last-Modified header
-	c.setLastModifiedHeader(r, value, status)
+	c.setLastModifiedHeader(r, foundEntry, payloadStatus)
 
-	// Write body
-	if _, err = serverutils.Write(body, r); err != nil {
+	// Write payloadBody
+	if _, err = serverutils.Write(payloadBody, r); err != nil {
 		c.respondThatServiceIsTemporaryUnavailable(err, r)
 		return
 	}
