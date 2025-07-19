@@ -7,23 +7,24 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/Borislavv/advanced-cache/pkg/config"
-	"github.com/Borislavv/advanced-cache/pkg/list"
-	"github.com/Borislavv/advanced-cache/pkg/pools"
-	"github.com/Borislavv/advanced-cache/pkg/repository"
-	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
-	"github.com/rs/zerolog/log"
-	"github.com/valyala/fasthttp"
-	"github.com/zeebo/xxh3"
 	"io"
 	"math"
 	"math/rand/v2"
 	"net/http"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
+
+	"github.com/Borislavv/advanced-cache/pkg/config"
+	"github.com/Borislavv/advanced-cache/pkg/list"
+	"github.com/Borislavv/advanced-cache/pkg/pools"
+	"github.com/Borislavv/advanced-cache/pkg/repository"
+	"github.com/Borislavv/advanced-cache/pkg/sort"
+	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
+	"github.com/rs/zerolog/log"
+	"github.com/valyala/fasthttp"
+	"github.com/zeebo/xxh3"
 )
 
 var (
@@ -74,11 +75,11 @@ func NewEntryNetHttp(cfg *config.Cache, r *http.Request) (*Entry, error) {
 	entry := drainEntryPool()
 	entry.rule = rule
 
-	filteredQueries, queriesReleaser := entry.GetFilteredAndSortedKeyQueriesNetHttp(r)
-	defer queriesReleaser()
+	filteredQueries, filteredQueriesReleaser := entry.GetFilteredAndSortedKeyQueriesNetHttp(r)
+	defer filteredQueriesReleaser(filteredQueries)
 
-	filteredHeaders, headersReleaser := entry.GetFilteredAndSortedKeyHeadersNetHttp(r)
-	defer headersReleaser()
+	filteredHeaders, filteredHeadersReleaser := entry.GetFilteredAndSortedKeyHeadersNetHttp(r)
+	defer filteredHeadersReleaser(filteredHeaders)
 
 	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), nil
 }
@@ -93,11 +94,11 @@ func NewEntryFastHttp(cfg *config.Cache, r *fasthttp.RequestCtx) (*Entry, error)
 	entry := drainEntryPool()
 	entry.rule = rule
 
-	filteredQueries, queriesReleaser := entry.getFilteredAndSortedKeyQueriesFastHttp(r)
-	defer queriesReleaser()
+	filteredQueries, filteredQueriesReleaser := entry.getFilteredAndSortedKeyQueriesFastHttp(r)
+	defer filteredQueriesReleaser(filteredQueries)
 
-	filteredHeaders, headersReleaser := entry.getFilteredAndSortedKeyHeadersFastHttp(r)
-	defer headersReleaser()
+	filteredHeaders, filteredHeadersReleaser := entry.getFilteredAndSortedKeyHeadersFastHttp(r)
+	defer filteredHeadersReleaser(filteredHeaders)
 
 	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), nil
 }
@@ -112,12 +113,10 @@ func NewEntryManual(cfg *config.Cache, path, query []byte, headers [][2][]byte, 
 	entry.rule = rule
 	entry.revalidator = revalidator
 
-	filteredQueries, queriesReleaser := entry.parseFilterAndSortQuery(query) // here, we are referring to the same query buffer which used in payload which have been mentioned before
-	defer queriesReleaser()                                                  // this is really reduce memory usage and GC pressure
+	filteredQueries, filteredQueriesReleaser := entry.parseFilterAndSortQuery(query) // here, we are referring to the same query buffer which used in payload which have been mentioned before
+	defer filteredQueriesReleaser(filteredQueries)                                   // this is really reduce memory usage and GC pressure
 
-	sort.Slice(filteredQueries, func(i, j int) bool {
-		return bytes.Compare(filteredQueries[i][0], filteredQueries[j][0]) < 0
-	})
+	sort.KVSlice(filteredQueries)
 
 	filteredHeaders := entry.filteredAndSortedKeyHeadersInPlace(headers)
 
@@ -433,7 +432,12 @@ func (e *Entry) SetPayload(
 	atomic.StoreInt64(&e.isCompressed, 0)
 }
 
-var emptyFn = func() {}
+var payloadReleaser = func(queryHeaders, responseHeaders [][2][]byte) {
+	queryHeaders = queryHeaders[:0]
+	pools.KeyValueSlicePool.Put(queryHeaders)
+	responseHeaders = responseHeaders[:0]
+	pools.KeyValueSlicePool.Put(responseHeaders)
+}
 
 // Payload decompresses the entire payload and unpacks it into fields.
 func (e *Entry) Payload() (
@@ -443,12 +447,12 @@ func (e *Entry) Payload() (
 	responseHeaders [][2][]byte,
 	body []byte,
 	status int,
-	releaseFn func(),
+	releaseFn func(q, h [][2][]byte),
 	err error,
 ) {
 	payload := e.PayloadBytes()
 	if len(payload) == 0 {
-		return nil, nil, nil, nil, nil, 0, emptyFn, fmt.Errorf("payload is empty")
+		return nil, nil, nil, nil, nil, 0, emptyReleaser, fmt.Errorf("payload is empty")
 	}
 
 	var rawPayload []byte
@@ -456,13 +460,13 @@ func (e *Entry) Payload() (
 		// TODO need to move it to sync.Pool
 		gr, err := gzip.NewReader(bytes.NewReader(payload))
 		if err != nil {
-			return nil, nil, nil, nil, nil, 0, emptyFn, fmt.Errorf("make gzip reader error: %w", err)
+			return nil, nil, nil, nil, nil, 0, emptyReleaser, fmt.Errorf("make gzip reader error: %w", err)
 		}
 		defer gr.Close()
 
 		rawPayload, err = io.ReadAll(gr)
 		if err != nil {
-			return nil, nil, nil, nil, nil, 0, emptyFn, fmt.Errorf("gzip read failed: %w", err)
+			return nil, nil, nil, nil, nil, 0, emptyReleaser, fmt.Errorf("gzip read failed: %w", err)
 		}
 	} else {
 		rawPayload = payload
@@ -529,12 +533,7 @@ func (e *Entry) Payload() (
 	offset += 4
 	body = rawPayload[offset:]
 
-	releaseFn = func() {
-		queryHeaders = queryHeaders[:0]
-		pools.KeyValueSlicePool.Put(queryHeaders)
-		responseHeaders = responseHeaders[:0]
-		pools.KeyValueSlicePool.Put(responseHeaders)
-	}
+	releaseFn = payloadReleaser
 
 	return
 }
@@ -564,11 +563,10 @@ func (e *Entry) WillUpdateAt() int64 {
 	return atomic.LoadInt64(&e.willUpdateAt)
 }
 
-func (e *Entry) parseFilterAndSortQuery(b []byte) (queries [][2][]byte, releaseFn func()) {
+func (e *Entry) parseFilterAndSortQuery(b []byte) (queries [][2][]byte, releaseFn func([][2][]byte)) {
 	b = bytes.TrimLeft(b, "?")
 
-	queries = pools.KeyValueSlicePool.Get().([][2][]byte)
-	queries = queries[:0]
+	queries = kvPool.Get().([][2][]byte)
 
 	type state struct {
 		kIdx   int
@@ -634,15 +632,10 @@ func (e *Entry) parseFilterAndSortQuery(b []byte) (queries [][2][]byte, releaseF
 	queries = filtered
 
 	if len(queries) > 1 {
-		sort.Slice(queries, func(i, j int) bool {
-			return bytes.Compare(queries[i][0], queries[j][0]) < 0
-		})
+		sort.KVSlice(queries)
 	}
 
-	return queries, func() {
-		queries = queries[:0]
-		pools.KeyValueSlicePool.Put(queries)
-	}
+	return queries, queriesReleaser
 }
 
 var kvPool = sync.Pool{
@@ -651,7 +644,12 @@ var kvPool = sync.Pool{
 	},
 }
 
-func (e *Entry) getFilteredAndSortedKeyQueriesFastHttp(r *fasthttp.RequestCtx) (kvPairs [][2][]byte, releaseFn func()) {
+var queriesReleaser = func(queries [][2][]byte) {
+	queries = queries[:0]
+	kvPool.Put(queries)
+}
+
+func (e *Entry) getFilteredAndSortedKeyQueriesFastHttp(r *fasthttp.RequestCtx) (kvPairs [][2][]byte, releaseFn func(queries [][2][]byte)) {
 	filtered := kvPool.Get().([][2][]byte)
 	filtered = filtered[:0]
 
@@ -672,17 +670,12 @@ func (e *Entry) getFilteredAndSortedKeyQueriesFastHttp(r *fasthttp.RequestCtx) (
 		return true
 	})
 
-	sort.Slice(filtered, func(i, j int) bool {
-		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
-	})
+	sort.KVSlice(filtered)
 
-	return filtered, func() {
-		filtered = filtered[:0]
-		kvPool.Put(filtered)
-	}
+	return filtered, queriesReleaser
 }
 
-func (e *Entry) GetFilteredAndSortedKeyQueriesNetHttp(r *http.Request) (kvPairs [][2][]byte, releaseFn func()) {
+func (e *Entry) GetFilteredAndSortedKeyQueriesNetHttp(r *http.Request) (kvPairs [][2][]byte, releaseFn func([][2][]byte)) {
 	// r.URL.RawQuery - is static immutable string, therefor we can easily refer to it without any allocations.
 	return e.parseFilterAndSortQuery(unsafe.Slice(unsafe.StringData(r.URL.RawQuery), len(r.URL.RawQuery)))
 }
@@ -693,7 +686,12 @@ var hKvPool = sync.Pool{
 	},
 }
 
-func (e *Entry) getFilteredAndSortedKeyHeadersFastHttp(r *fasthttp.RequestCtx) (kvPairs [][2][]byte, releaseFn func()) {
+var headersReleaser = func(headers [][2][]byte) {
+	headers = headers[:0]
+	hKvPool.Put(headers)
+}
+
+func (e *Entry) getFilteredAndSortedKeyHeadersFastHttp(r *fasthttp.RequestCtx) (kvPairs [][2][]byte, releaseFn func([][2][]byte)) {
 	filtered := hKvPool.Get().([][2][]byte)
 	allowedKeysMap := e.rule.CacheKey.HeadersMap
 
@@ -704,17 +702,12 @@ func (e *Entry) getFilteredAndSortedKeyHeadersFastHttp(r *fasthttp.RequestCtx) (
 		return true
 	})
 
-	sort.Slice(filtered, func(i, j int) bool {
-		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
-	})
+	sort.KVSlice(filtered)
 
-	return filtered, func() {
-		filtered = filtered[:0]
-		hKvPool.Put(filtered)
-	}
+	return filtered, headersReleaser
 }
 
-func (e *Entry) GetFilteredAndSortedKeyHeadersNetHttp(r *http.Request) (kvPairs [][2][]byte, releaseFn func()) {
+func (e *Entry) GetFilteredAndSortedKeyHeadersNetHttp(r *http.Request) (kvPairs [][2][]byte, releaseFn func([][2][]byte)) {
 	filtered := hKvPool.Get().([][2][]byte)
 	allowedKeysMap := e.rule.CacheKey.HeadersMap
 
@@ -729,14 +722,9 @@ func (e *Entry) GetFilteredAndSortedKeyHeadersNetHttp(r *http.Request) (kvPairs 
 		}
 	}
 
-	sort.Slice(filtered, func(i, j int) bool {
-		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
-	})
+	sort.KVSlice(filtered)
 
-	return filtered, func() {
-		filtered = filtered[:0]
-		hKvPool.Put(filtered)
-	}
+	return filtered, headersReleaser
 }
 
 // filteredAndSortedKeyQueriesInPlace - filters an input slice, be careful!
@@ -758,9 +746,7 @@ func (e *Entry) filteredAndSortedKeyQueriesInPlace(queries [][2][]byte) (kvPairs
 		}
 	}
 
-	sort.Slice(filtered, func(i, j int) bool {
-		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
-	})
+	sort.KVSlice(filtered)
 
 	return filtered
 }
@@ -776,9 +762,7 @@ func (e *Entry) filteredAndSortedKeyHeadersInPlace(headers [][2][]byte) (kvPairs
 		}
 	}
 
-	sort.Slice(filtered, func(i, j int) bool {
-		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
-	})
+	sort.KVSlice(filtered)
 
 	return filtered
 }
@@ -831,8 +815,8 @@ func (e *Entry) ShouldBeRefreshed(cfg *config.Cache) bool {
 
 // Revalidate calls the revalidator closure to fetch fresh data and updates the timestamp.
 func (e *Entry) Revalidate() error {
-	path, query, headers, _, _, _, release, err := e.Payload()
-	defer release()
+	path, query, headers, respHeaders, _, _, release, err := e.Payload()
+	defer release(headers, respHeaders)
 	if err != nil {
 		return err
 	}
@@ -975,7 +959,7 @@ func (e *Entry) SetMapKey(key uint64) *Entry {
 
 func (e *Entry) DumpPayload() {
 	path, query, queryHeaders, responseHeaders, body, status, releaseFn, err := e.Payload()
-	defer releaseFn()
+	defer releaseFn(queryHeaders, responseHeaders)
 	if err != nil {
 		log.Error().Err(err).Msg("[dump] failed to unpack payload")
 		return

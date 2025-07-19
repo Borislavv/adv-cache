@@ -92,10 +92,9 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 	}
 
 	var (
-		payloadStatus   int
-		payloadHeaders  [][2][]byte
-		payloadBody     []byte
-		payloadReleaser func()
+		payloadStatus  int
+		payloadHeaders [][2][]byte
+		payloadBody    []byte
 	)
 
 	foundEntry, found := c.cache.Get(newEntry)
@@ -110,6 +109,7 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 		defer queryReleaser()
 
 		// fetch data from upstream
+		var payloadReleaser func()
 		payloadStatus, payloadHeaders, payloadBody, payloadReleaser, err = c.backend.Fetch(rule, path, queryString, queryHeaders)
 		defer payloadReleaser()
 		if err != nil {
@@ -130,8 +130,10 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 		defer foundEntry.Release() // an Entry retrieved from the cache must be released after use
 
 		// unpack found Entry data
-		_, _, _, payloadHeaders, payloadBody, payloadStatus, payloadReleaser, err = foundEntry.Payload()
-		defer payloadReleaser()
+		var queryHeaders [][2][]byte
+		var payloadReleaser func(q, h [][2][]byte)
+		_, _, queryHeaders, payloadHeaders, payloadBody, payloadStatus, payloadReleaser, err = foundEntry.Payload()
+		defer payloadReleaser(queryHeaders, payloadHeaders)
 		if err != nil {
 			c.respondThatServiceIsTemporaryUnavailable(err, r)
 			return
@@ -169,17 +171,15 @@ func (c *CacheController) respondThatServiceIsTemporaryUnavailable(err error, ct
 }
 
 func (c *CacheController) setLastModifiedHeader(r *fasthttp.RequestCtx, entry *model.VersionPointer, status int) {
+	var t time.Time
 	if status == http.StatusOK {
-		r.Request.Header.SetBytesKV(
-			hdrLastModified,
-			time.Unix(0, entry.WillUpdateAt()-entry.Rule().TTL.Nanoseconds()).AppendFormat(nil, http.TimeFormat),
-		)
+		t = time.Unix(0, entry.WillUpdateAt()-entry.Rule().TTL.Nanoseconds())
 	} else {
-		r.Request.Header.SetBytesKV(
-			hdrLastModified,
-			time.Unix(0, entry.WillUpdateAt()-entry.Rule().ErrorTTL.Nanoseconds()).AppendFormat(nil, http.TimeFormat),
-		)
+		t = time.Unix(0, entry.WillUpdateAt()-entry.Rule().ErrorTTL.Nanoseconds())
 	}
+
+	buf := fasthttp.AppendHTTPDate(nil, t) // zero-alloc форматирование в RFC1123 (http.TimeFormat)
+	r.Response.Header.SetBytesKV(hdrLastModified, buf)
 }
 
 // resolveMessagePlaceholder substitutes ${message} in template with escaped error message.

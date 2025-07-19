@@ -109,8 +109,8 @@ func TestEntryPayloadRoundTrip(t *testing.T) {
 
 	// === 2) Распаковываем
 	p1, q1, qh1, h1, b1, s1, release, err := e.Payload()
+	defer release(qh1, h1)
 	require.NoError(t, err)
-	defer release()
 
 	// === 3) Проверяем значения
 	require.Equal(t, path, p1)
@@ -127,8 +127,8 @@ func TestEntryPayloadRoundTrip(t *testing.T) {
 
 	// === 5) И снова распаковываем
 	p2, q2, qh2, h2, b2, s2, release2, err := e2.Payload()
+	defer release2(qh2, h2)
 	require.NoError(t, err)
-	defer release2()
 
 	require.Equal(t, p1, p2)
 	require.Equal(t, q1, q2)

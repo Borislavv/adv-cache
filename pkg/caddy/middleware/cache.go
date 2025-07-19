@@ -93,7 +93,7 @@ func (m *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next
 
 		// Get query headers from original request
 		queryHeaders, queryHeadersReleaser := newEntry.GetFilteredAndSortedKeyHeadersNetHttp(r)
-		defer queryHeadersReleaser()
+		defer queryHeadersReleaser(queryHeaders)
 
 		var extractReleaser func()
 		status, headers, body, extractReleaser = captured.ExtractPayload()
@@ -112,9 +112,10 @@ func (m *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next
 		defer foundEntry.Release() // an Entry retrieved from the cache must be released after use
 
 		// Always read from cached foundEntry
-		var payloadReleaser func()
-		_, _, _, headers, body, status, payloadReleaser, err = foundEntry.Payload()
-		defer payloadReleaser()
+		var queryHeaders [][2][]byte
+		var payloadReleaser func(q, h [][2][]byte)
+		_, _, queryHeaders, headers, body, status, payloadReleaser, err = foundEntry.Payload()
+		defer payloadReleaser(queryHeaders, headers)
 		if err != nil {
 			// ERROR — prepare capture writer
 			captured, releaseCapturer := httpwriter.NewCaptureResponseWriter(w)

@@ -2,6 +2,7 @@ package header
 
 import (
 	"github.com/Borislavv/advanced-cache/pkg/model"
+	"github.com/valyala/fasthttp"
 	"net/http"
 	"time"
 	"unsafe"
@@ -10,11 +11,16 @@ import (
 var lastModifiedKey = "Last-Modified"
 
 func SetLastModified(w http.ResponseWriter, entry *model.VersionPointer, status int) {
+	var t time.Time
 	if status == http.StatusOK {
-		bts := time.Unix(0, entry.WillUpdateAt()-entry.Rule().TTL.Nanoseconds()).AppendFormat(nil, http.TimeFormat)
-		w.Header().Set(lastModifiedKey, unsafe.String(unsafe.SliceData(bts), len(bts)))
+		t = time.Unix(0, entry.WillUpdateAt()-entry.Rule().TTL.Nanoseconds())
 	} else {
-		bts := time.Unix(0, entry.WillUpdateAt()-entry.Rule().ErrorTTL.Nanoseconds()).AppendFormat(nil, http.TimeFormat)
-		w.Header().Set(lastModifiedKey, unsafe.String(unsafe.SliceData(bts), len(bts)))
+		t = time.Unix(0, entry.WillUpdateAt()-entry.Rule().ErrorTTL.Nanoseconds())
 	}
+
+	// fasthttp.AppendHTTPDate — zero-alloc RFC1123 (http.TimeFormat) formatter
+	bts := fasthttp.AppendHTTPDate(nil, t)
+
+	// Cast []byte → string без копий (и безопасно)
+	w.Header().Set(lastModifiedKey, unsafe.String(&bts[0], len(bts)))
 }
