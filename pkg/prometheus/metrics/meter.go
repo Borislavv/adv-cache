@@ -1,11 +1,30 @@
 package metrics
 
 import (
+	"bytes"
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics/keyword"
 	"github.com/VictoriaMetrics/metrics"
 	"strconv"
+	"sync"
 	"time"
 	"unsafe"
+)
+
+var (
+	bufPool = sync.Pool{
+		New: func() interface{} {
+			return new(bytes.Buffer)
+		},
+	}
+	timersPool = sync.Pool{
+		New: func() interface{} {
+			return new(Timer)
+		},
+	}
+	pathBytes   = []byte(`{path="`)
+	methodBytes = []byte(`",method="`)
+	statusBytes = []byte(`",status="`)
+	closerBytes = []byte(`"}`)
 )
 
 // Meter defines methods for recording application metrics.
@@ -41,40 +60,43 @@ func (m *Metrics) IncTotal(path, method, status []byte) {
 	if len(status) > 0 {
 		name = keyword.TotalHttpResponsesMetricName
 	}
-	buf := make([]byte, 0, 128)
+	buf := bufPool.Get().(*bytes.Buffer)
+	defer bufPool.Put(buf)
+	defer buf.Reset()
 
-	buf = append(buf, name...)
-	buf = append(buf, `{path="`...)
-	buf = append(buf, path...)
-	buf = append(buf, `",method="`...)
-	buf = append(buf, method...)
-	buf = append(buf, `"`...)
-
+	buf.Write(name)
+	buf.Write(pathBytes)
+	buf.Write(path)
+	buf.Write(methodBytes)
+	buf.Write(method)
 	if len(status) > 0 {
-		buf = append(buf, `,status="`...)
-		buf = append(buf, status...)
-		buf = append(buf, `"`...)
+		buf.Write(statusBytes)
+		buf.Write(status)
 	}
-	buf = append(buf, `}`...)
-	bufStr := *(*string)(unsafe.Pointer(&buf))
+	buf.Write(closerBytes)
+
+	bufBytes := buf.Bytes()
+	bufStr := *(*string)(unsafe.Pointer(&bufBytes))
 
 	metrics.GetOrCreateCounter(bufStr).Inc()
 }
 
 // IncStatus increments a counter for HTTP response statuses.
 func (m *Metrics) IncStatus(path, method, status []byte) {
-	buf := make([]byte, 0, 128)
-	buf = append(buf, keyword.HttpResponseStatusesMetricName...)
-	buf = append(buf, `{path="`...)
-	buf = append(buf, path...)
-	buf = append(buf, `",method="`...)
-	buf = append(buf, method...)
-	buf = append(buf, `",status="`...)
-	buf = append(buf, status...)
-	buf = append(buf, `"}`...)
-	bufStr := *(*string)(unsafe.Pointer(&buf))
+	buf := bufPool.Get().(*bytes.Buffer)
+	defer bufPool.Put(buf)
+	defer buf.Reset()
 
-	metrics.GetOrCreateCounter(bufStr).Inc()
+	buf.Write(keyword.HttpResponseStatusesMetricName)
+	buf.Write(pathBytes)
+	buf.Write(path)
+	buf.Write(methodBytes)
+	buf.Write(method)
+	buf.Write(statusBytes)
+	buf.Write(status)
+	buf.Write(closerBytes)
+
+	metrics.GetOrCreateCounter(buf.String()).Inc()
 }
 
 // SetCacheMemory updates the gauge for total cache memory usage in bytes.
@@ -90,24 +112,32 @@ func (m *Metrics) SetCacheLength(count int64) {
 // Timer tracks start of an operation for timing metrics.
 type Timer struct {
 	name  string
-	start time.Time
+	start int64
 }
 
 // NewResponseTimeTimer creates a Timer for measuring response time of given path and method.
 func (m *Metrics) NewResponseTimeTimer(path, method []byte) *Timer {
-	buf := make([]byte, 0, 128)
-	buf = append(buf, keyword.HttpResponseTimeMsMetricName...)
-	buf = append(buf, `{path="`...)
-	buf = append(buf, path...)
-	buf = append(buf, `",method="`...)
-	buf = append(buf, method...)
-	buf = append(buf, `"}`...)
-	bufStr := *(*string)(unsafe.Pointer(&buf))
+	buf := bufPool.Get().(*bytes.Buffer)
+	defer bufPool.Put(buf)
+	defer buf.Reset()
 
-	return &Timer{name: bufStr, start: time.Now()}
+	buf.Write(keyword.HttpResponseTimeMsMetricName)
+	buf.Write(pathBytes)
+	buf.Write(path)
+	buf.Write(methodBytes)
+	buf.Write(method)
+	buf.Write(closerBytes)
+
+	t := timersPool.Get().(*Timer)
+	t.name = buf.String()
+	t.start = time.Now().UnixNano()
+
+	return t
 }
 
 // FlushResponseTimeTimer records the elapsed time since Timer creation into a histogram.
 func (m *Metrics) FlushResponseTimeTimer(t *Timer) {
-	metrics.GetOrCreateHistogram(t.name).Update(time.Since(t.start).Seconds())
+	delta := float64(time.Now().UnixNano()-t.start) / 1e9
+	metrics.GetOrCreateHistogram(t.name).Update(delta)
+	timersPool.Put(t)
 }
