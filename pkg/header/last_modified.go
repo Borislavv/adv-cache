@@ -4,23 +4,46 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/valyala/fasthttp"
 	"net/http"
+	"sync"
 	"time"
 	"unsafe"
 )
 
-var lastModifiedKey = "Last-Modified"
+var (
+	lastModifiedStrKey   = "Last-Modified"
+	lastModifiedBytesKey = []byte(lastModifiedStrKey)
+)
 
-func SetLastModified(w http.ResponseWriter, entry *model.VersionPointer, status int) {
-	var t time.Time
+var timePool = sync.Pool{
+	New: func() any {
+		return new(time.Time)
+	},
+}
+
+func SetLastModifiedNetHttp(w http.ResponseWriter, entry *model.VersionPointer, status int) {
+	t := timePool.Get().(*time.Time)
+	defer timePool.Put(t)
+
 	if status == http.StatusOK {
-		t = time.Unix(0, entry.WillUpdateAt()-entry.Rule().TTL.Nanoseconds())
+		*t = time.Unix(0, entry.WillUpdateAt()-entry.Rule().TTL.Nanoseconds())
 	} else {
-		t = time.Unix(0, entry.WillUpdateAt()-entry.Rule().ErrorTTL.Nanoseconds())
+		*t = time.Unix(0, entry.WillUpdateAt()-entry.Rule().ErrorTTL.Nanoseconds())
 	}
 
-	// fasthttp.AppendHTTPDate — zero-alloc RFC1123 (http.TimeFormat) formatter
-	bts := fasthttp.AppendHTTPDate(nil, t)
+	bts := fasthttp.AppendHTTPDate(nil, *t)
+	w.Header().Set(lastModifiedStrKey, unsafe.String(&bts[0], len(bts)))
+}
 
-	// Cast []byte → string без копий (и безопасно)
-	w.Header().Set(lastModifiedKey, unsafe.String(&bts[0], len(bts)))
+func SetLastModifiedFastHttp(r *fasthttp.RequestCtx, entry *model.VersionPointer, status int) {
+	t := timePool.Get().(*time.Time)
+	defer timePool.Put(t)
+
+	if status == http.StatusOK {
+		*t = time.Unix(0, entry.WillUpdateAt()-entry.Rule().TTL.Nanoseconds())
+	} else {
+		*t = time.Unix(0, entry.WillUpdateAt()-entry.Rule().ErrorTTL.Nanoseconds())
+	}
+
+	buf := fasthttp.AppendHTTPDate(nil, *t)
+	r.Response.Header.SetBytesKV(lastModifiedBytesKey, buf)
 }

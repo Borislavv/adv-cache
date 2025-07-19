@@ -7,7 +7,7 @@ import (
 var (
 	KeyValueSlicePool = sync.Pool{
 		New: func() interface{} {
-			return make([][2][]byte, 0, 64)
+			return make([][2][]byte, 0, 24)
 		},
 	}
 )

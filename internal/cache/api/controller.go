@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/Borislavv/advanced-cache/internal/cache/config"
+	"github.com/Borislavv/advanced-cache/pkg/header"
 	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/Borislavv/advanced-cache/pkg/pools"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
@@ -14,7 +15,6 @@ import (
 	"github.com/fasthttp/router"
 	"github.com/rs/zerolog/log"
 	"github.com/valyala/fasthttp"
-	"net/http"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -68,18 +68,6 @@ func NewCacheController(
 	return c
 }
 
-func (c *CacheController) queryHeaders(r *fasthttp.RequestCtx) (headers [][2][]byte, releaseFn func()) {
-	headers = pools.KeyValueSlicePool.Get().([][2][]byte)
-	r.Request.Header.All()(func(key []byte, value []byte) bool {
-		headers = append(headers, [2][]byte{key, value})
-		return true
-	})
-	return headers, func() {
-		headers = headers[:0]
-		pools.KeyValueSlicePool.Put(headers)
-	}
-}
-
 // Index is the main HTTP handler.
 func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 	var from = time.Now()
@@ -106,7 +94,7 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 		rule := newEntry.Rule()
 		queryString := r.QueryArgs().QueryString()
 		queryHeaders, queryReleaser := c.queryHeaders(r)
-		defer queryReleaser()
+		defer queryReleaser(queryHeaders)
 
 		// fetch data from upstream
 		var payloadReleaser func()
@@ -147,7 +135,7 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 	}
 
 	// Set up Last-Modified header
-	c.setLastModifiedHeader(r, foundEntry, payloadStatus)
+	header.SetLastModifiedFastHttp(r, foundEntry, payloadStatus)
 
 	// Write payloadBody
 	if _, err = serverutils.Write(payloadBody, r); err != nil {
@@ -170,18 +158,6 @@ func (c *CacheController) respondThatServiceIsTemporaryUnavailable(err error, ct
 	}
 }
 
-func (c *CacheController) setLastModifiedHeader(r *fasthttp.RequestCtx, entry *model.VersionPointer, status int) {
-	var t time.Time
-	if status == http.StatusOK {
-		t = time.Unix(0, entry.WillUpdateAt()-entry.Rule().TTL.Nanoseconds())
-	} else {
-		t = time.Unix(0, entry.WillUpdateAt()-entry.Rule().ErrorTTL.Nanoseconds())
-	}
-
-	buf := fasthttp.AppendHTTPDate(nil, t) // zero-alloc форматирование в RFC1123 (http.TimeFormat)
-	r.Response.Header.SetBytesKV(hdrLastModified, buf)
-}
-
 // resolveMessagePlaceholder substitutes ${message} in template with escaped error message.
 func (c *CacheController) resolveMessagePlaceholder(msg []byte, err error) []byte {
 	escaped, _ := json.Marshal(err.Error())
@@ -191,6 +167,20 @@ func (c *CacheController) resolveMessagePlaceholder(msg []byte, err error) []byt
 // AddRoute attaches controller's route(s) to the provided router.
 func (c *CacheController) AddRoute(router *router.Router) {
 	router.GET(CacheGetPath, c.Index)
+}
+
+var queryHeadersReleaser = func(headers [][2][]byte) {
+	headers = headers[:0]
+	pools.KeyValueSlicePool.Put(headers)
+}
+
+func (c *CacheController) queryHeaders(r *fasthttp.RequestCtx) (headers [][2][]byte, releaseFn func([][2][]byte)) {
+	headers = pools.KeyValueSlicePool.Get().([][2][]byte)
+	r.Request.Header.All()(func(key []byte, value []byte) bool {
+		headers = append(headers, [2][]byte{key, value})
+		return true
+	})
+	return headers, queryHeadersReleaser
 }
 
 // runLogger runs a goroutine to periodically log RPS and avg duration per window, if debug enabled.
