@@ -2,12 +2,10 @@ package model
 
 import (
 	"bytes"
-	"compress/gzip"
 	"crypto/subtle"
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"math/rand/v2"
 	"net/http"
@@ -28,7 +26,7 @@ import (
 )
 
 var (
-	entriesPool       = sync.Pool{New: func() interface{} { return new(Entry).Init() }}
+	entriesPool       = &sync.Pool{New: func() any { return new(Entry).Init() }}
 	bufPool           = &sync.Pool{New: func() any { return new(bytes.Buffer) }}
 	hasherPool        = &sync.Pool{New: func() any { return xxh3.New() }}
 	ruleNotFoundError = errors.New("rule not found")
@@ -116,7 +114,9 @@ func NewEntryManual(cfg *config.Cache, path, query []byte, headers [][2][]byte, 
 	filteredQueries, filteredQueriesReleaser := entry.parseFilterAndSortQuery(query) // here, we are referring to the same query buffer which used in payload which have been mentioned before
 	defer filteredQueriesReleaser(filteredQueries)                                   // this is really reduce memory usage and GC pressure
 
-	sort.KVSlice(filteredQueries)
+	if len(filteredQueries) > 1 {
+		sort.KVSlice(filteredQueries)
+	}
 
 	filteredHeaders := entry.filteredAndSortedKeyHeadersInPlace(headers)
 
@@ -411,21 +411,6 @@ func (e *Entry) SetPayload(
 	payloadBuf = append(payloadBuf, body...)
 	offset += len(body)
 
-	// === 4) Compress if needed ===
-	if e.rule.Gzip.Enabled && total >= e.rule.Gzip.Threshold {
-		var compressed bytes.Buffer
-		gzipWriter := gzip.NewWriter(&compressed)
-		_, err := gzipWriter.Write(payloadBuf)
-		closeErr := gzipWriter.Close()
-		if err == nil && closeErr == nil {
-			bufCopy := make([]byte, compressed.Len())
-			copy(bufCopy, compressed.Bytes())
-			e.payload.Store(&bufCopy)
-			atomic.StoreInt64(&e.isCompressed, 1)
-			return
-		}
-	}
-
 	// === 5) Store raw ===
 	payloadBuf = payloadBuf[:]
 	e.payload.Store(&payloadBuf)
@@ -455,75 +440,58 @@ func (e *Entry) Payload() (
 		return nil, nil, nil, nil, nil, 0, emptyReleaser, fmt.Errorf("payload is empty")
 	}
 
-	var rawPayload []byte
-	if atomic.LoadInt64(&e.isCompressed) == 1 {
-		// TODO need to move it to sync.Pool
-		gr, err := gzip.NewReader(bytes.NewReader(payload))
-		if err != nil {
-			return nil, nil, nil, nil, nil, 0, emptyReleaser, fmt.Errorf("make gzip reader error: %w", err)
-		}
-		defer gr.Close()
-
-		rawPayload, err = io.ReadAll(gr)
-		if err != nil {
-			return nil, nil, nil, nil, nil, 0, emptyReleaser, fmt.Errorf("gzip read failed: %w", err)
-		}
-	} else {
-		rawPayload = payload
-	}
-
 	offset := 0
 
 	// --- Path
-	pathLen := binary.LittleEndian.Uint32(rawPayload[offset:])
+	pathLen := binary.LittleEndian.Uint32(payload[offset:])
 	offset += 4
-	path = rawPayload[offset : offset+int(pathLen)]
+	path = payload[offset : offset+int(pathLen)]
 	offset += int(pathLen)
 
 	// --- Query
-	queryLen := binary.LittleEndian.Uint32(rawPayload[offset:])
+	queryLen := binary.LittleEndian.Uint32(payload[offset:])
 	offset += 4
-	query = rawPayload[offset : offset+int(queryLen)]
+	query = payload[offset : offset+int(queryLen)]
 	offset += int(queryLen)
 
 	// --- QueryHeaders
-	numQueryHeaders := binary.LittleEndian.Uint32(rawPayload[offset:])
+	numQueryHeaders := binary.LittleEndian.Uint32(payload[offset:])
 	offset += 4
 	queryHeaders = pools.KeyValueSlicePool.Get().([][2][]byte)
 	for i := 0; i < int(numQueryHeaders); i++ {
-		keyLen := binary.LittleEndian.Uint32(rawPayload[offset:])
+		keyLen := binary.LittleEndian.Uint32(payload[offset:])
 		offset += 4
-		k := rawPayload[offset : offset+int(keyLen)]
+		k := payload[offset : offset+int(keyLen)]
 		offset += int(keyLen)
 
-		valueLen := binary.LittleEndian.Uint32(rawPayload[offset:])
+		valueLen := binary.LittleEndian.Uint32(payload[offset:])
 		offset += 4
-		v := rawPayload[offset : offset+int(valueLen)]
+		v := payload[offset : offset+int(valueLen)]
 		offset += int(valueLen)
 
 		queryHeaders = append(queryHeaders, [2][]byte{k, v})
 	}
 
 	// --- StatusCode
-	status = int(binary.LittleEndian.Uint32(rawPayload[offset:]))
+	status = int(binary.LittleEndian.Uint32(payload[offset:]))
 	offset += 4
 
 	// --- Response Headers
-	numHeaders := binary.LittleEndian.Uint32(rawPayload[offset:])
+	numHeaders := binary.LittleEndian.Uint32(payload[offset:])
 	offset += 4
 	responseHeaders = pools.KeyValueSlicePool.Get().([][2][]byte)
 	for i := 0; i < int(numHeaders); i++ {
-		keyLen := binary.LittleEndian.Uint32(rawPayload[offset:])
+		keyLen := binary.LittleEndian.Uint32(payload[offset:])
 		offset += 4
-		key := rawPayload[offset : offset+int(keyLen)]
+		key := payload[offset : offset+int(keyLen)]
 		offset += int(keyLen)
 
-		numVals := binary.LittleEndian.Uint32(rawPayload[offset:])
+		numVals := binary.LittleEndian.Uint32(payload[offset:])
 		offset += 4
 		for v := 0; v < int(numVals); v++ {
-			valueLen := binary.LittleEndian.Uint32(rawPayload[offset:])
+			valueLen := binary.LittleEndian.Uint32(payload[offset:])
 			offset += 4
-			val := rawPayload[offset : offset+int(valueLen)]
+			val := payload[offset : offset+int(valueLen)]
 			offset += int(valueLen)
 			responseHeaders = append(responseHeaders, [2][]byte{key, val})
 		}
@@ -531,7 +499,7 @@ func (e *Entry) Payload() (
 
 	// --- Body
 	offset += 4
-	body = rawPayload[offset:]
+	body = payload[offset:]
 
 	releaseFn = payloadReleaser
 
@@ -651,7 +619,6 @@ var queriesReleaser = func(queries [][2][]byte) {
 
 func (e *Entry) getFilteredAndSortedKeyQueriesFastHttp(r *fasthttp.RequestCtx) (kvPairs [][2][]byte, releaseFn func(queries [][2][]byte)) {
 	filtered := kvPool.Get().([][2][]byte)
-	filtered = filtered[:0]
 
 	allowedKeys := e.rule.CacheKey.QueryBytes
 
@@ -670,7 +637,9 @@ func (e *Entry) getFilteredAndSortedKeyQueriesFastHttp(r *fasthttp.RequestCtx) (
 		return true
 	})
 
-	sort.KVSlice(filtered)
+	if len(filtered) > 1 {
+		sort.KVSlice(filtered)
+	}
 
 	return filtered, queriesReleaser
 }
@@ -702,7 +671,9 @@ func (e *Entry) getFilteredAndSortedKeyHeadersFastHttp(r *fasthttp.RequestCtx) (
 		return true
 	})
 
-	sort.KVSlice(filtered)
+	if len(filtered) > 1 {
+		sort.KVSlice(filtered)
+	}
 
 	return filtered, headersReleaser
 }
@@ -722,7 +693,9 @@ func (e *Entry) GetFilteredAndSortedKeyHeadersNetHttp(r *http.Request) (kvPairs 
 		}
 	}
 
-	sort.KVSlice(filtered)
+	if len(filtered) > 1 {
+		sort.KVSlice(filtered)
+	}
 
 	return filtered, headersReleaser
 }
@@ -746,7 +719,9 @@ func (e *Entry) filteredAndSortedKeyQueriesInPlace(queries [][2][]byte) (kvPairs
 		}
 	}
 
-	sort.KVSlice(filtered)
+	if len(filtered) > 1 {
+		sort.KVSlice(filtered)
+	}
 
 	return filtered
 }
@@ -762,7 +737,9 @@ func (e *Entry) filteredAndSortedKeyHeadersInPlace(headers [][2][]byte) (kvPairs
 		}
 	}
 
-	sort.KVSlice(filtered)
+	if len(filtered) > 1 {
+		sort.KVSlice(filtered)
+	}
 
 	return filtered
 }
