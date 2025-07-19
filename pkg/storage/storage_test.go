@@ -114,9 +114,7 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 		i := 0
 		for pb.Next() {
 			for j := 0; j < 1000; j++ {
-				_, releaser, _ := db.Get(entries[(i*j)%length].Entry)
-				_ = releaser // don't execute releaser here because the entries slice is common for all threads and such case will appear when
-				// you execute releaser in one thread and another do Set with the same entry.
+				db.Get(entries[(i*j)%length].Entry)
 			}
 			i += 1000
 		}
@@ -149,9 +147,7 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 		i := 0
 		for pb.Next() {
 			for j := 0; j < 1000; j++ {
-				_, releaser := db.Set(entries[(i*j)%length])
-				_ = releaser // don't execute releaser here because the entries slice is common for all threads and such case will appear when
-				// you execute releaser in one thread and another do Set with the same entry.
+				db.Set(entries[(i*j)%length])
 			}
 			i += 1000
 		}

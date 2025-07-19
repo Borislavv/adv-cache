@@ -112,18 +112,20 @@ func (e *Evict) evictUntilWithinLimit() (items int, mem int64) {
 			if !ok {
 				break // end of the LRU list, move to next
 			}
-			if !el.Value().Acquire() {
+
+			entry := el.Value()
+			if !entry.Acquire() {
 				continue // already marked as doomed but not removed yet, skip it
 			}
 
-			freedMem, isHit := e.db.Remove(el.Value())
+			freedMem, isHit := e.db.Remove(entry)
 			if isHit {
 				items++
 				evictions++
 				mem += freedMem
 			}
 
-			el.Value().Release()
+			entry.Release()
 			offset++
 		}
 	}
