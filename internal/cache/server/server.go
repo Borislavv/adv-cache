@@ -7,7 +7,7 @@ import (
 	"github.com/Borislavv/advanced-cache/internal/cache/config"
 	"github.com/Borislavv/advanced-cache/pkg/k8s/probe/liveness"
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
-	api2 "github.com/Borislavv/advanced-cache/pkg/prometheus/metrics/controller"
+	controller2 "github.com/Borislavv/advanced-cache/pkg/prometheus/metrics/controller"
 	middleware2 "github.com/Borislavv/advanced-cache/pkg/prometheus/metrics/middleware"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
 	httpserver "github.com/Borislavv/advanced-cache/pkg/server"
@@ -122,7 +122,7 @@ func (s *HttpServer) controllers() []controller.HttpController {
 	return []controller.HttpController{
 		api.NewCacheController(s.ctx, s.cfg, s.db, s.backend), // Main cache handler
 		liveness.NewController(s.probe),                       // Liveness/healthcheck endpoint
-		api2.NewPrometheusMetrics(),                           // Metrics endpoint
+		controller2.NewPrometheusMetrics(),                    // Metrics endpoint
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/header"
 	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/Borislavv/advanced-cache/pkg/pools"
+	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
 	serverutils "github.com/Borislavv/advanced-cache/pkg/server/utils"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
@@ -33,12 +34,10 @@ var (
 	messagePlaceholder = []byte("${message}")
 )
 
-// Buffered channel for request durations (used only if debug enabled)
 var (
-	count    = &atomic.Int64{} // Num
-	duration = &atomic.Int64{} // UnixNano
-	fnd      = &atomic.Int64{}
-	notFnd   = &atomic.Int64{}
+	hits          = &atomic.Uint64{}
+	misses        = &atomic.Uint64{}
+	totalDuration = &atomic.Int64{} // UnixNano
 )
 
 // CacheController handles cache API requests (read/write-through, error reporting, metrics).
@@ -46,6 +45,7 @@ type CacheController struct {
 	cfg     *config.Config
 	ctx     context.Context
 	cache   storage.Storage
+	metrics metrics.Meter
 	backend repository.Backender
 }
 
@@ -55,15 +55,17 @@ func NewCacheController(
 	ctx context.Context,
 	cfg *config.Config,
 	cache storage.Storage,
+	metrics metrics.Meter,
 	backend repository.Backender,
 ) *CacheController {
 	c := &CacheController{
 		cfg:     cfg,
 		ctx:     ctx,
 		cache:   cache,
+		metrics: metrics,
 		backend: backend,
 	}
-	c.runLogger(ctx)
+	c.runLoggerMetricsWriter(ctx)
 	return c
 }
 
@@ -86,7 +88,7 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 
 	foundEntry, found := c.cache.Get(newEntry)
 	if !found {
-		notFnd.Add(1)
+		misses.Add(1)
 
 		// extract request data
 		path := r.Path()
@@ -110,7 +112,7 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 		foundEntry = c.cache.Set(model.NewVersionPointer(newEntry))
 		defer foundEntry.Release() // an Entry stored in the cache must be released after use
 	} else {
-		fnd.Add(1)
+		hits.Add(1)
 
 		// deferred release and remove
 		newEntry.Remove()          // new Entry which was used as request for query cache does not need anymore
@@ -142,14 +144,13 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Record the duration in debug mode for metrics.
-	count.Add(1)
-	duration.Add(time.Since(from).Nanoseconds())
+	// Record the totalDuration in debug mode for metrics.
+	totalDuration.Add(time.Since(from).Nanoseconds())
 }
 
 // respondThatServiceIsTemporaryUnavailable returns 503 and logs the error.
 func (c *CacheController) respondThatServiceIsTemporaryUnavailable(err error, ctx *fasthttp.RequestCtx) {
-	log.Error().Err(err).Msg("[cache-controller] handle request error: " + err.Error()) // Don't move it down due to error will be rewritten.
+	log.Error().Err(err).Msg("[cache-controller] handle request error") // Don't move it down due to error will be rewritten.
 
 	ctx.SetStatusCode(fasthttp.StatusServiceUnavailable)
 	if _, err = serverutils.Write(c.resolveMessagePlaceholder(serviceUnavailableResponseBytes, err), ctx); err != nil {
@@ -169,6 +170,7 @@ func (c *CacheController) AddRoute(router *router.Router) {
 }
 
 var (
+	// if you return a releaser as an outer variable it will not allocate closure each time on call function
 	queryHeadersReleaser = func(headers *[][2][]byte) {
 		*headers = (*headers)[:0]
 		pools.KeyValueSlicePool.Put(headers)
@@ -184,54 +186,76 @@ func (c *CacheController) queryHeaders(r *fasthttp.RequestCtx) (headers *[][2][]
 	return headers, queryHeadersReleaser
 }
 
-// runLogger runs a goroutine to periodically log RPS and avg duration per window, if debug enabled.
-func (c *CacheController) runLogger(ctx context.Context) {
+func (c *CacheController) runLoggerMetricsWriter(ctx context.Context) {
 	go func() {
-		t := utils.NewTicker(ctx, time.Second*5)
+		metricsTicker := utils.NewTicker(ctx, time.Second)
+
+		const loggerIntervalSecs = 5
+		loggerTicker := utils.NewTicker(ctx, time.Second*loggerIntervalSecs)
+
+		var (
+			totalNum         uint64
+			hitsNum          uint64
+			missesNum        uint64
+			totalDurationNum int64
+		)
+
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-t:
-				c.logAndReset()
+			case <-metricsTicker:
+				hitsNumLoc := hits.Load()
+				missesNumLoc := misses.Load()
+				totalNumLoc := hitsNumLoc + missesNumLoc
+				totalDurationNumLoc := totalDuration.Load()
+
+				var avgDuration float64
+				if totalNumLoc > 0 {
+					avgDuration = float64(totalDurationNumLoc) / float64(totalNumLoc)
+				}
+
+				memUsage, length := c.cache.Stat()
+				c.metrics.SetCacheLength(uint64(length))
+				c.metrics.SetCacheMemory(uint64(memUsage))
+				c.metrics.SetHits(hitsNumLoc)
+				c.metrics.SetMisses(missesNumLoc)
+				c.metrics.SetRPS(totalNumLoc)
+				c.metrics.SetAvgResponseTime(avgDuration)
+
+				totalNum += totalNumLoc
+				hitsNum += hitsNumLoc
+				missesNum += missesNumLoc
+				totalDurationNum += totalDurationNumLoc
+
+				hits.Store(0)
+				misses.Store(0)
+				totalDuration.Store(0)
+			case <-loggerTicker:
+				rps := totalNum / loggerIntervalSecs
+				avgDuration := uint64(totalDurationNum) / totalNum
+
+				logEvent := log.Info()
+
+				if c.cfg.IsProd() {
+					logEvent.
+						Str("target", "controller").
+						Str("rps", strconv.Itoa(int(rps))).
+						Str("served", strconv.Itoa(int(totalNum))).
+						Str("periodMs", strconv.Itoa(loggerIntervalSecs*1000)).
+						Str("avgDuration", strconv.Itoa(int(avgDuration)))
+				}
+
+				logEvent.Msgf(
+					"[controller][5s] served %d requests (rps: %d, avg.dur.: %d hits: %d, misses: %d)",
+					totalNum, rps, avgDuration, hitsNum, missesNum,
+				)
+
+				totalNum = 0
+				hitsNum = 0
+				missesNum = 0
+				totalDurationNum = 0
 			}
 		}
 	}()
-}
-
-// logAndReset prints and resets stat counters for a given window (5s).
-func (c *CacheController) logAndReset() {
-	const secs int64 = 5
-
-	var (
-		avg string
-		cnt = count.Load()
-		dur = time.Duration(duration.Load())
-		rps = strconv.Itoa(int(cnt / secs))
-	)
-
-	if cnt <= 0 {
-		return
-	}
-
-	avg = (dur / time.Duration(cnt)).String()
-
-	logEvent := log.Info()
-
-	if c.cfg.IsProd() {
-		logEvent.
-			Str("target", "controller").
-			Str("rps", rps).
-			Str("served", strconv.Itoa(int(cnt))).
-			Str("periodMs", "5000").
-			Str("avgDuration", avg)
-	}
-
-	logEvent.Msgf(
-		"[controller][5s] served %d requests (rps: %s, avgDuration: %s), hits: %d, misses: %d",
-		cnt, rps, avg, fnd.Load(), notFnd.Load(),
-	)
-
-	count.Store(0)
-	duration.Store(0)
 }
