@@ -96,16 +96,11 @@ func TestEntryPayloadRoundTrip(t *testing.T) {
 		{[]byte("X-Q-1"), []byte("v1")},
 		{[]byte("X-Q-2"), []byte("v2")},
 	}
-	var (
-		h1 = []byte("Content-Type")
-		v1 = []byte("application/json")
-		h2 = []byte("X-Resp")
-		v2 = []byte("yes")
-	)
-	headers := [][2]*[]byte{
-		{&h1, &v1},
-		{&h2, &v2},
+	headers := [][2][]byte{
+		{[]byte("Content-Type"), []byte("application/json")},
+		{[]byte("Vary"), []byte("Accept-Encoding, Accept-Language")},
 	}
+
 	body := []byte(`{"foo":"bar","baz":"qux"}`)
 	status := 200
 
@@ -124,8 +119,8 @@ func TestEntryPayloadRoundTrip(t *testing.T) {
 	require.Equal(t, status, status1)
 	require.Equal(t, body, body1)
 
-	require.Equal(t, queryHeaders, queryHeaders1)
-	require.Equal(t, headers, respHeaders1)
+	require.Equal(t, &queryHeaders, queryHeaders1)
+	require.Equal(t, &headers, respHeaders1)
 
 	// === 4) Повторно запаковываем, используя распакованные данные
 	e2 := (&Entry{rule: rule}).Init()

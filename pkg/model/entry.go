@@ -431,7 +431,7 @@ func (e *Entry) Payload() (
 	responseHeaders *[][2][]byte,
 	body []byte,
 	status int,
-	releaseFn func(q *[][2][]byte, h *[][2][]byte),
+	releaseFn func(q, h *[][2][]byte),
 	err error,
 ) {
 	payload := e.PayloadBytes()
