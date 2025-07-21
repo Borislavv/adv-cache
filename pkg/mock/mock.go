@@ -67,11 +67,11 @@ func GenerateEntryPointersConsecutive(cfg *config.Cache, backend repository.Back
 		}
 
 		// releaser is unnecessary due to all entries will escape to heap
-		entry, err := model.NewEntryManual(cfg, path, query, queryHeaders, backend.RevalidatorMaker())
+		entry, err := model.NewEntryManual(cfg, path, query, &queryHeaders, backend.RevalidatorMaker())
 		if err != nil {
 			panic(err)
 		}
-		entry.SetPayload(path, query, queryHeaders, responseHeaders, copiedBodyBytes(i), 200)
+		entry.SetPayload(path, query, &queryHeaders, &responseHeaders, copiedBodyBytes(i), 200)
 
 		res = append(res, model.NewVersionPointer(entry))
 
@@ -119,11 +119,11 @@ func StreamEntryPointersConsecutive(ctx context.Context, cfg *config.Cache, back
 				}
 
 				// releaser is unnecessary due to all entries will escape to heap
-				entry, err := model.NewEntryManual(cfg, path, query, queryHeaders, backend.RevalidatorMaker())
+				entry, err := model.NewEntryManual(cfg, path, query, &queryHeaders, backend.RevalidatorMaker())
 				if err != nil {
 					panic(err)
 				}
-				entry.SetPayload(path, query, queryHeaders, responseHeaders, copiedBodyBytes(i), 200)
+				entry.SetPayload(path, query, &queryHeaders, &responseHeaders, copiedBodyBytes(i), 200)
 
 				outCh <- model.NewVersionPointer(entry)
 				i++

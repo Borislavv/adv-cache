@@ -31,7 +31,6 @@ var (
 	  "message": "` + string(messagePlaceholder) + `"
 	}`)
 	messagePlaceholder = []byte("${message}")
-	hdrLastModified    = []byte("Last-Modified")
 )
 
 // Buffered channel for request durations (used only if debug enabled)
@@ -81,7 +80,7 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 
 	var (
 		payloadStatus  int
-		payloadHeaders [][2][]byte
+		payloadHeaders *[][2][]byte
 		payloadBody    []byte
 	)
 
@@ -118,8 +117,8 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 		defer foundEntry.Release() // an Entry retrieved from the cache must be released after use
 
 		// unpack found Entry data
-		var queryHeaders [][2][]byte
-		var payloadReleaser func(q, h [][2][]byte)
+		var queryHeaders *[][2][]byte
+		var payloadReleaser func(q *[][2][]byte, h *[][2][]byte)
 		_, _, queryHeaders, payloadHeaders, payloadBody, payloadStatus, payloadReleaser, err = foundEntry.Payload()
 		defer payloadReleaser(queryHeaders, payloadHeaders)
 		if err != nil {
@@ -130,7 +129,7 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 
 	// Write payloadStatus, payloadHeaders, and payloadBody from the cached (or fetched) response.
 	r.Response.SetStatusCode(payloadStatus)
-	for _, kv := range payloadHeaders {
+	for _, kv := range *payloadHeaders {
 		r.Response.Header.AddBytesKV(kv[0], kv[1])
 	}
 
@@ -169,15 +168,17 @@ func (c *CacheController) AddRoute(router *router.Router) {
 	router.GET(CacheGetPath, c.Index)
 }
 
-var queryHeadersReleaser = func(headers [][2][]byte) {
-	headers = headers[:0]
-	pools.KeyValueSlicePool.Put(headers)
-}
+var (
+	queryHeadersReleaser = func(headers *[][2][]byte) {
+		*headers = (*headers)[:0]
+		pools.KeyValueSlicePool.Put(headers)
+	}
+)
 
-func (c *CacheController) queryHeaders(r *fasthttp.RequestCtx) (headers [][2][]byte, releaseFn func([][2][]byte)) {
-	headers = pools.KeyValueSlicePool.Get().([][2][]byte)
+func (c *CacheController) queryHeaders(r *fasthttp.RequestCtx) (headers *[][2][]byte, releaseFn func(*[][2][]byte)) {
+	headers = pools.KeyValueSlicePool.Get().(*[][2][]byte)
 	r.Request.Header.All()(func(key []byte, value []byte) bool {
-		headers = append(headers, [2][]byte{key, value})
+		*headers = append(*headers, [2][]byte{key, value})
 		return true
 	})
 	return headers, queryHeadersReleaser

@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"sync"
 	"time"
-	"unsafe"
 )
 
 var (
@@ -14,36 +13,45 @@ var (
 	lastModifiedBytesKey = []byte(lastModifiedStrKey)
 )
 
-var timePool = sync.Pool{
-	New: func() any {
-		return new(time.Time)
-	},
-}
+var (
+	timePool = sync.Pool{
+		New: func() any {
+			return new(time.Time)
+		},
+	}
+	bufPool = sync.Pool{
+		New: func() interface{} {
+			sl := make([]byte, 0, 32)
+			return &sl
+		},
+	}
+)
 
 func SetLastModifiedNetHttp(w http.ResponseWriter, entry *model.VersionPointer, status int) {
-	t := timePool.Get().(*time.Time)
-	defer timePool.Put(t)
+	buf := bufPool.Get().(*[]byte)
+	*buf = (*buf)[:0]
 
-	if status == http.StatusOK {
-		*t = time.Unix(0, entry.WillUpdateAt()-entry.Rule().TTL.Nanoseconds())
-	} else {
-		*t = time.Unix(0, entry.WillUpdateAt()-entry.Rule().ErrorTTL.Nanoseconds())
-	}
+	*buf = appendLastModifiedHeader(buf, entry.WillUpdateAt()) // TODO must be fixed to UpdatedAt!!!!
+	w.Header().Set(lastModifiedStrKey, string(*buf))
 
-	bts := fasthttp.AppendHTTPDate(nil, *t)
-	w.Header().Set(lastModifiedStrKey, unsafe.String(&bts[0], len(bts)))
+	bufPool.Put(buf)
 }
 
 func SetLastModifiedFastHttp(r *fasthttp.RequestCtx, entry *model.VersionPointer, status int) {
+	buf := bufPool.Get().(*[]byte)
+	*buf = (*buf)[:0]
+
+	*buf = appendLastModifiedHeader(buf, entry.WillUpdateAt()) // TODO must be fixed to UpdatedAt!!!!
+	r.Response.Header.SetBytesKV(lastModifiedBytesKey, *buf)
+
+	bufPool.Put(buf)
+}
+
+func appendLastModifiedHeader(dst *[]byte, unixNano int64) []byte {
 	t := timePool.Get().(*time.Time)
 	defer timePool.Put(t)
 
-	if status == http.StatusOK {
-		*t = time.Unix(0, entry.WillUpdateAt()-entry.Rule().TTL.Nanoseconds())
-	} else {
-		*t = time.Unix(0, entry.WillUpdateAt()-entry.Rule().ErrorTTL.Nanoseconds())
-	}
+	*t = time.Unix(0, unixNano).UTC() // must be UTC per RFC 7231
 
-	buf := fasthttp.AppendHTTPDate(nil, *t)
-	r.Response.Header.SetBytesKV(lastModifiedBytesKey, buf)
+	return t.AppendFormat(*dst, time.RFC1123)
 }

@@ -101,7 +101,7 @@ func (crw *CaptureResponseWriter) Headers() http.Header {
 }
 
 func (crw *CaptureResponseWriter) ExtractPayload() (
-	status int, headers [][2][]byte, body []byte, releaseFn func(),
+	status int, headers *[][2][]byte, body []byte, releaseFn func(*[][2][]byte),
 ) {
 	body = crw.Body()
 	status = crw.StatusCode()
@@ -109,19 +109,18 @@ func (crw *CaptureResponseWriter) ExtractPayload() (
 	return status, headers, body, releaseFn
 }
 
+var headersToPairsReleaser = func(pairs *[][2][]byte) {
+	*pairs = (*pairs)[:0]
+	pools.KeyValueSlicePool.Put(pairs)
+}
+
 // Helper to convert http.Header to [][2][]byte for storage payload
-func (crw *CaptureResponseWriter) headerToPairs(h http.Header) (pairs [][2][]byte, releaserFn func()) {
-	pairs = pools.KeyValueSlicePool.Get().([][2][]byte)
+func (crw *CaptureResponseWriter) headerToPairs(h http.Header) (headers *[][2][]byte, releaserFn func(*[][2][]byte)) {
+	headers = pools.KeyValueSlicePool.Get().(*[][2][]byte)
 	for k, vv := range h {
 		for _, v := range vv {
-			pairs = append(pairs, [2][]byte{
-				unsafe.Slice(unsafe.StringData(k), len(k)),
-				unsafe.Slice(unsafe.StringData(v), len(v)),
-			})
+			*headers = append(*headers, [2][]byte{unsafe.Slice(unsafe.StringData(k), len(k)), unsafe.Slice(unsafe.StringData(v), len(v))})
 		}
 	}
-	return pairs, func() {
-		pairs = pairs[:0]
-		pools.KeyValueSlicePool.Put(pairs)
-	}
+	return headers, headersToPairsReleaser
 }
