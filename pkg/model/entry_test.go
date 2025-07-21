@@ -98,44 +98,45 @@ func TestEntryPayloadRoundTrip(t *testing.T) {
 	}
 	headers := [][2][]byte{
 		{[]byte("Content-Type"), []byte("application/json")},
-		{[]byte("X-Resp"), []byte("yes")},
+		{[]byte("Vary"), []byte("Accept-Encoding, Accept-Language")},
 	}
+
 	body := []byte(`{"foo":"bar","baz":"qux"}`)
 	status := 200
 
 	// === 1) Создаём Entry и упаковываем
 	e := (&Entry{rule: rule}).Init()
-	e.SetPayload(path, query, queryHeaders, headers, body, status)
+	e.SetPayload(path, query, &queryHeaders, &headers, body, status)
 
 	// === 2) Распаковываем
-	p1, q1, qh1, h1, b1, s1, release, err := e.Payload()
-	defer release(qh1, h1)
+	path1, query1, queryHeaders1, respHeaders1, body1, status1, release, err := e.Payload()
+	defer release(queryHeaders1, respHeaders1)
 	require.NoError(t, err)
 
 	// === 3) Проверяем значения
-	require.Equal(t, path, p1)
-	require.Equal(t, query, q1)
-	require.Equal(t, status, s1)
-	require.Equal(t, body, b1)
+	require.Equal(t, path, path1)
+	require.Equal(t, query, query1)
+	require.Equal(t, status, status1)
+	require.Equal(t, body, body1)
 
-	require.Equal(t, queryHeaders, qh1)
-	require.Equal(t, headers, h1)
+	require.Equal(t, &queryHeaders, queryHeaders1)
+	require.Equal(t, &headers, respHeaders1)
 
 	// === 4) Повторно запаковываем, используя распакованные данные
 	e2 := (&Entry{rule: rule}).Init()
-	e2.SetPayload(p1, q1, qh1, h1, b1, s1)
+	e2.SetPayload(path1, query1, queryHeaders1, respHeaders1, body1, status1)
 
 	// === 5) И снова распаковываем
-	p2, q2, qh2, h2, b2, s2, release2, err := e2.Payload()
-	defer release2(qh2, h2)
+	path2, query2, queryHeaders2, respHeaders2, body2, status2, release2, err := e2.Payload()
+	defer release2(queryHeaders2, respHeaders2)
 	require.NoError(t, err)
 
-	require.Equal(t, p1, p2)
-	require.Equal(t, q1, q2)
-	require.Equal(t, s1, s2)
-	require.Equal(t, b1, b2)
-	require.Equal(t, qh1, qh2)
-	require.Equal(t, h1, h2)
+	require.Equal(t, path1, path2)
+	require.Equal(t, query1, query2)
+	require.Equal(t, status1, status2)
+	require.Equal(t, body1, body2)
+	require.Equal(t, queryHeaders1, queryHeaders2)
+	require.Equal(t, respHeaders1, respHeaders2)
 
 	// === 6) Проверим побайтово, что всё сохраняется и в сжатой форме
 	if e2.IsCompressed() {

@@ -40,15 +40,15 @@ var transport = &http.Transport{
 // Backender defines the interface for a repository that provides SEO page data.
 type Backender interface {
 	Fetch(
-		rule *config.Rule, path []byte, query []byte, queryHeaders [][2][]byte,
+		rule *config.Rule, path []byte, query []byte, queryHeaders *[][2][]byte,
 	) (
-		status int, headers [][2][]byte, body []byte, releaseFn func(), err error,
+		status int, headers *[][2][]byte, body []byte, releaseFn func(), err error,
 	)
 
 	RevalidatorMaker() func(
-		rule *config.Rule, path []byte, query []byte, queryHeaders [][2][]byte,
+		rule *config.Rule, path []byte, query []byte, queryHeaders *[][2][]byte,
 	) (
-		status int, headers [][2][]byte, body []byte, releaseFn func(), err error,
+		status int, headers *[][2][]byte, body []byte, releaseFn func(), err error,
 	)
 }
 
@@ -73,23 +73,23 @@ func NewBackend(cfg *config.Cache) *Backend {
 }
 
 func (s *Backend) Fetch(
-	rule *config.Rule, path []byte, query []byte, queryHeaders [][2][]byte,
+	rule *config.Rule, path []byte, query []byte, queryHeaders *[][2][]byte,
 ) (
-	status int, headers [][2][]byte, body []byte, releaseFn func(), err error,
+	status int, headers *[][2][]byte, body []byte, releaseFn func(), err error,
 ) {
 	return s.requestExternalBackend(rule, path, query, queryHeaders)
 }
 
 // RevalidatorMaker builds a new revalidator for model.Response by catching a request into closure for be able to call backend later.
 func (s *Backend) RevalidatorMaker() func(
-	rule *config.Rule, path []byte, query []byte, queryHeaders [][2][]byte,
+	rule *config.Rule, path []byte, query []byte, queryHeaders *[][2][]byte,
 ) (
-	status int, headers [][2][]byte, body []byte, releaseFn func(), err error,
+	status int, headers *[][2][]byte, body []byte, releaseFn func(), err error,
 ) {
 	return func(
-		rule *config.Rule, path []byte, query []byte, queryHeaders [][2][]byte,
+		rule *config.Rule, path []byte, query []byte, queryHeaders *[][2][]byte,
 	) (
-		status int, headers [][2][]byte, body []byte, releaseFn func(), err error,
+		status int, headers *[][2][]byte, body []byte, releaseFn func(), err error,
 	) {
 		return s.requestExternalBackend(rule, path, query, queryHeaders)
 	}
@@ -107,8 +107,8 @@ var (
 
 // requestExternalBackend actually performs the HTTP request to backend and parses the response.
 func (s *Backend) requestExternalBackend(
-	rule *config.Rule, path []byte, query []byte, queryHeaders [][2][]byte,
-) (status int, headers [][2][]byte, body []byte, releaseFn func(), err error) {
+	rule *config.Rule, path []byte, query []byte, queryHeaders *[][2][]byte,
+) (status int, headers *[][2][]byte, body []byte, releaseFn func(), err error) {
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)
 
@@ -136,29 +136,22 @@ func (s *Backend) requestExternalBackend(
 	}
 	req.SetRequestURI(unsafe.String(unsafe.SliceData(urlBuf.Bytes()), urlBuf.Len()))
 
-	for _, kv := range queryHeaders {
+	for _, kv := range *queryHeaders {
 		req.Header.SetBytesKV(kv[0], kv[1])
 	}
 
 	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseResponse(resp)
 
 	if err = pools.BackendHttpClientPool.DoTimeout(req, resp, s.cfg.Cache.Upstream.Timeout); err != nil {
 		return 0, nil, nil, emptyReleaseFn, err
 	}
 
-	headers = pools.KeyValueSlicePool.Get().([][2][]byte)
+	headers = pools.KeyValueSlicePool.Get().(*[][2][]byte)
 
 	allowedHeadersMap := rule.CacheValue.HeadersMap
 	resp.Header.All()(func(k, v []byte) bool {
 		if _, ok := allowedHeadersMap[unsafe.String(unsafe.SliceData(k), len(k))]; ok {
-			keyBuf := pools.BackendBufPool.Get().([]byte)[:0]
-			keyBuf = append(keyBuf, k...) // Copy it! Don't use unsafe here due to fasthttp will reuse buffers when request will end.
-
-			valBuf := pools.BackendBufPool.Get().([]byte)[:0]
-			valBuf = append(valBuf, v...) // Copy it! Don't use unsafe here due to fasthttp will reuse buffers when request will end.
-
-			headers = append(headers, [2][]byte{keyBuf, valBuf})
+			*headers = append(*headers, [2][]byte{k, v})
 		}
 		return true
 	})
@@ -169,16 +162,12 @@ func (s *Backend) requestExternalBackend(
 	}
 
 	return resp.StatusCode(), headers, buf.Bytes(), func() {
-		for _, kv := range headers {
-			kv[0] = kv[0][:0]
-			kv[1] = kv[1][:0]
-			pools.BackendBufPool.Put(kv[0])
-			pools.BackendBufPool.Put(kv[1])
-		}
-		headers = headers[:0]
+		*headers = (*headers)[:0]
 		pools.KeyValueSlicePool.Put(headers)
 
 		buf.Reset()
 		pools.BackendBodyBufferPool.Put(buf)
+
+		fasthttp.ReleaseResponse(resp)
 	}, nil
 }

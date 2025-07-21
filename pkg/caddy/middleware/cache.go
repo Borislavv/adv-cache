@@ -67,7 +67,7 @@ func (m *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next
 
 	var (
 		status  int
-		headers [][2][]byte
+		headers *[][2][]byte
 		body    []byte
 	)
 
@@ -95,9 +95,9 @@ func (m *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next
 		queryHeaders, queryHeadersReleaser := newEntry.GetFilteredAndSortedKeyHeadersNetHttp(r)
 		defer queryHeadersReleaser(queryHeaders)
 
-		var extractReleaser func()
+		var extractReleaser func(*[][2][]byte)
 		status, headers, body, extractReleaser = captured.ExtractPayload()
-		defer extractReleaser()
+		defer extractReleaser(headers)
 
 		// Save the response into the new newEntry
 		newEntry.SetPayload(path, query, queryHeaders, headers, body, status)
@@ -112,8 +112,8 @@ func (m *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next
 		defer foundEntry.Release() // an Entry retrieved from the cache must be released after use
 
 		// Always read from cached foundEntry
-		var queryHeaders [][2][]byte
-		var payloadReleaser func(q, h [][2][]byte)
+		var queryHeaders *[][2][]byte
+		var payloadReleaser func(q, h *[][2][]byte)
 		_, _, queryHeaders, headers, body, status, payloadReleaser, err = foundEntry.Payload()
 		defer payloadReleaser(queryHeaders, headers)
 		if err != nil {
@@ -128,14 +128,14 @@ func (m *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next
 				_, _ = captured.Write(serviceTemporaryUnavailableBody)
 			}
 
-			var extractReleaser func()
+			var extractReleaser func(*[][2][]byte)
 			status, headers, body, extractReleaser = captured.ExtractPayload()
-			defer extractReleaser()
+			defer extractReleaser(headers)
 		}
 	}
 
 	// Write cached headers
-	for _, kv := range headers {
+	for _, kv := range *headers {
 		w.Header().Add(
 			unsafe.String(unsafe.SliceData(kv[0]), len(kv[0])),
 			unsafe.String(unsafe.SliceData(kv[1]), len(kv[1])),
@@ -143,7 +143,7 @@ func (m *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next
 	}
 
 	// Last-Modified
-	header.SetLastModified(w, foundEntry, status)
+	header.SetLastModifiedNetHttp(w, foundEntry, status)
 
 	// Content-Type
 	w.Header().Set(contentTypeKey, applicationJsonValue)
