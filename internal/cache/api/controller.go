@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/Borislavv/advanced-cache/internal/cache/config"
+	"github.com/Borislavv/advanced-cache/pkg/header"
 	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/Borislavv/advanced-cache/pkg/pools"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
@@ -14,7 +15,6 @@ import (
 	"github.com/fasthttp/router"
 	"github.com/rs/zerolog/log"
 	"github.com/valyala/fasthttp"
-	"net/http"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -68,79 +68,77 @@ func NewCacheController(
 	return c
 }
 
-func (c *CacheController) queryHeaders(r *fasthttp.RequestCtx) (headers [][2][]byte, releaseFn func()) {
-	headers = pools.KeyValueSlicePool.Get().([][2][]byte)
-	r.Request.Header.All()(func(key []byte, value []byte) bool {
-		headers = append(headers, [2][]byte{key, value})
-		return true
-	})
-	return headers, func() {
-		headers = headers[:0]
-		pools.KeyValueSlicePool.Put(headers)
-	}
-}
-
 // Index is the main HTTP handler.
 func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 	var from = time.Now()
 
-	entry, entryReleaser, err := model.NewEntryFastHttp(c.cfg.Cache, r)
+	// make a lightweight request Entry (contains only key, shardKey and fingerprint)
+	newEntry, err := model.NewEntryFastHttp(c.cfg.Cache, r) // must be removed on hit and release on miss
 	if err != nil {
 		c.respondThatServiceIsTemporaryUnavailable(err, r)
 		return
 	}
 
 	var (
-		status   int
-		headers  [][2][]byte
-		body     []byte
-		releaser func()
+		payloadStatus  int
+		payloadHeaders [][2][]byte
+		payloadBody    []byte
 	)
 
-	value, found := c.cache.Get(entry)
+	foundEntry, found := c.cache.Get(newEntry)
 	if !found {
 		notFnd.Add(1)
 
+		// extract request data
 		path := r.Path()
+		rule := newEntry.Rule()
 		queryString := r.QueryArgs().QueryString()
 		queryHeaders, queryReleaser := c.queryHeaders(r)
-		defer queryReleaser()
+		defer queryReleaser(queryHeaders)
 
-		status, headers, body, releaser, err = c.backend.Fetch(entry.Rule(), path, queryString, queryHeaders)
-		defer releaser()
+		// fetch data from upstream
+		var payloadReleaser func()
+		payloadStatus, payloadHeaders, payloadBody, payloadReleaser, err = c.backend.Fetch(rule, path, queryString, queryHeaders)
+		defer payloadReleaser()
 		if err != nil {
 			c.respondThatServiceIsTemporaryUnavailable(err, r)
 			return
 		}
-		entry.SetPayload(path, queryString, queryHeaders, headers, body, status)
-		entry.SetRevalidator(c.backend.RevalidatorMaker())
+		newEntry.SetPayload(path, queryString, queryHeaders, payloadHeaders, payloadBody, payloadStatus)
+		newEntry.SetRevalidator(c.backend.RevalidatorMaker())
 
-		c.cache.Set(entry)
-		value = entry
+		// build and store new Entry in cache
+		foundEntry = c.cache.Set(model.NewVersionPointer(newEntry))
+		defer foundEntry.Release() // an Entry stored in the cache must be released after use
 	} else {
 		fnd.Add(1)
-		defer entryReleaser() // release the entry only on the case when existing entry was found in cache,
-		// otherwise created entry will escape to heap (link must be alive while entry in cache)
 
-		_, _, _, headers, body, status, releaser, err = value.Payload()
-		defer releaser()
+		// deferred release and remove
+		newEntry.Remove()          // new Entry which was used as request for query cache does not need anymore
+		defer foundEntry.Release() // an Entry retrieved from the cache must be released after use
+
+		// unpack found Entry data
+		var queryHeaders [][2][]byte
+		var payloadReleaser func(q, h [][2][]byte)
+		_, _, queryHeaders, payloadHeaders, payloadBody, payloadStatus, payloadReleaser, err = foundEntry.Payload()
+		defer payloadReleaser(queryHeaders, payloadHeaders)
 		if err != nil {
 			c.respondThatServiceIsTemporaryUnavailable(err, r)
 			return
 		}
 	}
 
-	// Write status, headers, and body from the cached (or fetched) response.
-	r.Response.SetStatusCode(status)
-	for _, kv := range headers {
+	// Write payloadStatus, payloadHeaders, and payloadBody from the cached (or fetched) response.
+	r.Response.SetStatusCode(payloadStatus)
+	for _, kv := range payloadHeaders {
 		r.Response.Header.AddBytesKV(kv[0], kv[1])
 	}
 
 	// Set up Last-Modified header
-	c.setLastModifiedHeader(r, value, status)
+	header.SetLastModifiedFastHttp(r, foundEntry, payloadStatus)
 
-	// Write body
-	if _, err = serverutils.Write(body, r); err != nil {
+	// Write payloadBody
+	if _, err = serverutils.Write(payloadBody, r); err != nil {
 		c.respondThatServiceIsTemporaryUnavailable(err, r)
 		return
 	}
@@ -160,20 +158,6 @@ func (c *CacheController) respondThatServiceIsTemporaryUnavailable(err error, ct
 	}
 }
 
-func (c *CacheController) setLastModifiedHeader(r *fasthttp.RequestCtx, entry *model.Entry, status int) {
-	if status == http.StatusOK {
-		r.Request.Header.SetBytesKV(
-			hdrLastModified,
-			time.Unix(0, entry.WillUpdateAt()-entry.Rule().TTL.Nanoseconds()).AppendFormat(nil, http.TimeFormat),
-		)
-	} else {
-		r.Request.Header.SetBytesKV(
-			hdrLastModified,
-			time.Unix(0, entry.WillUpdateAt()-entry.Rule().ErrorTTL.Nanoseconds()).AppendFormat(nil, http.TimeFormat),
-		)
-	}
-}
-
 // resolveMessagePlaceholder substitutes ${message} in template with escaped error message.
 func (c *CacheController) resolveMessagePlaceholder(msg []byte, err error) []byte {
 	escaped, _ := json.Marshal(err.Error())
@@ -183,6 +167,20 @@ func (c *CacheController) resolveMessagePlaceholder(msg []byte, err error) []byt
 // AddRoute attaches controller's route(s) to the provided router.
 func (c *CacheController) AddRoute(router *router.Router) {
 	router.GET(CacheGetPath, c.Index)
+}
+
+var queryHeadersReleaser = func(headers [][2][]byte) {
+	headers = headers[:0]
+	pools.KeyValueSlicePool.Put(headers)
+}
+
+func (c *CacheController) queryHeaders(r *fasthttp.RequestCtx) (headers [][2][]byte, releaseFn func([][2][]byte)) {
+	headers = pools.KeyValueSlicePool.Get().([][2][]byte)
+	r.Request.Header.All()(func(key []byte, value []byte) bool {
+		headers = append(headers, [2][]byte{key, value})
+		return true
+	})
+	return headers, queryHeadersReleaser
 }
 
 // runLogger runs a goroutine to periodically log RPS and avg duration per window, if debug enabled.

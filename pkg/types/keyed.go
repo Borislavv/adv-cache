@@ -4,6 +4,4 @@ package types
 type Keyed interface {
 	MapKey() uint64
 	ShardKey() uint64
-	Fingerprint() [16]byte
-	IsSameFingerprint([16]byte) bool
 }

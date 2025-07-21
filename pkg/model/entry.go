@@ -2,40 +2,34 @@ package model
 
 import (
 	"bytes"
-	"compress/gzip"
 	"crypto/subtle"
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/Borislavv/advanced-cache/pkg/config"
-	"github.com/Borislavv/advanced-cache/pkg/list"
-	"github.com/Borislavv/advanced-cache/pkg/pools"
-	"github.com/Borislavv/advanced-cache/pkg/repository"
-	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
-	"github.com/rs/zerolog/log"
-	"github.com/valyala/fasthttp"
-	"github.com/zeebo/xxh3"
-	"io"
 	"math"
 	"math/rand/v2"
 	"net/http"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
+
+	"github.com/Borislavv/advanced-cache/pkg/config"
+	"github.com/Borislavv/advanced-cache/pkg/list"
+	"github.com/Borislavv/advanced-cache/pkg/pools"
+	"github.com/Borislavv/advanced-cache/pkg/repository"
+	"github.com/Borislavv/advanced-cache/pkg/sort"
+	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
+	"github.com/rs/zerolog/log"
+	"github.com/valyala/fasthttp"
+	"github.com/zeebo/xxh3"
 )
 
-var EntriesPool = sync.Pool{
-	New: func() interface{} {
-		return new(Entry).Init()
-	},
-}
-
-type Revalidator func(
-	rule *config.Rule, path []byte, query []byte, queryHeaders [][2][]byte,
-) (
-	status int, headers [][2][]byte, body []byte, releaseFn func(), err error,
+var (
+	entriesPool       = &sync.Pool{New: func() any { return new(Entry).Init() }}
+	bufPool           = &sync.Pool{New: func() any { return new(bytes.Buffer) }}
+	hasherPool        = &sync.Pool{New: func() any { return xxh3.New() }}
+	ruleNotFoundError = errors.New("rule not found")
 )
 
 // Entry is the packed request+response payload
@@ -45,95 +39,88 @@ type Entry struct {
 	fingerprint  [16]byte // 128 bit xxh
 	rule         *config.Rule
 	payload      *atomic.Pointer[[]byte]
-	lruListElem  *atomic.Pointer[list.Element[*Entry]]
+	lruListElem  *atomic.Pointer[list.Element[*VersionPointer]]
 	revalidator  Revalidator
-	willUpdateAt int64
-	isCompressed int64
+	willUpdateAt int64  // atomic: unix nano
+	isCompressed int64  // atomic: bool as int64
+	isDoomed     int64  // atomic: bool as int64
+	refCount     int64  // atomic: simple counter
+	version      uint64 // atomic: solves ABA problem (pattern: version pointers)
+	// (when you already changed an object in storage but someone just now try to do Acquire on already finalized and reused object)
 }
 
 func (e *Entry) Init() *Entry {
 	e.payload = &atomic.Pointer[[]byte]{}
-	e.lruListElem = &atomic.Pointer[list.Element[*Entry]]{}
+	e.lruListElem = &atomic.Pointer[list.Element[*VersionPointer]]{}
 	return e
 }
 
-var (
-	bufPool        = &sync.Pool{New: func() any { return new(bytes.Buffer) }}
-	gzipBufferPool = &sync.Pool{New: func() any { return new(bytes.Buffer) }}
-	gzipWriterPool = &sync.Pool{New: func() any {
-		w, _ := gzip.NewWriterLevel(nil, gzip.BestSpeed)
-		return w
-	}}
-	hasherPool        = &sync.Pool{New: func() any { return xxh3.New() }}
-	ruleNotFoundError = errors.New("rule not found")
-)
-
-const gzipThreshold = 1024
-
-func (e *Entry) MapKey() uint64   { return e.key }
-func (e *Entry) ShardKey() uint64 { return e.shard }
-
-type Releaser func()
+func drainEntryPool() *Entry {
+	e := entriesPool.Get().(*Entry)
+	atomic.StoreInt64(&e.isDoomed, 0)
+	atomic.StoreInt64(&e.refCount, 1)
+	return e
+}
 
 // NewEntryNetHttp accepts path, query and request headers as bytes slices.
-func NewEntryNetHttp(cfg *config.Cache, r *http.Request) (*Entry, Releaser, error) {
+func NewEntryNetHttp(cfg *config.Cache, r *http.Request) (*Entry, error) {
 	// path is a string in net/http so easily refer to it inside request
 	rule := MatchRuleStr(cfg, r.URL.Path)
 	if rule == nil {
-		return nil, func() {}, ruleNotFoundError
+		return nil, ruleNotFoundError
 	}
 
-	entry := EntriesPool.Get().(*Entry)
+	entry := drainEntryPool()
 	entry.rule = rule
 
-	filteredQueries, queriesReleaser := entry.GetFilteredAndSortedKeyQueriesNetHttp(r)
-	defer queriesReleaser()
+	filteredQueries, filteredQueriesReleaser := entry.GetFilteredAndSortedKeyQueriesNetHttp(r)
+	defer filteredQueriesReleaser(filteredQueries)
 
-	filteredHeaders, headersReleaser := entry.GetFilteredAndSortedKeyHeadersNetHttp(r)
-	defer headersReleaser()
+	filteredHeaders, filteredHeadersReleaser := entry.GetFilteredAndSortedKeyHeadersNetHttp(r)
+	defer filteredHeadersReleaser(filteredHeaders)
 
-	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), entry.Release, nil
+	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), nil
 }
 
 // NewEntryFastHttp accepts path, query and request headers as bytes slices.
-func NewEntryFastHttp(cfg *config.Cache, r *fasthttp.RequestCtx) (*Entry, Releaser, error) {
+func NewEntryFastHttp(cfg *config.Cache, r *fasthttp.RequestCtx) (*Entry, error) {
 	rule := MatchRule(cfg, r.Path())
 	if rule == nil {
-		return nil, func() {}, ruleNotFoundError
+		return nil, ruleNotFoundError
 	}
 
-	entry := EntriesPool.Get().(*Entry)
+	entry := drainEntryPool()
 	entry.rule = rule
 
-	filteredQueries, queriesReleaser := entry.getFilteredAndSortedKeyQueriesFastHttp(r)
-	defer queriesReleaser()
+	filteredQueries, filteredQueriesReleaser := entry.getFilteredAndSortedKeyQueriesFastHttp(r)
+	defer filteredQueriesReleaser(filteredQueries)
 
-	filteredHeaders, headersReleaser := entry.getFilteredAndSortedKeyHeadersFastHttp(r)
-	defer headersReleaser()
+	filteredHeaders, filteredHeadersReleaser := entry.getFilteredAndSortedKeyHeadersFastHttp(r)
+	defer filteredHeadersReleaser(filteredHeaders)
 
-	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), entry.Release, nil
+	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), nil
 }
 
-func NewEntryManual(cfg *config.Cache, path, query []byte, headers [][2][]byte, revalidator Revalidator) (*Entry, Releaser, error) {
+func NewEntryManual(cfg *config.Cache, path, query []byte, headers [][2][]byte, revalidator Revalidator) (*Entry, error) {
 	rule := MatchRule(cfg, path)
 	if rule == nil {
-		return nil, func() {}, ruleNotFoundError
+		return nil, ruleNotFoundError
 	}
 
-	entry := EntriesPool.Get().(*Entry)
+	entry := drainEntryPool()
 	entry.rule = rule
 	entry.revalidator = revalidator
 
-	filteredQueries, queriesReleaser := entry.parseFilterAndSortQuery(query) // here, we are referring to the same query buffer which used in payload which have been mentioned before
-	defer queriesReleaser()                                                  // this is really reduce memory usage and GC pressure
+	filteredQueries, filteredQueriesReleaser := entry.parseFilterAndSortQuery(query) // here, we are referring to the same query buffer which used in payload which have been mentioned before
+	defer filteredQueriesReleaser(filteredQueries)                                   // this is really reduce memory usage and GC pressure
 
-	sort.Slice(filteredQueries, func(i, j int) bool {
-		return bytes.Compare(filteredQueries[i][0], filteredQueries[j][0]) < 0
-	})
+	if len(filteredQueries) > 1 {
+		sort.KVSlice(filteredQueries)
+	}
 
 	filteredHeaders := entry.filteredAndSortedKeyHeadersInPlace(headers)
 
-	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), entry.Release, nil
+	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), nil
 }
 
 func NewEntryFromField(
@@ -146,7 +133,7 @@ func NewEntryFromField(
 	isCompressed int64,
 	willUpdateAt int64,
 ) *Entry {
-	entry := EntriesPool.Get().(*Entry)
+	entry := drainEntryPool()
 	entry.key = key
 	entry.shard = shard
 	entry.fingerprint = fingerprint
@@ -158,8 +145,77 @@ func NewEntryFromField(
 	return entry
 }
 
-// Release used as a Releaser and returns buffers back to pools.
+func (e *Entry) MapKey() uint64   { return e.key }
+func (e *Entry) ShardKey() uint64 { return e.shard }
+
+const (
+	// refCount values
+	preDoomedCount = 1
+	zeroRefCount   = 0
+	doomedRefCount = -1
+	// isDoomed values
+	notDoomed = 0
+	doomed    = 1
+)
+
+func (e *Entry) Acquire(expectedVersion uint64) bool {
+	if e == nil {
+		return false
+	}
+	for {
+		curVersion := atomic.LoadUint64(&e.version)
+		if curVersion != expectedVersion {
+			return false
+		}
+		ref := atomic.LoadInt64(&e.refCount)
+		if ref < 0 {
+			return false
+		}
+		if atomic.CompareAndSwapInt64(&e.refCount, ref, ref+1) {
+			// double-check Version to catch finalize()
+			if atomic.LoadUint64(&e.version) != expectedVersion {
+				e.Release()
+				return false
+			}
+			return true
+		}
+	}
+}
+
 func (e *Entry) Release() {
+	if e == nil {
+		return
+	}
+	for {
+		if old := atomic.LoadInt64(&e.refCount); atomic.CompareAndSwapInt64(&e.refCount, old, old-1) {
+			if old == preDoomedCount && atomic.LoadInt64(&e.isDoomed) == doomed {
+				if atomic.CompareAndSwapInt64(&e.refCount, zeroRefCount, doomedRefCount) {
+					e.finalize()
+					return
+				}
+			}
+			return
+		}
+	}
+}
+
+func (e *Entry) Remove() {
+	if e == nil {
+		return
+	}
+	if atomic.CompareAndSwapInt64(&e.isDoomed, notDoomed, doomed) {
+		e.Release()
+		return
+	}
+	return
+}
+
+// finalize - after this action you cannot use this Entry!
+// if you will, you will receive errors which are extremely hard-debug like "nil pointer dereference" and "non-consistent data into entry"
+// due to the Entry which was returned into pool will be used again in other threads.
+func (e *Entry) finalize() (freedMem int64) {
+	atomic.AddUint64(&e.version, 1)
+
 	e.key = 0
 	e.shard = 0
 	e.rule = nil
@@ -168,8 +224,16 @@ func (e *Entry) Release() {
 	e.revalidator = nil
 	e.lruListElem.Store(nil)
 	e.payload.Store(nil)
+	freedMem = e.Weight()
 
-	EntriesPool.Put(e)
+	// return back to pool
+	entriesPool.Put(e)
+
+	return
+}
+
+func (e *Entry) Version() uint64 {
+	return atomic.LoadUint64(&e.version)
 }
 
 var keyBufPool = sync.Pool{
@@ -236,12 +300,26 @@ func (e *Entry) IsSameFingerprint(another [16]byte) bool {
 	return subtle.ConstantTimeCompare(e.fingerprint[:], another[:]) == 1
 }
 
-func (e *Entry) IsSame(another *Entry) bool {
-	return subtle.ConstantTimeCompare(e.fingerprint[:], another.fingerprint[:]) == 1
+func (e *Entry) IsSameEntry(another *Entry) bool {
+	return subtle.ConstantTimeCompare(e.fingerprint[:], another.fingerprint[:]) == 1 &&
+		e.isPayloadsAreEquals(e.PayloadBytes(), another.PayloadBytes())
 }
 
 func (e *Entry) SetRevalidator(revalidator Revalidator) {
 	e.revalidator = revalidator
+}
+
+func (e *Entry) isPayloadsAreEquals(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	if len(a) < 32 {
+		return bytes.Equal(a, b)
+	}
+
+	ha := xxh3.Hash(a[:8]) ^ xxh3.Hash(a[len(a)/2:len(a)/2+8]) ^ xxh3.Hash(a[len(a)-8:])
+	hb := xxh3.Hash(b[:8]) ^ xxh3.Hash(b[len(b)/2:len(b)/2+8]) ^ xxh3.Hash(b[len(b)-8:])
+	return ha == hb
 }
 
 // SetPayload packs and gzip-compresses the entire payload: Path, Query, QueryHeaders, StatusCode, ResponseHeaders, Body.
@@ -333,28 +411,18 @@ func (e *Entry) SetPayload(
 	payloadBuf = append(payloadBuf, body...)
 	offset += len(body)
 
-	// === 4) Compress if needed ===
-	if e.rule.Gzip.Enabled && total >= e.rule.Gzip.Threshold {
-		var compressed bytes.Buffer
-		gzipWriter := gzip.NewWriter(&compressed)
-		_, err := gzipWriter.Write(payloadBuf)
-		closeErr := gzipWriter.Close()
-		if err == nil && closeErr == nil {
-			bufCopy := make([]byte, compressed.Len())
-			copy(bufCopy, compressed.Bytes())
-			e.payload.Store(&bufCopy)
-			atomic.StoreInt64(&e.isCompressed, 1)
-			return
-		}
-	}
-
 	// === 5) Store raw ===
 	payloadBuf = payloadBuf[:]
 	e.payload.Store(&payloadBuf)
 	atomic.StoreInt64(&e.isCompressed, 0)
 }
 
-var emptyFn = func() {}
+var payloadReleaser = func(queryHeaders, responseHeaders [][2][]byte) {
+	queryHeaders = queryHeaders[:0]
+	pools.KeyValueSlicePool.Put(queryHeaders)
+	responseHeaders = responseHeaders[:0]
+	pools.KeyValueSlicePool.Put(responseHeaders)
+}
 
 // Payload decompresses the entire payload and unpacks it into fields.
 func (e *Entry) Payload() (
@@ -364,83 +432,66 @@ func (e *Entry) Payload() (
 	responseHeaders [][2][]byte,
 	body []byte,
 	status int,
-	releaseFn func(),
+	releaseFn func(q, h [][2][]byte),
 	err error,
 ) {
 	payload := e.PayloadBytes()
 	if len(payload) == 0 {
-		return nil, nil, nil, nil, nil, 0, emptyFn, fmt.Errorf("payload is empty")
-	}
-
-	var rawPayload []byte
-	if atomic.LoadInt64(&e.isCompressed) == 1 {
-		// TODO need to move it to sync.Pool
-		gr, err := gzip.NewReader(bytes.NewReader(payload))
-		if err != nil {
-			return nil, nil, nil, nil, nil, 0, emptyFn, fmt.Errorf("make gzip reader error: %w", err)
-		}
-		defer gr.Close()
-
-		rawPayload, err = io.ReadAll(gr)
-		if err != nil {
-			return nil, nil, nil, nil, nil, 0, emptyFn, fmt.Errorf("gzip read failed: %w", err)
-		}
-	} else {
-		rawPayload = payload
+		return nil, nil, nil, nil, nil, 0, emptyReleaser, fmt.Errorf("payload is empty")
 	}
 
 	offset := 0
 
 	// --- Path
-	pathLen := binary.LittleEndian.Uint32(rawPayload[offset:])
+	pathLen := binary.LittleEndian.Uint32(payload[offset:])
 	offset += 4
-	path = rawPayload[offset : offset+int(pathLen)]
+	path = payload[offset : offset+int(pathLen)]
 	offset += int(pathLen)
 
 	// --- Query
-	queryLen := binary.LittleEndian.Uint32(rawPayload[offset:])
+	queryLen := binary.LittleEndian.Uint32(payload[offset:])
 	offset += 4
-	query = rawPayload[offset : offset+int(queryLen)]
+	query = payload[offset : offset+int(queryLen)]
 	offset += int(queryLen)
 
 	// --- QueryHeaders
-	numQueryHeaders := binary.LittleEndian.Uint32(rawPayload[offset:])
+	numQueryHeaders := binary.LittleEndian.Uint32(payload[offset:])
 	offset += 4
 	queryHeaders = pools.KeyValueSlicePool.Get().([][2][]byte)
 	for i := 0; i < int(numQueryHeaders); i++ {
-		keyLen := binary.LittleEndian.Uint32(rawPayload[offset:])
+		keyLen := binary.LittleEndian.Uint32(payload[offset:])
 		offset += 4
-		k := rawPayload[offset : offset+int(keyLen)]
+		k := payload[offset : offset+int(keyLen)]
 		offset += int(keyLen)
 
-		valueLen := binary.LittleEndian.Uint32(rawPayload[offset:])
+		valueLen := binary.LittleEndian.Uint32(payload[offset:])
 		offset += 4
-		v := rawPayload[offset : offset+int(valueLen)]
+		v := payload[offset : offset+int(valueLen)]
 		offset += int(valueLen)
 
 		queryHeaders = append(queryHeaders, [2][]byte{k, v})
 	}
 
 	// --- StatusCode
-	status = int(binary.LittleEndian.Uint32(rawPayload[offset:]))
+	status = int(binary.LittleEndian.Uint32(payload[offset:]))
 	offset += 4
 
 	// --- Response Headers
-	numHeaders := binary.LittleEndian.Uint32(rawPayload[offset:])
+	numHeaders := binary.LittleEndian.Uint32(payload[offset:])
 	offset += 4
 	responseHeaders = pools.KeyValueSlicePool.Get().([][2][]byte)
 	for i := 0; i < int(numHeaders); i++ {
-		keyLen := binary.LittleEndian.Uint32(rawPayload[offset:])
+		keyLen := binary.LittleEndian.Uint32(payload[offset:])
 		offset += 4
-		key := rawPayload[offset : offset+int(keyLen)]
+		key := payload[offset : offset+int(keyLen)]
 		offset += int(keyLen)
 
-		numVals := binary.LittleEndian.Uint32(rawPayload[offset:])
+		numVals := binary.LittleEndian.Uint32(payload[offset:])
 		offset += 4
 		for v := 0; v < int(numVals); v++ {
-			valueLen := binary.LittleEndian.Uint32(rawPayload[offset:])
+			valueLen := binary.LittleEndian.Uint32(payload[offset:])
 			offset += 4
-			val := rawPayload[offset : offset+int(valueLen)]
+			val := payload[offset : offset+int(valueLen)]
 			offset += int(valueLen)
 			responseHeaders = append(responseHeaders, [2][]byte{key, val})
 		}
@@ -448,14 +499,9 @@ func (e *Entry) Payload() (
 
 	// --- Body
 	offset += 4
-	body = rawPayload[offset:]
+	body = payload[offset:]
 
-	releaseFn = func() {
-		queryHeaders = queryHeaders[:0]
-		pools.KeyValueSlicePool.Put(queryHeaders)
-		responseHeaders = responseHeaders[:0]
-		pools.KeyValueSlicePool.Put(responseHeaders)
-	}
+	releaseFn = payloadReleaser
 
 	return
 }
@@ -485,11 +531,10 @@ func (e *Entry) WillUpdateAt() int64 {
 	return atomic.LoadInt64(&e.willUpdateAt)
 }
 
-func (e *Entry) parseFilterAndSortQuery(b []byte) (queries [][2][]byte, releaseFn func()) {
+func (e *Entry) parseFilterAndSortQuery(b []byte) (queries [][2][]byte, releaseFn func([][2][]byte)) {
 	b = bytes.TrimLeft(b, "?")
 
-	queries = pools.KeyValueSlicePool.Get().([][2][]byte)
-	queries = queries[:0]
+	queries = kvPool.Get().([][2][]byte)
 
 	type state struct {
 		kIdx   int
@@ -555,15 +600,10 @@ func (e *Entry) parseFilterAndSortQuery(b []byte) (queries [][2][]byte, releaseF
 	queries = filtered
 
 	if len(queries) > 1 {
-		sort.Slice(queries, func(i, j int) bool {
-			return bytes.Compare(queries[i][0], queries[j][0]) < 0
-		})
+		sort.KVSlice(queries)
 	}
 
-	return queries, func() {
-		queries = queries[:0]
-		pools.KeyValueSlicePool.Put(queries)
-	}
+	return queries, queriesReleaser
 }
 
 var kvPool = sync.Pool{
@@ -572,9 +612,13 @@ var kvPool = sync.Pool{
 	},
 }
 
-func (e *Entry) getFilteredAndSortedKeyQueriesFastHttp(r *fasthttp.RequestCtx) (kvPairs [][2][]byte, releaseFn func()) {
+var queriesReleaser = func(queries [][2][]byte) {
+	queries = queries[:0]
+	kvPool.Put(queries)
+}
+
+func (e *Entry) getFilteredAndSortedKeyQueriesFastHttp(r *fasthttp.RequestCtx) (kvPairs [][2][]byte, releaseFn func(queries [][2][]byte)) {
 	filtered := kvPool.Get().([][2][]byte)
-	filtered = filtered[:0]
 
 	allowedKeys := e.rule.CacheKey.QueryBytes
 
@@ -593,17 +637,14 @@ func (e *Entry) getFilteredAndSortedKeyQueriesFastHttp(r *fasthttp.RequestCtx) (
 		return true
 	})
 
-	sort.Slice(filtered, func(i, j int) bool {
-		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
-	})
-
-	return filtered, func() {
-		filtered = filtered[:0]
-		kvPool.Put(filtered)
+	if len(filtered) > 1 {
+		sort.KVSlice(filtered)
 	}
+
+	return filtered, queriesReleaser
 }
 
-func (e *Entry) GetFilteredAndSortedKeyQueriesNetHttp(r *http.Request) (kvPairs [][2][]byte, releaseFn func()) {
+func (e *Entry) GetFilteredAndSortedKeyQueriesNetHttp(r *http.Request) (kvPairs [][2][]byte, releaseFn func([][2][]byte)) {
 	// r.URL.RawQuery - is static immutable string, therefor we can easily refer to it without any allocations.
 	return e.parseFilterAndSortQuery(unsafe.Slice(unsafe.StringData(r.URL.RawQuery), len(r.URL.RawQuery)))
 }
@@ -614,7 +655,12 @@ var hKvPool = sync.Pool{
 	},
 }
 
-func (e *Entry) getFilteredAndSortedKeyHeadersFastHttp(r *fasthttp.RequestCtx) (kvPairs [][2][]byte, releaseFn func()) {
+var headersReleaser = func(headers [][2][]byte) {
+	headers = headers[:0]
+	hKvPool.Put(headers)
+}
+
+func (e *Entry) getFilteredAndSortedKeyHeadersFastHttp(r *fasthttp.RequestCtx) (kvPairs [][2][]byte, releaseFn func([][2][]byte)) {
 	filtered := hKvPool.Get().([][2][]byte)
 	allowedKeysMap := e.rule.CacheKey.HeadersMap
 
@@ -625,17 +671,14 @@ func (e *Entry) getFilteredAndSortedKeyHeadersFastHttp(r *fasthttp.RequestCtx) (
 		return true
 	})
 
-	sort.Slice(filtered, func(i, j int) bool {
-		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
-	})
-
-	return filtered, func() {
-		filtered = filtered[:0]
-		hKvPool.Put(filtered)
+	if len(filtered) > 1 {
+		sort.KVSlice(filtered)
 	}
+
+	return filtered, headersReleaser
 }
 
-func (e *Entry) GetFilteredAndSortedKeyHeadersNetHttp(r *http.Request) (kvPairs [][2][]byte, releaseFn func()) {
+func (e *Entry) GetFilteredAndSortedKeyHeadersNetHttp(r *http.Request) (kvPairs [][2][]byte, releaseFn func([][2][]byte)) {
 	filtered := hKvPool.Get().([][2][]byte)
 	allowedKeysMap := e.rule.CacheKey.HeadersMap
 
@@ -650,14 +693,11 @@ func (e *Entry) GetFilteredAndSortedKeyHeadersNetHttp(r *http.Request) (kvPairs 
 		}
 	}
 
-	sort.Slice(filtered, func(i, j int) bool {
-		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
-	})
-
-	return filtered, func() {
-		filtered = filtered[:0]
-		hKvPool.Put(filtered)
+	if len(filtered) > 1 {
+		sort.KVSlice(filtered)
 	}
+
+	return filtered, headersReleaser
 }
 
 // filteredAndSortedKeyQueriesInPlace - filters an input slice, be careful!
@@ -679,9 +719,9 @@ func (e *Entry) filteredAndSortedKeyQueriesInPlace(queries [][2][]byte) (kvPairs
 		}
 	}
 
-	sort.Slice(filtered, func(i, j int) bool {
-		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
-	})
+	if len(filtered) > 1 {
+		sort.KVSlice(filtered)
+	}
 
 	return filtered
 }
@@ -697,20 +737,20 @@ func (e *Entry) filteredAndSortedKeyHeadersInPlace(headers [][2][]byte) (kvPairs
 		}
 	}
 
-	sort.Slice(filtered, func(i, j int) bool {
-		return bytes.Compare(filtered[i][0], filtered[j][0]) < 0
-	})
+	if len(filtered) > 1 {
+		sort.KVSlice(filtered)
+	}
 
 	return filtered
 }
 
 // SetLruListElement sets the LRU list element pointer.
-func (e *Entry) SetLruListElement(el *list.Element[*Entry]) {
+func (e *Entry) SetLruListElement(el *list.Element[*VersionPointer]) {
 	e.lruListElem.Store(el)
 }
 
 // LruListElement returns the LRU list element pointer (for LRU cache management).
-func (e *Entry) LruListElement() *list.Element[*Entry] {
+func (e *Entry) LruListElement() *list.Element[*VersionPointer] {
 	return e.lruListElem.Load()
 }
 
@@ -752,8 +792,8 @@ func (e *Entry) ShouldBeRefreshed(cfg *config.Cache) bool {
 
 // Revalidate calls the revalidator closure to fetch fresh data and updates the timestamp.
 func (e *Entry) Revalidate() error {
-	path, query, headers, _, _, _, release, err := e.Payload()
-	defer release()
+	path, query, headers, respHeaders, _, _, release, err := e.Payload()
+	defer release(headers, respHeaders)
 	if err != nil {
 		return err
 	}
@@ -896,7 +936,7 @@ func (e *Entry) SetMapKey(key uint64) *Entry {
 
 func (e *Entry) DumpPayload() {
 	path, query, queryHeaders, responseHeaders, body, status, releaseFn, err := e.Payload()
-	defer releaseFn()
+	defer releaseFn(queryHeaders, responseHeaders)
 	if err != nil {
 		log.Error().Err(err).Msg("[dump] failed to unpack payload")
 		return

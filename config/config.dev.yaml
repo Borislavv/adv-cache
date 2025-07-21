@@ -27,9 +27,10 @@ cache:
     threshold: 0.9    # Trigger eviction when cache memory usage exceeds 90% of its configured limit.
 
   storage:
-    size: 32212254720 # 32GB of maximum allowed memory for the in-memory cache (in bytes).
+    size: 34359738368 # 32GB of maximum allowed memory for the in-memory cache (in bytes).
 
   refresh:
+    enabled: true
     ttl: "12h"
     error_ttl: "3h"
     rate: 80          # Rate limiting reqs to backend per second.

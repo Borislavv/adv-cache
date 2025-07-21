@@ -24,7 +24,7 @@ func (m *TraefikCacheMiddleware) run(ctx context.Context) error {
 		log.Error().Err(err).Msg("[dump] failed to load")
 	}
 
-	m.store.Run()
+	m.storage.Run()
 	m.evictor.Run()
 	m.refresher.Run()
 	m.runControllerLogger()

@@ -127,10 +127,10 @@ func BenchmarkRistrettoRead1000x(b *testing.B) {
 	if numEntries > maxEntriesNum {
 		numEntries = maxEntriesNum
 	}
-	entries := mock.GenerateSeqEntries(ristrettoCfg, &repository.Backend{}, path, numEntries)
+	entries := mock.GenerateEntryPointersConsecutive(ristrettoCfg, &repository.Backend{}, path, numEntries)
 
 	for _, resp := range entries {
-		store.Set(resp)
+		store.Set(resp.Entry)
 	}
 	length := len(entries)
 
@@ -139,7 +139,7 @@ func BenchmarkRistrettoRead1000x(b *testing.B) {
 		i := 0
 		for pb.Next() {
 			for j := 0; j < 1000; j++ {
-				_, _ = store.Get(entries[(i*j)%length])
+				_, _ = store.Get(entries[(i*j)%length].Entry)
 			}
 			i += 1000
 		}
@@ -155,7 +155,7 @@ func BenchmarkRistrettoWrite1000x(b *testing.B) {
 	if numEntries > maxEntriesNum {
 		numEntries = maxEntriesNum
 	}
-	entries := mock.GenerateSeqEntries(ristrettoCfg, &repository.Backend{}, path, numEntries)
+	entries := mock.GenerateEntryPointersConsecutive(ristrettoCfg, &repository.Backend{}, path, numEntries)
 	length := len(entries)
 
 	b.ResetTimer()
@@ -163,7 +163,7 @@ func BenchmarkRistrettoWrite1000x(b *testing.B) {
 		i := 0
 		for pb.Next() {
 			for j := 0; j < 1000; j++ {
-				store.Set(entries[(i*j)%length])
+				store.Set(entries[(i*j)%length].Entry)
 			}
 			i += 1000
 		}
@@ -175,11 +175,11 @@ func BenchmarkRistrettoWrite1000x(b *testing.B) {
 
 func BenchmarkRistrettoGetAllocs(b *testing.B) {
 	store := NewRistrettoStorage(int64(ristrettoCfg.Cache.Storage.Size))
-	entry := mock.GenerateSeqEntries(ristrettoCfg, &repository.Backend{}, path, 1)[0]
-	store.Set(entry)
+	entry := mock.GenerateEntryPointersConsecutive(ristrettoCfg, &repository.Backend{}, path, 1)[0]
+	store.Set(entry.Entry)
 
 	allocs := testing.AllocsPerRun(100_000, func() {
-		_, _ = store.Get(entry)
+		_, _ = store.Get(entry.Entry)
 	})
 	b.ReportMetric(allocs, "allocs/op")
 
@@ -188,10 +188,10 @@ func BenchmarkRistrettoGetAllocs(b *testing.B) {
 
 func BenchmarkRistrettoSetAllocs(b *testing.B) {
 	store := NewRistrettoStorage(int64(ristrettoCfg.Cache.Storage.Size))
-	entry := mock.GenerateSeqEntries(ristrettoCfg, &repository.Backend{}, path, 1)[0]
+	entry := mock.GenerateEntryPointersConsecutive(ristrettoCfg, &repository.Backend{}, path, 1)[0]
 
 	allocs := testing.AllocsPerRun(100_000, func() {
-		store.Set(entry)
+		store.Set(entry.Entry)
 	})
 	b.ReportMetric(allocs, "allocs/op")
 

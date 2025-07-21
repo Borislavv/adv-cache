@@ -110,16 +110,22 @@ func (e *Evict) evictUntilWithinLimit() (items int, mem int64) {
 		for e.shouldEvictRightNow() {
 			el, ok := shard.LruList().Next(offset)
 			if !ok {
-				break
+				break // end of the LRU list, move to next
 			}
 
-			freedMem, isHit := e.db.Remove(el.Value())
+			entry := el.Value()
+			if !entry.Acquire() {
+				continue // already marked as doomed but not removed yet, skip it
+			}
+
+			freedMem, isHit := e.db.Remove(entry)
 			if isHit {
 				items++
 				evictions++
 				mem += freedMem
 			}
 
+			entry.Release()
 			offset++
 		}
 	}

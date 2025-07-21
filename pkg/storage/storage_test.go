@@ -92,7 +92,7 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	shardedMap := sharded.NewMap[*model.Entry](ctx, cfg.Cache.Preallocate.PerShard)
+	shardedMap := sharded.NewMap[*model.VersionPointer](ctx, cfg.Cache.Preallocate.PerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
 	backend := repository.NewBackend(cfg)
 	tinyLFU := lfu.NewTinyLFU(ctx)
@@ -103,7 +103,7 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 		numEntries = maxEntriesNum
 	}
 
-	entries := mock.GenerateSeqEntries(cfg, backend, path, numEntries)
+	entries := mock.GenerateEntryPointersConsecutive(cfg, backend, path, numEntries)
 	for _, resp := range entries {
 		db.Set(resp)
 	}
@@ -114,7 +114,7 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 		i := 0
 		for pb.Next() {
 			for j := 0; j < 1000; j++ {
-				_, _ = db.Get(entries[(i*j)%length])
+				db.Get(entries[(i*j)%length].Entry)
 			}
 			i += 1000
 		}
@@ -128,7 +128,7 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	shardedMap := sharded.NewMap[*model.Entry](ctx, cfg.Cache.Preallocate.PerShard)
+	shardedMap := sharded.NewMap[*model.VersionPointer](ctx, cfg.Cache.Preallocate.PerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
 	backend := repository.NewBackend(cfg)
 	tinyLFU := lfu.NewTinyLFU(ctx)
@@ -139,7 +139,7 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 		numEntries = maxEntriesNum
 	}
 
-	entries := mock.GenerateSeqEntries(cfg, backend, path, numEntries)
+	entries := mock.GenerateEntryPointersConsecutive(cfg, backend, path, numEntries)
 	length := len(entries)
 
 	b.ResetTimer()
@@ -161,17 +161,17 @@ func BenchmarkGetAllocs(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	shardedMap := sharded.NewMap[*model.Entry](ctx, cfg.Cache.Preallocate.PerShard)
+	shardedMap := sharded.NewMap[*model.VersionPointer](ctx, cfg.Cache.Preallocate.PerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
 	backend := repository.NewBackend(cfg)
 	tinyLFU := lfu.NewTinyLFU(ctx)
 	db := lru.NewStorage(ctx, cfg, balancer, backend, tinyLFU, shardedMap)
 
-	entry := mock.GenerateSeqEntries(cfg, backend, path, 1)[0]
+	entry := mock.GenerateEntryPointersConsecutive(cfg, backend, path, 1)[0]
 	db.Set(entry)
 
 	allocs := testing.AllocsPerRun(100_000, func() {
-		db.Get(entry)
+		db.Get(entry.Entry)
 	})
 	b.ReportMetric(allocs, "allocs/op")
 
@@ -182,13 +182,13 @@ func BenchmarkSetAllocs(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	shardedMap := sharded.NewMap[*model.Entry](ctx, cfg.Cache.Preallocate.PerShard)
+	shardedMap := sharded.NewMap[*model.VersionPointer](ctx, cfg.Cache.Preallocate.PerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
 	backend := repository.NewBackend(cfg)
 	tinyLFU := lfu.NewTinyLFU(ctx)
 	db := lru.NewStorage(ctx, cfg, balancer, backend, tinyLFU, shardedMap)
 
-	entry := mock.GenerateSeqEntries(cfg, backend, path, 1)[0]
+	entry := mock.GenerateEntryPointersConsecutive(cfg, backend, path, 1)[0]
 
 	allocs := testing.AllocsPerRun(100_000, func() {
 		db.Set(entry)

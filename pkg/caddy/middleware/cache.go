@@ -36,7 +36,7 @@ type CacheMiddleware struct {
 	ConfigPath string
 	ctx        context.Context
 	cfg        *config.Cache
-	store      storage.Storage
+	storage    storage.Storage
 	backend    repository.Backender
 	refresher  storage.Refresher
 	evictor    storage.Evictor
@@ -59,7 +59,7 @@ func (m *CacheMiddleware) Provision(ctx caddy.Context) error {
 func (m *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	from := time.Now()
 
-	entry, reqEntryReleaser, err := model.NewEntryNetHttp(m.cfg, r)
+	newEntry, err := model.NewEntryNetHttp(m.cfg, r)
 	if err != nil {
 		// Path was not matched, then handle request through upstream without cache.
 		return next.ServeHTTP(w, r)
@@ -71,7 +71,7 @@ func (m *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next
 		body    []byte
 	)
 
-	value, found := m.store.Get(entry)
+	foundEntry, found := m.storage.Get(newEntry)
 	if !found {
 		// MISS — prepare capture writer
 		captured, releaseCapturer := httpwriter.NewCaptureResponseWriter(w)
@@ -92,28 +92,30 @@ func (m *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next
 		query := unsafe.Slice(unsafe.StringData(r.URL.RawQuery), len(r.URL.RawQuery))
 
 		// Get query headers from original request
-		queryHeaders, queryHeadersReleaser := entry.GetFilteredAndSortedKeyHeadersNetHttp(r)
-		defer queryHeadersReleaser()
+		queryHeaders, queryHeadersReleaser := newEntry.GetFilteredAndSortedKeyHeadersNetHttp(r)
+		defer queryHeadersReleaser(queryHeaders)
 
 		var extractReleaser func()
 		status, headers, body, extractReleaser = captured.ExtractPayload()
 		defer extractReleaser()
 
-		// Save the response into the new entry
-		entry.SetPayload(path, query, queryHeaders, headers, body, status)
-		entry.SetRevalidator(m.backend.RevalidatorMaker())
+		// Save the response into the new newEntry
+		newEntry.SetPayload(path, query, queryHeaders, headers, body, status)
+		newEntry.SetRevalidator(m.backend.RevalidatorMaker())
 
-		m.store.Set(entry)
-
-		value = entry
+		// build and store new Entry in cache
+		foundEntry = m.storage.Set(model.NewVersionPointer(newEntry))
+		defer foundEntry.Release() // an Entry stored in the cache must be released after use
 	} else {
-		// Release unnecessary more entry which was used as input request
-		reqEntryReleaser()
+		// deferred release and remove
+		newEntry.Remove()          // new Entry which was used as request for query cache does not need anymore
+		defer foundEntry.Release() // an Entry retrieved from the cache must be released after use
 
-		// Always read from cached value
-		var payloadReleaser func()
-		_, _, _, headers, body, status, payloadReleaser, err = value.Payload()
-		defer payloadReleaser()
+		// Always read from cached foundEntry
+		var queryHeaders [][2][]byte
+		var payloadReleaser func(q, h [][2][]byte)
+		_, _, queryHeaders, headers, body, status, payloadReleaser, err = foundEntry.Payload()
+		defer payloadReleaser(queryHeaders, headers)
 		if err != nil {
 			// ERROR — prepare capture writer
 			captured, releaseCapturer := httpwriter.NewCaptureResponseWriter(w)
@@ -141,7 +143,7 @@ func (m *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next
 	}
 
 	// Last-Modified
-	header.SetLastModified(w, value, status)
+	header.SetLastModified(w, foundEntry, status)
 
 	// Content-Type
 	w.Header().Set(contentTypeKey, applicationJsonValue)

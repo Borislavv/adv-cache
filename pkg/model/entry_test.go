@@ -6,8 +6,80 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/stretchr/testify/require"
 	"io"
+	"math/rand"
+	"sync"
 	"testing"
+	"time"
 )
+
+func TestRefCountingNew(t *testing.T) {
+	var (
+		db   = make(map[int]*VersionPointer)
+		mu   sync.Mutex
+		done = make(chan struct{})
+	)
+
+	for idx := 0; idx < 150; idx++ {
+		e := NewEntryFromField(0, 0, [16]byte{}, []byte(""), nil, nil, 0, 0)
+		db[idx] = NewVersionPointer(e)
+	}
+
+	go func() {
+		time.Sleep(5 * time.Second)
+		close(done)
+	}()
+
+	// Readers
+	for i := 0; i < 5; i++ {
+		go func() {
+			for {
+				select {
+				case <-done:
+					return
+				default:
+					idx := rand.Intn(150)
+					mu.Lock()
+					te := db[idx]
+					if te.Acquire() {
+						mu.Unlock()
+						payload := te.payload.Load()
+						if payload == nil {
+							panic("payload is nil")
+						}
+						te.Release()
+					} else {
+						mu.Unlock()
+					}
+				}
+			}
+		}()
+	}
+
+	// Writers
+	for i := 0; i < 10; i++ {
+		go func() {
+			for {
+				select {
+				case <-done:
+					return
+				default:
+					idx := rand.Intn(150)
+					mu.Lock()
+					old := db[idx]
+					delete(db, idx)
+					if old.Acquire() {
+						old.Remove()
+					}
+					e := NewEntryFromField(0, 0, [16]byte{}, []byte(""), nil, nil, 0, 0)
+					db[idx] = NewVersionPointer(e)
+					mu.Unlock()
+				}
+			}
+		}()
+	}
+
+	time.Sleep(6 * time.Second)
+}
 
 func TestEntryPayloadRoundTrip(t *testing.T) {
 	rule := &config.Rule{
@@ -37,8 +109,8 @@ func TestEntryPayloadRoundTrip(t *testing.T) {
 
 	// === 2) Распаковываем
 	p1, q1, qh1, h1, b1, s1, release, err := e.Payload()
+	defer release(qh1, h1)
 	require.NoError(t, err)
-	defer release()
 
 	// === 3) Проверяем значения
 	require.Equal(t, path, p1)
@@ -55,8 +127,8 @@ func TestEntryPayloadRoundTrip(t *testing.T) {
 
 	// === 5) И снова распаковываем
 	p2, q2, qh2, h2, b2, s2, release2, err := e2.Payload()
+	defer release2(qh2, h2)
 	require.NoError(t, err)
-	defer release2()
 
 	require.Equal(t, p1, p2)
 	require.Equal(t, q1, q2)

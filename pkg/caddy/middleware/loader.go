@@ -18,7 +18,7 @@ func (m *CacheMiddleware) loadDump() error {
 		defer dCancel()
 
 		if err := m.dumper.Dump(dCtx); err != nil {
-			log.Error().Err(err).Msg("[dump] failed to store dump")
+			log.Error().Err(err).Msg("[dump] failed to storage dump")
 		}
 	}()
 

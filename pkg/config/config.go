@@ -97,6 +97,7 @@ type Storage struct {
 }
 
 type Refresh struct {
+	Enabled bool `yaml:"enabled"`
 	// TTL - refresh TTL (max time life of response item in cache without refreshing).
 	TTL time.Duration `yaml:"ttl"` // e.g. "1d" (responses with 200 status code)
 	// ErrorTTL - error refresh TTL (max time life of response item with non 200 status code in cache without refreshing).
