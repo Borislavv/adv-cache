@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"sync"
 	"time"
-	"unsafe"
 )
 
 var (
@@ -56,14 +55,14 @@ func init() {
 
 // IncTotal increments total requests or responses depending on status.
 func (m *Metrics) IncTotal(path, method, status []byte) {
-	name := keyword.TotalHttpRequestsMetricName
-	if len(status) > 0 {
-		name = keyword.TotalHttpResponsesMetricName
-	}
 	buf := bufPool.Get().(*bytes.Buffer)
 	defer bufPool.Put(buf)
 	defer buf.Reset()
 
+	name := keyword.TotalHttpRequestsMetricName
+	if len(status) > 0 {
+		name = keyword.TotalHttpResponsesMetricName
+	}
 	buf.Write(name)
 	buf.Write(pathBytes)
 	buf.Write(path)
@@ -75,10 +74,7 @@ func (m *Metrics) IncTotal(path, method, status []byte) {
 	}
 	buf.Write(closerBytes)
 
-	bufBytes := buf.Bytes()
-	bufStr := *(*string)(unsafe.Pointer(&bufBytes))
-
-	metrics.GetOrCreateCounter(bufStr).Inc()
+	metrics.GetOrCreateCounter(buf.String()).Inc()
 }
 
 // IncStatus increments a counter for HTTP response statuses.
