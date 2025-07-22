@@ -65,13 +65,14 @@ func NewCacheController(
 		metrics: metrics,
 		backend: backend,
 	}
-	c.runLoggerMetricsWriter(ctx)
+	c.runLoggerMetricsWriter()
 	return c
 }
 
 // Index is the main HTTP handler.
 func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 	var from = time.Now()
+	defer func() { totalDuration.Add(time.Since(from).Nanoseconds()) }()
 
 	// make a lightweight request Entry (contains only key, shardKey and fingerprint)
 	newEntry, err := model.NewEntryFastHttp(c.cfg.Cache, r) // must be removed on hit and release on miss
@@ -143,9 +144,6 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 		c.respondThatServiceIsTemporaryUnavailable(err, r)
 		return
 	}
-
-	// Record the totalDuration in debug mode for metrics.
-	totalDuration.Add(time.Since(from).Nanoseconds())
 }
 
 // respondThatServiceIsTemporaryUnavailable returns 503 and logs the error.
@@ -186,12 +184,9 @@ func (c *CacheController) queryHeaders(r *fasthttp.RequestCtx) (headers *[][2][]
 	return headers, queryHeadersReleaser
 }
 
-func (c *CacheController) runLoggerMetricsWriter(ctx context.Context) {
+func (c *CacheController) runLoggerMetricsWriter() {
 	go func() {
-		metricsTicker := utils.NewTicker(ctx, time.Second)
-
-		const loggerIntervalSecs = 5
-		loggerTicker := utils.NewTicker(ctx, time.Second*loggerIntervalSecs)
+		metricsTicker := utils.NewTicker(c.ctx, time.Second)
 
 		var (
 			totalNum         uint64
@@ -200,9 +195,12 @@ func (c *CacheController) runLoggerMetricsWriter(ctx context.Context) {
 			totalDurationNum int64
 		)
 
+		const logIntervalSecs = 5
+		i := logIntervalSecs
+		prev := time.Now()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-c.ctx.Done():
 				return
 			case <-metricsTicker:
 				hitsNumLoc := hits.Load()
@@ -228,33 +226,40 @@ func (c *CacheController) runLoggerMetricsWriter(ctx context.Context) {
 				missesNum += missesNumLoc
 				totalDurationNum += totalDurationNumLoc
 
-				hits.Store(0)
-				misses.Store(0)
-				totalDuration.Store(0)
-			case <-loggerTicker:
-				rps := totalNum / loggerIntervalSecs
-				avgDuration := uint64(totalDurationNum) / totalNum
+				if i == logIntervalSecs {
+					elapsed := time.Since(prev)
+					duration := time.Duration(int(avgDuration))
+					rps := float64(totalNumLoc) / elapsed.Seconds()
 
-				logEvent := log.Info()
+					hits.Store(0)
+					misses.Store(0)
+					totalDuration.Store(0)
 
-				if c.cfg.IsProd() {
-					logEvent.
-						Str("target", "controller").
-						Str("rps", strconv.Itoa(int(rps))).
-						Str("served", strconv.Itoa(int(totalNum))).
-						Str("periodMs", strconv.Itoa(loggerIntervalSecs*1000)).
-						Str("avgDuration", strconv.Itoa(int(avgDuration)))
+					logEvent := log.Info()
+
+					if c.cfg.IsProd() {
+						logEvent.
+							Str("target", "controller").
+							Str("rps", strconv.Itoa(int(rps))).
+							Str("served", strconv.Itoa(int(totalNum))).
+							Str("periodMs", strconv.Itoa(logIntervalSecs*1000)).
+							Str("avgDuration", duration.String()).
+							Str("elapsed", elapsed.String())
+					}
+
+					logEvent.Msgf(
+						"[controller][%s] served %d requests (rps: %.f, avg.dur.: %s hits: %d, misses: %d)",
+						elapsed.String(), totalNum, rps, duration.String(), hitsNum, missesNum,
+					)
+
+					totalNum = 0
+					hitsNum = 0
+					missesNum = 0
+					totalDurationNum = 0
+					prev = time.Now()
+					i = 0
 				}
-
-				logEvent.Msgf(
-					"[controller][5s] served %d requests (rps: %d, avg.dur.: %d hits: %d, misses: %d)",
-					totalNum, rps, avgDuration, hitsNum, missesNum,
-				)
-
-				totalNum = 0
-				hitsNum = 0
-				missesNum = 0
-				totalDurationNum = 0
+				i++
 			}
 		}
 	}()
