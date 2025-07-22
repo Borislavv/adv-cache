@@ -89,6 +89,10 @@ func (s *Backend) Fetch(
 ) (
 	status int, headers *[][2][]byte, body []byte, releaseFn func(), err error,
 ) {
+	if err = s.rateLimiter.Wait(s.ctx); err != nil {
+		return 0, nil, nil, emptyReleaseFn, err
+	}
+
 	return s.requestExternalBackend(rule, path, query, queryHeaders)
 }
 
@@ -121,10 +125,6 @@ var (
 func (s *Backend) requestExternalBackend(
 	rule *config.Rule, path []byte, query []byte, queryHeaders *[][2][]byte,
 ) (status int, headers *[][2][]byte, body []byte, releaseFn func(), err error) {
-	if err = s.rateLimiter.Wait(s.ctx); err != nil {
-		return 0, nil, nil, emptyReleaseFn, err
-	}
-
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)
 
