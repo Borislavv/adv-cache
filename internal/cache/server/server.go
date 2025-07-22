@@ -8,7 +8,6 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/k8s/probe/liveness"
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
 	controller2 "github.com/Borislavv/advanced-cache/pkg/prometheus/metrics/controller"
-	middleware2 "github.com/Borislavv/advanced-cache/pkg/prometheus/metrics/middleware"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
 	httpserver "github.com/Borislavv/advanced-cache/pkg/server"
 	"github.com/Borislavv/advanced-cache/pkg/server/controller"
@@ -120,9 +119,9 @@ func (s *HttpServer) initServer() error {
 // controllers returns all HTTP controllers for the server (endpoints/handlers).
 func (s *HttpServer) controllers() []controller.HttpController {
 	return []controller.HttpController{
-		api.NewCacheController(s.ctx, s.cfg, s.db, s.backend), // Main cache handler
-		liveness.NewController(s.probe),                       // Liveness/healthcheck endpoint
-		controller2.NewPrometheusMetrics(),                    // Metrics endpoint
+		api.NewCacheController(s.ctx, s.cfg, s.db, s.metrics, s.backend), // Main cache handler
+		liveness.NewController(s.probe),                                  // Liveness/healthcheck endpoint
+		controller2.NewPrometheusMetrics(),                               // Metrics endpoint
 	}
 }
 
@@ -130,6 +129,5 @@ func (s *HttpServer) controllers() []controller.HttpController {
 func (s *HttpServer) middlewares() []middleware.HttpMiddleware {
 	return []middleware.HttpMiddleware{
 		/** exec 1st. */ middleware.NewApplicationJsonMiddleware(), // Sets Content-Type
-		/** exec 2nd. */ middleware2.NewPrometheusMetrics(s.ctx, s.metrics), // Metrics instrumentation
 	}
 }
