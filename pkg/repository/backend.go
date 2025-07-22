@@ -2,9 +2,11 @@ package repository
 
 import (
 	"bytes"
+	"context"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/pools"
 	"github.com/valyala/fasthttp"
+	"golang.org/x/time/rate"
 	"net"
 	"net/http"
 	"sync"
@@ -55,21 +57,31 @@ type Backender interface {
 // Backend implements the Backender interface.
 // It fetches and constructs SEO page data responses from an external backend.
 type Backend struct {
+	ctx         context.Context
 	cfg         *config.Cache // Global configuration (backend URL, etc)
 	transport   *http.Transport
 	clientsPool *sync.Pool
+	rateLimiter *rate.Limiter
 }
 
 // NewBackend creates a new instance of Backend.
-func NewBackend(cfg *config.Cache) *Backend {
-	return &Backend{cfg: cfg, clientsPool: &sync.Pool{
-		New: func() interface{} {
-			return &http.Client{
-				Transport: transport,
-				Timeout:   10 * time.Second,
-			}
+func NewBackend(ctx context.Context, cfg *config.Cache) *Backend {
+	return &Backend{
+		ctx: ctx,
+		cfg: cfg,
+		clientsPool: &sync.Pool{
+			New: func() interface{} {
+				return &http.Client{
+					Transport: transport,
+					Timeout:   10 * time.Second,
+				}
+			},
 		},
-	}}
+		rateLimiter: rate.NewLimiter(
+			rate.Limit(cfg.Cache.Upstream.Rate),
+			cfg.Cache.Upstream.Rate/10,
+		),
+	}
 }
 
 func (s *Backend) Fetch(
@@ -109,11 +121,14 @@ var (
 func (s *Backend) requestExternalBackend(
 	rule *config.Rule, path []byte, query []byte, queryHeaders *[][2][]byte,
 ) (status int, headers *[][2][]byte, body []byte, releaseFn func(), err error) {
+	if err = s.rateLimiter.Wait(s.ctx); err != nil {
+		return 0, nil, nil, emptyReleaseFn, err
+	}
+
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)
 
 	req.Header.SetMethod(fasthttp.MethodGet)
-
 	url := unsafe.Slice(unsafe.StringData(s.cfg.Cache.Upstream.Url), len(s.cfg.Cache.Upstream.Url))
 
 	urlBuf := urlBufPool.Get().(*bytes.Buffer)
@@ -145,9 +160,9 @@ func (s *Backend) requestExternalBackend(
 		}
 	}
 
-	var timeout = s.cfg.Cache.Upstream.Timeout
+	var timeout = s.cfg.Cache.LifeTime.MaxReqDuration
 	if isBot {
-		timeout = time.Minute * 5 // 5min: max request duration for BOTs
+		timeout = s.cfg.Cache.Upstream.Timeout
 	}
 
 	resp := fasthttp.AcquireResponse()

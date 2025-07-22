@@ -72,12 +72,10 @@ type Upstream struct {
 }
 
 type Dump struct {
-	IsEnabled    bool   `yaml:"enabled"`
-	Format       string `yaml:"format"` // gzip or raw
-	Dir          string `yaml:"dump_dir"`
-	Name         string `yaml:"dump_name"`
-	MaxFiles     int    `yaml:"max_files"`
-	RotatePolicy string `yaml:"rotate_policy"` // fixed or ring
+	IsEnabled   bool   `yaml:"enabled"`
+	Dir         string `yaml:"dump_dir"`
+	Name        string `yaml:"dump_name"`
+	MaxVersions int    `yaml:"max_versions"`
 }
 
 type Persistence struct {

@@ -45,7 +45,7 @@ func NewApp(ctx context.Context, cfg *config.Config, probe liveness.Prober) (*Ca
 
 	// Setup sharded map for high-concurrency cache db.
 	shardedMap := sharded.NewMap[*model.VersionPointer](ctx, cfg.Cache.Cache.Preallocate.PerShard)
-	backend := repository.NewBackend(cfg.Cache)
+	backend := repository.NewBackend(ctx, cfg.Cache)
 	balancer := lru.NewBalancer(ctx, shardedMap)
 	tinyLFU := lfu.NewTinyLFU(ctx)
 	db := lru.NewStorage(ctx, cfg.Cache, balancer, backend, tinyLFU, shardedMap)
