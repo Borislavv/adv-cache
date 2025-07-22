@@ -136,13 +136,22 @@ func (s *Backend) requestExternalBackend(
 	}
 	req.SetRequestURI(unsafe.String(unsafe.SliceData(urlBuf.Bytes()), urlBuf.Len()))
 
+	var isBot bool
 	for _, kv := range *queryHeaders {
 		req.Header.SetBytesKV(kv[0], kv[1])
+
+		if bytes.Equal(kv[0], s.cfg.Cache.LifeTime.EscapeMaxReqDurationHeaderBytes) {
+			isBot = true
+		}
+	}
+
+	var timeout = s.cfg.Cache.Upstream.Timeout
+	if isBot {
+		timeout = time.Minute * 5 // 5min: max request duration for BOTs
 	}
 
 	resp := fasthttp.AcquireResponse()
-
-	if err = pools.BackendHttpClientPool.DoTimeout(req, resp, s.cfg.Cache.Upstream.Timeout); err != nil {
+	if err = pools.BackendHttpClientPool.DoTimeout(req, resp, timeout); err != nil {
 		return 0, nil, nil, emptyReleaseFn, err
 	}
 

@@ -60,8 +60,9 @@ type Logs struct {
 }
 
 type Lifetime struct {
-	MaxReqDuration             time.Duration `yaml:"max_req_dur"`               // If a request lifetime is longer than 100ms then request will be canceled by context.
-	EscapeMaxReqDurationHeader string        `yaml:"escape_max_req_dur_header"` // If the header exists the timeout above will be skipped.
+	MaxReqDuration                  time.Duration `yaml:"max_req_dur"`               // If a request lifetime is longer than 100ms then request will be canceled by context.
+	EscapeMaxReqDurationHeader      string        `yaml:"escape_max_req_dur_header"` // If the header exists the timeout above will be skipped.
+	EscapeMaxReqDurationHeaderBytes []byte        // The same value but converted into slice bytes.
 }
 
 type Upstream struct {
@@ -195,6 +196,8 @@ func LoadConfig(path string) (*Cache, error) {
 	}
 
 	cfg.Cache.Refresh.MinStale = time.Duration(float64(cfg.Cache.Refresh.TTL) * cfg.Cache.Refresh.Beta)
+
+	cfg.Cache.LifeTime.EscapeMaxReqDurationHeaderBytes = []byte(cfg.Cache.LifeTime.EscapeMaxReqDurationHeader)
 
 	return cfg, nil
 }
