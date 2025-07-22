@@ -41,11 +41,9 @@ cache:
   persistence:
     dump:
       enabled: true
-      format: "gzip" # gzip or raw json
       dump_dir: "public/dump"
       dump_name: "cache.dump.gz"
-      rotate_policy: "ring" # fixed, ring
-      max_files: 7
+      max_versions: 5
 
   rules:
     /api/v2/pagedata:
