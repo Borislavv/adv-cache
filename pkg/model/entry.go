@@ -356,7 +356,6 @@ func (e *Entry) SetPayload(
 	// === 3) Write ===
 
 	// Path
-
 	binary.LittleEndian.PutUint32(scratch[:], uint32(len(path)))
 	payloadBuf = append(payloadBuf, scratch[:]...)
 	payloadBuf = append(payloadBuf, path...)
