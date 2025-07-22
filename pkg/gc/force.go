@@ -32,6 +32,10 @@ import (
 //   - less surprise RSS growth during steady state
 //   - smoother operation for long-lived caches under high load.
 func Run(ctx context.Context, cfg *config.Cache) {
+	if !cfg.Cache.ForceGC.Enabled {
+		return
+	}
+
 	go func() {
 		// Force GC walk-through every cfg.Cache.ForceGC.GCInterval
 		gcTicker := time.NewTicker(cfg.Cache.ForceGC.Interval)

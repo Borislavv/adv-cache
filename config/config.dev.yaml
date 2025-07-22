@@ -7,6 +7,7 @@ cache:
     stats: true   # Should the statistic like num evictions, refreshes, rps, memory usage and so on be written in /std/out?
 
   forceGC:
+    enabled: true
     interval: "10s"
 
   lifetime:

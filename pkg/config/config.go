@@ -50,6 +50,7 @@ type CacheBox struct {
 }
 
 type ForceGC struct {
+	Enabled  bool          `yaml:"enabled"`
 	Interval time.Duration `yaml:"interval"`
 }
 
