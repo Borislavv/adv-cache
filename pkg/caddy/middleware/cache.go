@@ -143,7 +143,7 @@ func (m *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next
 	}
 
 	// Last-Modified
-	header.SetLastModifiedNetHttp(w, foundEntry, status)
+	header.SetLastModifiedNetHttp(w, foundEntry)
 
 	// Content-Type
 	w.Header().Set(contentTypeKey, applicationJsonValue)

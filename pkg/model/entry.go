@@ -41,7 +41,7 @@ type Entry struct {
 	payload      *atomic.Pointer[[]byte]
 	lruListElem  *atomic.Pointer[list.Element[*VersionPointer]]
 	revalidator  Revalidator
-	willUpdateAt int64  // atomic: unix nano
+	updatedAt    int64  // atomic: unix nano (last update was at)
 	isCompressed int64  // atomic: bool as int64
 	isDoomed     int64  // atomic: bool as int64
 	refCount     int64  // atomic: simple counter
@@ -127,7 +127,7 @@ func NewEntryFromField(
 	rule *config.Rule,
 	revalidator Revalidator,
 	isCompressed int64,
-	willUpdateAt int64,
+	updatedAt int64,
 ) *Entry {
 	entry := drainEntryPool()
 	entry.key = key
@@ -137,7 +137,7 @@ func NewEntryFromField(
 	entry.payload.Store(&payload)
 	entry.revalidator = revalidator
 	entry.isCompressed = isCompressed
-	entry.willUpdateAt = willUpdateAt
+	entry.updatedAt = updatedAt
 	return entry
 }
 
@@ -215,7 +215,7 @@ func (e *Entry) finalize() (freedMem int64) {
 	e.key = 0
 	e.shard = 0
 	e.rule = nil
-	e.willUpdateAt = 0
+	e.updatedAt = 0
 	e.isCompressed = 0
 	e.revalidator = nil
 	e.lruListElem.Store(nil)
@@ -526,8 +526,8 @@ func (e *Entry) IsCompressed() bool {
 	return atomic.LoadInt64(&e.isCompressed) == 1
 }
 
-func (e *Entry) WillUpdateAt() int64 {
-	return atomic.LoadInt64(&e.willUpdateAt)
+func (e *Entry) UpdateAt() int64 {
+	return atomic.LoadInt64(&e.updatedAt)
 }
 
 func (e *Entry) parseFilterAndSortQuery(b []byte) (queries *[][2][]byte, releaseFn func(*[][2][]byte)) {
@@ -835,33 +835,39 @@ func (e *Entry) ShouldBeRefreshed(cfg *config.Cache) bool {
 	}
 
 	now := time.Now().UnixNano()
-	remaining := atomic.LoadInt64(&e.willUpdateAt) - now
-
-	if remaining < 0 {
-		remaining = 0 // min clamp is zero, using only probability refresh, forced refresh does not used at all!
-		// the line above means that you must not return true value here!
+	// время, прошедшее с последнего обновления
+	elapsed := now - atomic.LoadInt64(&e.updatedAt)
+	if elapsed < 0 {
+		// если по какой‑то причине clock skew, считаем, что прошло 0
+		elapsed = 0
 	}
 
+	// TTL из правила, иначе из глобальной конфигурации
 	interval := e.rule.TTL.Nanoseconds()
 	if interval == 0 {
 		interval = cfg.Cache.Refresh.TTL.Nanoseconds()
 	}
 
+	// β из правила, иначе из глобальной конфигурации
 	beta := e.rule.Beta
 	if beta == 0 {
 		beta = cfg.Cache.Refresh.Beta
 	}
 
-	x := 1.0 - float64(remaining)/float64(interval)
+	// нормируем x = elapsed / interval в [0,1]
+	x := float64(elapsed) / float64(interval)
 	if x < 0 {
 		x = 0
 	} else if x > 1 {
 		x = 1
 	}
 
+	// вероятность экспоненциального распределения
 	prob := 1 - math.Exp(-beta*x)
 	return rand.Float64() < prob
 }
+
+var invalidUpstreamStatusCodeReceivedError = errors.New("invalid upstream status code")
 
 // Revalidate calls the revalidator closure to fetch fresh data and updates the timestamp.
 func (e *Entry) Revalidate() error {
@@ -876,13 +882,14 @@ func (e *Entry) Revalidate() error {
 	if err != nil {
 		return err
 	}
+	if statusCode != http.StatusOK {
+		return invalidUpstreamStatusCodeReceivedError
+	}
+
 	e.SetPayload(path, query, headers, respHeaders, body, statusCode)
 
-	if statusCode == http.StatusOK {
-		atomic.StoreInt64(&e.willUpdateAt, time.Now().UnixNano()+e.rule.TTL.Nanoseconds())
-	} else {
-		atomic.StoreInt64(&e.willUpdateAt, time.Now().UnixNano()+e.rule.ErrorTTL.Nanoseconds())
-	}
+	// successful refresh, set up current timestamp as last update point
+	atomic.StoreInt64(&e.updatedAt, time.Now().UnixNano())
 
 	return nil
 }
@@ -924,8 +931,8 @@ func (e *Entry) ToBytes() (data []byte, releaseFn func()) {
 		buf.WriteByte(0)
 	}
 
-	// === WillUpdateAt ===
-	binary.LittleEndian.PutUint64(scratch8[:], uint64(e.WillUpdateAt()))
+	// === UpdateAt ===
+	binary.LittleEndian.PutUint64(scratch8[:], uint64(e.UpdateAt()))
 	buf.Write(scratch8[:])
 
 	// === Payload ===
@@ -972,8 +979,8 @@ func EntryFromBytes(data []byte, cfg *config.Cache, backend repository.Backender
 	}
 	offset += 1
 
-	// WillUpdateAt
-	willUpdateAt := int64(binary.LittleEndian.Uint64(data[offset:]))
+	// UpdateAt
+	updatedAt := int64(binary.LittleEndian.Uint64(data[offset:]))
 	offset += 8
 
 	// Payload
@@ -983,7 +990,7 @@ func EntryFromBytes(data []byte, cfg *config.Cache, backend repository.Backender
 
 	return NewEntryFromField(
 		key, shard, fp, payload, rule,
-		backend.RevalidatorMaker(), isCompressed, willUpdateAt,
+		backend.RevalidatorMaker(), isCompressed, updatedAt,
 	), nil
 }
 
@@ -1019,11 +1026,11 @@ func (e *Entry) DumpPayload() {
 	fmt.Printf("Key:          %d\n", e.key)
 	fmt.Printf("Shard:        %d\n", e.shard)
 	fmt.Printf("IsCompressed: %v\n", e.IsCompressed())
-	fmt.Printf("WillUpdateAt: %s\n", time.Unix(0, e.WillUpdateAt()).Format(time.RFC3339Nano))
+	fmt.Printf("UpdateAt:	 %s\n", time.Unix(0, e.UpdateAt()).Format(time.RFC3339Nano))
 	fmt.Printf("----------------------------------\n")
 
-	fmt.Printf("Path:   %q\n", string(path))
-	fmt.Printf("Query:  %q\n", string(query))
+	fmt.Printf("Path:   	   %q\n", string(path))
+	fmt.Printf("Query:  	   %q\n", string(query))
 	fmt.Printf("StatusCode: %d\n", status)
 
 	fmt.Printf("\nQuery Headers:\n")

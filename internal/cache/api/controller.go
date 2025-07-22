@@ -16,6 +16,7 @@ import (
 	"github.com/fasthttp/router"
 	"github.com/rs/zerolog/log"
 	"github.com/valyala/fasthttp"
+	"net/http"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -109,9 +110,14 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 		newEntry.SetPayload(path, queryString, queryHeaders, payloadHeaders, payloadBody, payloadStatus)
 		newEntry.SetRevalidator(c.backend.RevalidatorMaker())
 
-		// build and store new Entry in cache
-		foundEntry = c.cache.Set(model.NewVersionPointer(newEntry))
-		defer foundEntry.Release() // an Entry stored in the cache must be released after use
+		if payloadStatus != http.StatusOK {
+			// bad status code received, process request and don't store in cache, removed after use of course
+			defer newEntry.Remove()
+		} else {
+			// build and store new VersionPointer in cache
+			foundEntry = c.cache.Set(model.NewVersionPointer(newEntry))
+			defer foundEntry.Release() // an Entry stored in the cache must be released after use
+		}
 	} else {
 		hits.Add(1)
 
@@ -137,7 +143,7 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 	}
 
 	// Set up Last-Modified header
-	header.SetLastModifiedFastHttp(r, foundEntry, payloadStatus)
+	header.SetLastModifiedFastHttp(r, foundEntry)
 
 	// Write payloadBody
 	if _, err = serverutils.Write(payloadBody, r); err != nil {
