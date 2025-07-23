@@ -4,20 +4,13 @@ import (
 	"bytes"
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics/keyword"
 	"github.com/VictoriaMetrics/metrics"
-	"strconv"
 	"sync"
-	"time"
 )
 
 var (
 	bufPool = sync.Pool{
 		New: func() interface{} {
 			return new(bytes.Buffer)
-		},
-	}
-	timersPool = sync.Pool{
-		New: func() interface{} {
-			return new(Timer)
 		},
 	}
 	pathBytes   = []byte(`{path="`)
@@ -28,12 +21,13 @@ var (
 
 // Meter defines methods for recording application metrics.
 type Meter interface {
-	IncTotal(path, method, status []byte)
-	IncStatus(path, method, status []byte)
-	NewResponseTimeTimer(path, method []byte) *Timer
-	FlushResponseTimeTimer(t *Timer)
-	SetCacheLength(count int64)
-	SetCacheMemory(bytes int64)
+	SetHits(value uint64)
+	SetMisses(value uint64)
+	SetErrors(value uint64)
+	SetRPS(value uint64)
+	SetCacheLength(count uint64)
+	SetCacheMemory(bytes uint64)
+	SetAvgResponseTime(avg float64)
 }
 
 // Metrics implements Meter using VictoriaMetrics metrics.
@@ -44,96 +38,30 @@ func New() *Metrics {
 	return &Metrics{}
 }
 
-// Precompute status code strings for performance.
-var statuses [599]string
-
-func init() {
-	for i := 100; i < len(statuses); i++ {
-		statuses[i] = strconv.Itoa(i)
-	}
+func (m *Metrics) SetHits(value uint64) {
+	metrics.GetOrCreateCounter(keyword.Hits).Set(value)
 }
 
-// IncTotal increments total requests or responses depending on status.
-func (m *Metrics) IncTotal(path, method, status []byte) {
-	buf := bufPool.Get().(*bytes.Buffer)
-	defer bufPool.Put(buf)
-	defer buf.Reset()
-
-	name := keyword.TotalHttpRequestsMetricName
-	if len(status) > 0 {
-		name = keyword.TotalHttpResponsesMetricName
-	}
-	buf.Write(name)
-	buf.Write(pathBytes)
-	buf.Write(path)
-	buf.Write(methodBytes)
-	buf.Write(method)
-	if len(status) > 0 {
-		buf.Write(statusBytes)
-		buf.Write(status)
-	}
-	buf.Write(closerBytes)
-
-	metrics.GetOrCreateCounter(buf.String()).Inc()
+func (m *Metrics) SetMisses(value uint64) {
+	metrics.GetOrCreateCounter(keyword.Misses).Set(value)
 }
 
-// IncStatus increments a counter for HTTP response statuses.
-func (m *Metrics) IncStatus(path, method, status []byte) {
-	buf := bufPool.Get().(*bytes.Buffer)
-	defer bufPool.Put(buf)
-	defer buf.Reset()
-
-	buf.Write(keyword.HttpResponseStatusesMetricName)
-	buf.Write(pathBytes)
-	buf.Write(path)
-	buf.Write(methodBytes)
-	buf.Write(method)
-	buf.Write(statusBytes)
-	buf.Write(status)
-	buf.Write(closerBytes)
-
-	metrics.GetOrCreateCounter(buf.String()).Inc()
+func (m *Metrics) SetRPS(value uint64) {
+	metrics.GetOrCreateCounter(keyword.RPS).Set(value)
 }
 
-// SetCacheMemory updates the gauge for total cache memory usage in bytes.
-func (m *Metrics) SetCacheMemory(bytes int64) {
-	metrics.GetOrCreateCounter(keyword.MapMemoryUsageMetricName).Set(uint64(bytes))
+func (m *Metrics) SetCacheMemory(bytes uint64) {
+	metrics.GetOrCreateCounter(keyword.MapMemoryUsageMetricName).Set(bytes)
 }
 
-// SetCacheLength updates the gauge for total number of items in the cache.
-func (m *Metrics) SetCacheLength(count int64) {
-	metrics.GetOrCreateCounter(keyword.MapLength).Set(uint64(count))
+func (m *Metrics) SetErrors(value uint64) {
+	metrics.GetOrCreateCounter(keyword.UpstreamErrors).Set(value)
 }
 
-// Timer tracks start of an operation for timing metrics.
-type Timer struct {
-	name  string
-	start int64
+func (m *Metrics) SetCacheLength(count uint64) {
+	metrics.GetOrCreateCounter(keyword.MapLength).Set(count)
 }
 
-// NewResponseTimeTimer creates a Timer for measuring response time of given path and method.
-func (m *Metrics) NewResponseTimeTimer(path, method []byte) *Timer {
-	buf := bufPool.Get().(*bytes.Buffer)
-	defer bufPool.Put(buf)
-	defer buf.Reset()
-
-	buf.Write(keyword.HttpResponseTimeMsMetricName)
-	buf.Write(pathBytes)
-	buf.Write(path)
-	buf.Write(methodBytes)
-	buf.Write(method)
-	buf.Write(closerBytes)
-
-	t := timersPool.Get().(*Timer)
-	t.name = buf.String()
-	t.start = time.Now().UnixNano()
-
-	return t
-}
-
-// FlushResponseTimeTimer records the elapsed time since Timer creation into a histogram.
-func (m *Metrics) FlushResponseTimeTimer(t *Timer) {
-	delta := float64(time.Now().UnixNano()-t.start) / 1e9
-	metrics.GetOrCreateHistogram(t.name).Update(delta)
-	timersPool.Put(t)
+func (m *Metrics) SetAvgResponseTime(avgDuration float64) {
+	metrics.GetOrCreateGauge(keyword.AvgDuration, nil).Set(avgDuration)
 }

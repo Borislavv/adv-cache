@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/Borislavv/advanced-cache/pkg/mock"
 	"io"
 	"os"
 	"path/filepath"
@@ -27,11 +26,13 @@ var (
 	errDumpNotEnabled = errors.New("persistence mode is not enabled")
 )
 
+// Dumper defines dump & load operations.
 type Dumper interface {
 	Dump(ctx context.Context) error
 	Load(ctx context.Context) error
 }
 
+// Dump implements persistence with versioned directories.
 type Dump struct {
 	cfg        *config.Cache
 	shardedMap *sharded.Map[*model.VersionPointer]
@@ -39,6 +40,7 @@ type Dump struct {
 	backend    repository.Backender
 }
 
+// NewDumper constructs a Dump.
 func NewDumper(cfg *config.Cache, sm *sharded.Map[*model.VersionPointer], storage Storage, backend repository.Backender) *Dump {
 	return &Dump{
 		cfg:        cfg,
@@ -48,23 +50,24 @@ func NewDumper(cfg *config.Cache, sm *sharded.Map[*model.VersionPointer], storag
 	}
 }
 
+// Dump writes all entries into a new versioned directory.
+// It then rotates old dirs, keeping only the latest cfg.MaxVersions.
 func (d *Dump) Dump(ctx context.Context) error {
 	start := time.Now()
-
 	cfg := d.cfg.Cache.Persistence.Dump
-	if !cfg.IsEnabled {
+	if !d.cfg.Cache.Enabled || !cfg.IsEnabled {
 		return errDumpNotEnabled
 	}
 
 	// Ensure base dir exists
-	if err := os.MkdirAll(cfg.Dir, 0755); err != nil {
+	if err := os.MkdirAll(cfg.Dir, 0o755); err != nil {
 		return fmt.Errorf("create base dump dir: %w", err)
 	}
 
 	// Determine new version dir
 	version := nextVersionDir(cfg.Dir)
 	versionDir := filepath.Join(cfg.Dir, fmt.Sprintf("v%d", version))
-	if err := os.MkdirAll(versionDir, 0755); err != nil {
+	if err := os.MkdirAll(versionDir, 0o755); err != nil {
 		return fmt.Errorf("create version dir: %w", err)
 	}
 
@@ -72,13 +75,14 @@ func (d *Dump) Dump(ctx context.Context) error {
 	var wg sync.WaitGroup
 	var successNum, errorNum int32
 
+	// Parallel dump shards
 	d.shardedMap.WalkShards(func(shardKey uint64, shard *sharded.Shard[*model.VersionPointer]) {
 		wg.Add(1)
-		go func(shardKey uint64) {
+		go func(sh uint64) {
 			defer wg.Done()
 
 			filename := fmt.Sprintf("%s/%s-shard-%d-%s.dump",
-				versionDir, cfg.Name, shardKey, timestamp)
+				versionDir, cfg.Name, sh, timestamp)
 			tmpName := filename + ".tmp"
 
 			f, err := os.Create(tmpName)
@@ -90,88 +94,77 @@ func (d *Dump) Dump(ctx context.Context) error {
 			defer f.Close()
 
 			bw := bufio.NewWriterSize(f, 512*1024)
-
 			shard.Walk(ctx, func(key uint64, entry *model.VersionPointer) bool {
 				data, releaser := entry.ToBytes()
 				defer releaser()
 
-				var scratch [4]byte
-				binary.LittleEndian.PutUint32(scratch[:], uint32(len(data)))
-				bw.Write(scratch[:])
+				// write length + data
+				var lenBuf [4]byte
+				binary.LittleEndian.PutUint32(lenBuf[:], uint32(len(data)))
+				bw.Write(lenBuf[:])
 				bw.Write(data)
-
 				atomic.AddInt32(&successNum, 1)
-
 				return true
 			}, true)
 
 			bw.Flush()
-			_ = f.Close()
-			_ = os.Rename(tmpName, filename)
+			f.Close() // ensure file closed before rename
+			os.Rename(tmpName, filename)
 		}(shardKey)
 	})
 
 	wg.Wait()
 
-	rotateVersionDirs(cfg.Dir, 2)
+	// Rotate old version dirs, keeping only latest MaxVersions
+	if cfg.MaxVersions > 0 {
+		rotateVersionDirs(cfg.Dir, cfg.MaxVersions)
+	}
 
-	log.Info().Msgf("[dump] finished: %d entries, errors: %d, elapsed: %s",
-		successNum, errorNum, time.Since(start))
+	log.Info().
+		Msgf("[dump] finished: %d entries, errors: %d, elapsed: %s",
+			successNum, errorNum, time.Since(start))
+
 	if errorNum > 0 {
 		return fmt.Errorf("dump finished with %d errors", errorNum)
 	}
-
 	return nil
 }
 
+// Load reads from the latest versioned dir; if none, falls back to mock.
 func (d *Dump) Load(ctx context.Context) error {
 	var successNum int32
-	defer func() {
-		if successNum == 0 {
-			go func() {
-				log.Info().Msg("[dump] dump restored 0 keys, mock data start loading")
-				defer log.Info().Msg("[dump] mocked data finished loading")
-				path := []byte("/api/v2/pagedata")
-				for entry := range mock.StreamEntryPointersConsecutive(ctx, d.cfg, d.backend, path, 10_000_000) {
-					d.storage.Set(entry).Release()
-				}
-			}()
-		}
-	}()
 
 	start := time.Now()
-
 	cfg := d.cfg.Cache.Persistence.Dump
-	if !cfg.IsEnabled {
+	if !d.cfg.Cache.Enabled || !cfg.IsEnabled {
 		return errDumpNotEnabled
 	}
 
-	// Find latest version directory
-	latestVersionDir := getLatestVersionDir(cfg.Dir)
-	if latestVersionDir == "" {
+	latestDir := getLatestVersionDir(cfg.Dir)
+	if latestDir == "" {
 		return fmt.Errorf("no versioned dump dirs found in %s", cfg.Dir)
 	}
 
-	files, err := filepath.Glob(filepath.Join(latestVersionDir, fmt.Sprintf("%s-shard-*.dump", cfg.Name)))
+	pattern := fmt.Sprintf("%s-shard-*.dump", cfg.Name)
+	files, err := filepath.Glob(filepath.Join(latestDir, pattern))
 	if err != nil {
 		return fmt.Errorf("glob error: %w", err)
 	}
 	if len(files) == 0 {
-		return fmt.Errorf("no dump files found in %s", latestVersionDir)
+		return fmt.Errorf("no dump files found in %s", latestDir)
 	}
 
 	latestTs := extractLatestTimestamp(files)
-	filesToLoad := filterFilesByTimestamp(files, latestTs)
+	toLoad := filterFilesByTimestamp(files, latestTs)
 
 	var wg sync.WaitGroup
 	var errorNum int32
 
-	for _, file := range filesToLoad {
+	for _, file := range toLoad {
 		wg.Add(1)
-		go func(file string) {
+		go func(fn string) {
 			defer wg.Done()
-
-			f, err := os.Open(file)
+			f, err := os.Open(fn)
 			if err != nil {
 				log.Error().Err(err).Msg("[load] open error")
 				atomic.AddInt32(&errorNum, 1)
@@ -189,8 +182,8 @@ func (d *Dump) Load(ctx context.Context) error {
 					atomic.AddInt32(&errorNum, 1)
 					break
 				}
-				size := binary.LittleEndian.Uint32(sizeBuf[:])
-				buf := make([]byte, size)
+				sz := binary.LittleEndian.Uint32(sizeBuf[:])
+				buf := make([]byte, sz)
 				if _, err := io.ReadFull(br, buf); err != nil {
 					log.Error().Err(err).Msg("[load] read entry error")
 					atomic.AddInt32(&errorNum, 1)
@@ -215,26 +208,26 @@ func (d *Dump) Load(ctx context.Context) error {
 	}
 
 	wg.Wait()
-	log.Info().Msgf("[dump] restored: %d entries, errors: %d, elapsed: %s",
-		successNum, errorNum, time.Since(start))
+	log.Info().
+		Msgf("[dump] restored: %d entries, errors: %d, elapsed: %s",
+			successNum, errorNum, time.Since(start))
 	if errorNum > 0 {
 		return fmt.Errorf("load finished with %d errors", errorNum)
 	}
-
 	return nil
 }
 
-// Determine next version dir number.
+// nextVersionDir picks the next sequential version number.
 func nextVersionDir(baseDir string) int {
 	entries, _ := filepath.Glob(filepath.Join(baseDir, "v*"))
 	maxV := 0
 	for _, dir := range entries {
-		base := filepath.Base(dir)
-		if !strings.HasPrefix(base, "v") {
+		name := filepath.Base(dir)
+		if !strings.HasPrefix(name, "v") {
 			continue
 		}
 		var v int
-		fmt.Sscanf(base, "v%d", &v)
+		fmt.Sscanf(name, "v%d", &v)
 		if v > maxV {
 			maxV = v
 		}
@@ -242,7 +235,7 @@ func nextVersionDir(baseDir string) int {
 	return maxV + 1
 }
 
-// Rotate directories: keep only the latest N version dirs.
+// rotateVersionDirs keeps only the newest `max` dirs, removes the rest.
 func rotateVersionDirs(baseDir string, max int) {
 	entries, _ := filepath.Glob(filepath.Join(baseDir, "v*"))
 	if len(entries) <= max {
@@ -259,7 +252,7 @@ func rotateVersionDirs(baseDir string, max int) {
 	}
 }
 
-// Find latest version dir name.
+// getLatestVersionDir returns the most recently modified version dir.
 func getLatestVersionDir(baseDir string) string {
 	entries, _ := filepath.Glob(filepath.Join(baseDir, "v*"))
 	if len(entries) == 0 {
@@ -273,6 +266,7 @@ func getLatestVersionDir(baseDir string) string {
 	return entries[0]
 }
 
+// extractLatestTimestamp picks the largest timestamp suffix among files.
 func extractLatestTimestamp(files []string) string {
 	var tsList []string
 	for _, f := range files {
@@ -289,6 +283,7 @@ func extractLatestTimestamp(files []string) string {
 	return tsList[len(tsList)-1]
 }
 
+// filterFilesByTimestamp returns only files containing the given ts.
 func filterFilesByTimestamp(files []string, ts string) []string {
 	var out []string
 	for _, f := range files {

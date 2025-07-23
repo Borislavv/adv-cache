@@ -125,7 +125,7 @@ func (m *TraefikCacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Last-Modified
-	header.SetLastModifiedNetHttp(w, foundEntry, status)
+	header.SetLastModifiedNetHttp(w, foundEntry)
 
 	// Content-Type
 	w.Header().Set(contentTypeKey, applicationJsonValue)

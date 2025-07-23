@@ -13,7 +13,6 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/storage/lfu"
 	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
 	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
-	"github.com/Borislavv/advanced-cache/pkg/utils"
 	"github.com/rs/zerolog/log"
 	"time"
 )
@@ -46,7 +45,7 @@ func NewApp(ctx context.Context, cfg *config.Config, probe liveness.Prober) (*Ca
 
 	// Setup sharded map for high-concurrency cache db.
 	shardedMap := sharded.NewMap[*model.VersionPointer](ctx, cfg.Cache.Cache.Preallocate.PerShard)
-	backend := repository.NewBackend(cfg.Cache)
+	backend := repository.NewBackend(ctx, cfg.Cache)
 	balancer := lru.NewBalancer(ctx, shardedMap)
 	tinyLFU := lfu.NewTinyLFU(ctx)
 	db := lru.NewStorage(ctx, cfg.Cache, balancer, backend, tinyLFU, shardedMap)
@@ -104,22 +103,6 @@ func (c *Cache) Start(gc shutdown.Gracefuller) {
 	<-waitCh // Wait until the server exits
 }
 
-func (c *Cache) runMetricsWriter() {
-	go func() {
-		t := utils.NewTicker(c.ctx, time.Second)
-		for {
-			select {
-			case <-c.ctx.Done():
-				return
-			case <-t:
-				memUsage, length := c.db.Stat()
-				c.metrics.SetCacheLength(length)
-				c.metrics.SetCacheMemory(memUsage)
-			}
-		}
-	}()
-}
-
 func (c *Cache) run() *Cache {
 	if err := c.dumper.Load(c.ctx); err != nil {
 		log.Warn().Msg("[dump] failed to load dump: " + err.Error())
@@ -128,7 +111,6 @@ func (c *Cache) run() *Cache {
 	c.db.Run()
 	c.evictor.Run()
 	c.refresher.Run()
-	c.runMetricsWriter()
 
 	return c
 }

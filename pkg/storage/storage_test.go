@@ -94,7 +94,7 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 
 	shardedMap := sharded.NewMap[*model.VersionPointer](ctx, cfg.Cache.Preallocate.PerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
-	backend := repository.NewBackend(cfg)
+	backend := repository.NewBackend(ctx, cfg)
 	tinyLFU := lfu.NewTinyLFU(ctx)
 	db := lru.NewStorage(ctx, cfg, balancer, backend, tinyLFU, shardedMap)
 
@@ -130,7 +130,7 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 
 	shardedMap := sharded.NewMap[*model.VersionPointer](ctx, cfg.Cache.Preallocate.PerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
-	backend := repository.NewBackend(cfg)
+	backend := repository.NewBackend(ctx, cfg)
 	tinyLFU := lfu.NewTinyLFU(ctx)
 	db := lru.NewStorage(ctx, cfg, balancer, backend, tinyLFU, shardedMap)
 
@@ -163,7 +163,7 @@ func BenchmarkGetAllocs(b *testing.B) {
 
 	shardedMap := sharded.NewMap[*model.VersionPointer](ctx, cfg.Cache.Preallocate.PerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
-	backend := repository.NewBackend(cfg)
+	backend := repository.NewBackend(ctx, cfg)
 	tinyLFU := lfu.NewTinyLFU(ctx)
 	db := lru.NewStorage(ctx, cfg, balancer, backend, tinyLFU, shardedMap)
 
@@ -184,7 +184,7 @@ func BenchmarkSetAllocs(b *testing.B) {
 
 	shardedMap := sharded.NewMap[*model.VersionPointer](ctx, cfg.Cache.Preallocate.PerShard)
 	balancer := lru.NewBalancer(ctx, shardedMap)
-	backend := repository.NewBackend(cfg)
+	backend := repository.NewBackend(ctx, cfg)
 	tinyLFU := lfu.NewTinyLFU(ctx)
 	db := lru.NewStorage(ctx, cfg, balancer, backend, tinyLFU, shardedMap)
 

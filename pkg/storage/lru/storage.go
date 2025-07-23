@@ -60,6 +60,12 @@ func (s *Storage) Run() {
 	s.runLogger()
 }
 
+func (s *Storage) Clear() {
+	s.shardedMap.WalkShards(func(key uint64, shard *sharded.Shard[*model.VersionPointer]) {
+		shard.Clear()
+	})
+}
+
 // Get retrieves a response by request and bumps its Storage position.
 // Returns: (response, releaser, found).
 func (s *Storage) Get(req *model.Entry) (entry *model.VersionPointer, ok bool) {

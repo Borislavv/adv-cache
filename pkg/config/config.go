@@ -50,6 +50,7 @@ type CacheBox struct {
 }
 
 type ForceGC struct {
+	Enabled  bool          `yaml:"enabled"`
 	Interval time.Duration `yaml:"interval"`
 }
 
@@ -59,8 +60,9 @@ type Logs struct {
 }
 
 type Lifetime struct {
-	MaxReqDuration             time.Duration `yaml:"max_req_dur"`               // If a request lifetime is longer than 100ms then request will be canceled by context.
-	EscapeMaxReqDurationHeader string        `yaml:"escape_max_req_dur_header"` // If the header exists the timeout above will be skipped.
+	MaxReqDuration                  time.Duration `yaml:"max_req_dur"`               // If a request lifetime is longer than 100ms then request will be canceled by context.
+	EscapeMaxReqDurationHeader      string        `yaml:"escape_max_req_dur_header"` // If the header exists the timeout above will be skipped.
+	EscapeMaxReqDurationHeaderBytes []byte        // The same value but converted into slice bytes.
 }
 
 type Upstream struct {
@@ -70,12 +72,10 @@ type Upstream struct {
 }
 
 type Dump struct {
-	IsEnabled    bool   `yaml:"enabled"`
-	Format       string `yaml:"format"` // gzip or raw
-	Dir          string `yaml:"dump_dir"`
-	Name         string `yaml:"dump_name"`
-	MaxFiles     int    `yaml:"max_files"`
-	RotatePolicy string `yaml:"rotate_policy"` // fixed or ring
+	IsEnabled   bool   `yaml:"enabled"`
+	Dir         string `yaml:"dump_dir"`
+	Name        string `yaml:"dump_name"`
+	MaxVersions int    `yaml:"max_versions"`
 }
 
 type Persistence struct {
@@ -194,6 +194,8 @@ func LoadConfig(path string) (*Cache, error) {
 	}
 
 	cfg.Cache.Refresh.MinStale = time.Duration(float64(cfg.Cache.Refresh.TTL) * cfg.Cache.Refresh.Beta)
+
+	cfg.Cache.LifeTime.EscapeMaxReqDurationHeaderBytes = []byte(cfg.Cache.LifeTime.EscapeMaxReqDurationHeader)
 
 	return cfg, nil
 }

@@ -62,7 +62,6 @@ func NewRefresher(ctx context.Context, cfg *config.Cache, balancer lru.Balancer,
 // It runs a logger (if debugging is enabled), spawns a provider for sampling shards,
 // and continuously processes shard samples for candidate responses to refreshItem.
 func (r *Refresh) Run() {
-	return
 	if r.cfg.Cache.Refresh.Enabled {
 		r.runLogger()    // handle consumer stats and print logs
 		r.runConsumers() // scans rand items and checks whether they should be refreshed

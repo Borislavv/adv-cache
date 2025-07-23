@@ -11,7 +11,7 @@ import (
 
 func (m *CacheMiddleware) setUpCache() {
 	shardedMap := sharded.NewMap[*model.VersionPointer](m.ctx, m.cfg.Cache.Preallocate.PerShard)
-	m.backend = repository.NewBackend(m.cfg)
+	m.backend = repository.NewBackend(m.ctx, m.cfg)
 	balancer := lru.NewBalancer(m.ctx, shardedMap)
 	tinyLFU := lfu.NewTinyLFU(m.ctx)
 	m.storage = lru.NewStorage(m.ctx, m.cfg, balancer, m.backend, tinyLFU, shardedMap)

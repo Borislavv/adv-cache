@@ -24,6 +24,9 @@ type Storage interface {
 	// Remove is removes one element.
 	Remove(*model.VersionPointer) (freedBytes int64, isHit bool)
 
+	// Clear is removes all cache entries from the storage.
+	Clear()
+
 	// Stat returns bytes usage and num of items in storage.
 	Stat() (bytes int64, length int64)
 
