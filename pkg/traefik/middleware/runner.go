@@ -20,14 +20,14 @@ func (m *TraefikCacheMiddleware) run(ctx context.Context) error {
 
 	m.setUpCache()
 
-	if err := m.loadDump(); err != nil {
+	if err = m.loadDump(); err != nil {
 		log.Error().Err(err).Msg("[dump] failed to load")
 	}
 
 	m.storage.Run()
 	m.evictor.Run()
 	m.refresher.Run()
-	m.runControllerLogger()
+	m.runLoggerMetricsWriter()
 	gc.Run(ctx, cfg)
 
 	log.Info().Msg("[advanced-cache] has been started")

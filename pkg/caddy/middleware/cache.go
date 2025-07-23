@@ -132,14 +132,16 @@ func (m *CacheMiddleware) handleThroughCache(w http.ResponseWriter, r *http.Requ
 		status, headers, body, extractReleaser = captured.ExtractPayload()
 		defer extractReleaser(headers)
 
-		// Save the response into the new newEntry
-		newEntry.SetPayload(path, query, queryHeaders, headers, body, status)
-		newEntry.SetRevalidator(m.backend.RevalidatorMaker())
-
 		if status != http.StatusOK {
+			errors.Add(1)
+
 			// non-positive status code received, skip saving
 			defer newEntry.Remove()
 		} else {
+			// Save the response into the new newEntry
+			newEntry.SetPayload(path, query, queryHeaders, headers, body, status)
+			newEntry.SetRevalidator(m.backend.RevalidatorMaker())
+
 			// build and store new Entry in cache
 			foundEntry = m.storage.Set(model.NewVersionPointer(newEntry))
 			defer foundEntry.Release() // an Entry stored in the cache must be released after use
@@ -157,6 +159,8 @@ func (m *CacheMiddleware) handleThroughCache(w http.ResponseWriter, r *http.Requ
 		_, _, queryHeaders, headers, body, status, payloadReleaser, err = foundEntry.Payload()
 		defer payloadReleaser(queryHeaders, headers)
 		if err != nil {
+			errors.Add(1)
+
 			// ERROR — prepare capture writer
 			captured, releaseCapturer := httpwriter.NewCaptureResponseWriter(w)
 			defer releaseCapturer()
