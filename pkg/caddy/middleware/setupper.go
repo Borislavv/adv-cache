@@ -2,6 +2,7 @@ package advancedcache
 
 import (
 	"github.com/Borislavv/advanced-cache/pkg/model"
+	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
 	"github.com/Borislavv/advanced-cache/pkg/storage/lfu"
@@ -18,4 +19,5 @@ func (m *CacheMiddleware) setUpCache() {
 	m.refresher = storage.NewRefresher(m.ctx, m.cfg, balancer, m.storage)
 	m.dumper = storage.NewDumper(m.cfg, shardedMap, m.storage, m.backend)
 	m.evictor = storage.NewEvictor(m.ctx, m.cfg, m.storage, balancer)
+	m.metrics = metrics.New()
 }
