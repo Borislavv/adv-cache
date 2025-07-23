@@ -25,6 +25,16 @@ func NewShard[V Value](id uint64, defaultLen int) *Shard[V] {
 	}
 }
 
+func (shard *Shard[V]) Clear() {
+	shard.Lock()
+	for id := range shard.items {
+		delete(shard.items, id)
+	}
+	atomic.StoreInt64(&shard.mem, 0)
+	atomic.StoreInt64(&shard.len, 0)
+	shard.Unlock()
+}
+
 // ID returns the numeric index of this shard.
 func (shard *Shard[V]) ID() uint64 {
 	return shard.id

@@ -55,7 +55,7 @@ func NewDumper(cfg *config.Cache, sm *sharded.Map[*model.VersionPointer], storag
 func (d *Dump) Dump(ctx context.Context) error {
 	start := time.Now()
 	cfg := d.cfg.Cache.Persistence.Dump
-	if !cfg.IsEnabled {
+	if !d.cfg.Cache.Enabled || !cfg.IsEnabled {
 		return errDumpNotEnabled
 	}
 
@@ -136,7 +136,7 @@ func (d *Dump) Load(ctx context.Context) error {
 
 	start := time.Now()
 	cfg := d.cfg.Cache.Persistence.Dump
-	if !cfg.IsEnabled {
+	if !d.cfg.Cache.Enabled || !cfg.IsEnabled {
 		return errDumpNotEnabled
 	}
 

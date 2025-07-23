@@ -25,6 +25,10 @@ import (
 // CacheGetPath for getting pagedata from cache via HTTP.
 const CacheGetPath = "/{any:*}"
 
+// enabled indicates whether the advanced cache is turned on or off.
+// It can be safely accessed and modified concurrently.
+var enabled atomic.Bool
+
 // Predefined HTTP response templates for error handling (400/503)
 var (
 	serviceUnavailableResponseBytes = []byte(`{
@@ -38,6 +42,7 @@ var (
 var (
 	hits          = &atomic.Uint64{}
 	misses        = &atomic.Uint64{}
+	errors        = &atomic.Uint64{}
 	totalDuration = &atomic.Int64{} // UnixNano
 )
 
@@ -66,12 +71,67 @@ func NewCacheController(
 		metrics: metrics,
 		backend: backend,
 	}
+	enabled.Store(cfg.Cache.Cache.Enabled)
 	c.runLoggerMetricsWriter()
 	return c
 }
 
 // Index is the main HTTP handler.
 func (c *CacheController) Index(r *fasthttp.RequestCtx) {
+	if enabled.Load() {
+		c.handleTroughCache(r)
+	} else {
+		c.handleTroughProxy(r)
+	}
+}
+
+func (c *CacheController) handleTroughProxy(r *fasthttp.RequestCtx) {
+	var from = time.Now()
+	defer func() { totalDuration.Add(time.Since(from).Nanoseconds()) }()
+
+	hits.Add(1)
+
+	// make a lightweight request Entry (contains only key, shardKey and fingerprint)
+	newEntry, err := model.NewEntryFastHttp(c.cfg.Cache, r) // must be removed on hit and release on miss
+	defer newEntry.Remove()
+	if err != nil {
+		errors.Add(1)
+		c.respondThatServiceIsTemporaryUnavailable(err, r)
+		return
+	}
+
+	// extract request data
+	path := r.Path()
+	rule := newEntry.Rule()
+	queryString := r.QueryArgs().QueryString()
+	queryHeaders, queryReleaser := c.queryHeaders(r)
+	defer queryReleaser(queryHeaders)
+
+	// fetch data from upstream
+	payloadStatus, payloadHeaders, payloadBody, payloadReleaser, err := c.backend.Fetch(rule, path, queryString, queryHeaders)
+	defer payloadReleaser()
+	if err != nil {
+		c.respondThatServiceIsTemporaryUnavailable(err, r)
+		return
+	}
+
+	// Write payloadStatus, payloadHeaders, and payloadBody from the cached (or fetched) response.
+	r.Response.SetStatusCode(payloadStatus)
+	for _, kv := range *payloadHeaders {
+		r.Response.Header.AddBytesKV(kv[0], kv[1])
+	}
+
+	// Set up Last-Modified header
+	header.SetLastModifiedValueFastHttp(r, time.Now().UnixNano())
+
+	// Write payloadBody
+	if _, err = serverutils.Write(payloadBody, r); err != nil {
+		c.respondThatServiceIsTemporaryUnavailable(err, r)
+		return
+	}
+}
+
+func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) {
 	var from = time.Now()
 	defer func() { totalDuration.Add(time.Since(from).Nanoseconds()) }()
 
@@ -104,6 +164,7 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 		payloadStatus, payloadHeaders, payloadBody, payloadReleaser, err = c.backend.Fetch(rule, path, queryString, queryHeaders)
 		defer payloadReleaser()
 		if err != nil {
+			errors.Add(1)
 			c.respondThatServiceIsTemporaryUnavailable(err, r)
 			return
 		}
@@ -198,6 +259,7 @@ func (c *CacheController) runLoggerMetricsWriter() {
 			totalNum         uint64
 			hitsNum          uint64
 			missesNum        uint64
+			errorsNum        uint64
 			totalDurationNum int64
 		)
 
@@ -211,6 +273,7 @@ func (c *CacheController) runLoggerMetricsWriter() {
 			case <-metricsTicker:
 				hitsNumLoc := hits.Load()
 				missesNumLoc := misses.Load()
+				errorsNumLoc := errors.Load()
 				totalNumLoc := hitsNumLoc + missesNumLoc
 				totalDurationNumLoc := totalDuration.Load()
 
@@ -224,12 +287,14 @@ func (c *CacheController) runLoggerMetricsWriter() {
 				c.metrics.SetCacheMemory(uint64(memUsage))
 				c.metrics.SetHits(hitsNumLoc)
 				c.metrics.SetMisses(missesNumLoc)
+				c.metrics.SetErrors(errorsNumLoc)
 				c.metrics.SetRPS(totalNumLoc)
 				c.metrics.SetAvgResponseTime(avgDuration)
 
 				totalNum += totalNumLoc
 				hitsNum += hitsNumLoc
 				missesNum += missesNumLoc
+				errorsNum += errorsNumLoc
 				totalDurationNum += totalDurationNumLoc
 
 				if i == logIntervalSecs {
@@ -239,13 +304,21 @@ func (c *CacheController) runLoggerMetricsWriter() {
 
 					hits.Store(0)
 					misses.Store(0)
+					errors.Store(0)
 					totalDuration.Store(0)
 
 					logEvent := log.Info()
 
+					var target string
+					if enabled.Load() {
+						target = "cache-controller"
+					} else {
+						target = "proxy-controller"
+					}
+
 					if c.cfg.IsProd() {
 						logEvent.
-							Str("target", "controller").
+							Str("target", target).
 							Str("rps", strconv.Itoa(int(rps))).
 							Str("served", strconv.Itoa(int(totalNum))).
 							Str("periodMs", strconv.Itoa(logIntervalSecs*1000)).
@@ -253,14 +326,22 @@ func (c *CacheController) runLoggerMetricsWriter() {
 							Str("elapsed", elapsed.String())
 					}
 
-					logEvent.Msgf(
-						"[controller][%s] served %d requests (rps: %.f, avg.dur.: %s hits: %d, misses: %d)",
-						elapsed.String(), totalNum, rps, duration.String(), hitsNum, missesNum,
-					)
+					if enabled.Load() {
+						logEvent.Msgf(
+							"[%s][%s] served %d requests (rps: %.f, avg.dur.: %s hits: %d, misses: %d, errors: %d)",
+							target, elapsed.String(), totalNum, rps, duration.String(), hitsNum, missesNum, errorsNum,
+						)
+					} else {
+						logEvent.Msgf(
+							"[%s][%s] served %d requests (rps: %.f, avg.dur.: %s total: %d, errors: %d)",
+							target, elapsed.String(), totalNum, rps, duration.String(), totalNum, errorsNum,
+						)
+					}
 
 					totalNum = 0
 					hitsNum = 0
 					missesNum = 0
+					errorsNum = 0
 					totalDurationNum = 0
 					prev = time.Now()
 					i = 0

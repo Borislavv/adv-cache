@@ -23,6 +23,7 @@ var (
 type Meter interface {
 	SetHits(value uint64)
 	SetMisses(value uint64)
+	SetErrors(value uint64)
 	SetRPS(value uint64)
 	SetCacheLength(count uint64)
 	SetCacheMemory(bytes uint64)
@@ -51,6 +52,10 @@ func (m *Metrics) SetRPS(value uint64) {
 
 func (m *Metrics) SetCacheMemory(bytes uint64) {
 	metrics.GetOrCreateCounter(keyword.MapMemoryUsageMetricName).Set(bytes)
+}
+
+func (m *Metrics) SetErrors(value uint64) {
+	metrics.GetOrCreateCounter(keyword.UpstreamErrors).Set(value)
 }
 
 func (m *Metrics) SetCacheLength(count uint64) {
