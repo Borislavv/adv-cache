@@ -143,9 +143,10 @@ func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) {
 	}
 
 	var (
-		payloadStatus  int
-		payloadHeaders *[][2][]byte
-		payloadBody    []byte
+		payloadStatus       int
+		payloadHeaders      *[][2][]byte
+		payloadBody         []byte
+		payloadLastModified int64
 	)
 
 	foundEntry, found := c.cache.Get(newEntry)
@@ -174,10 +175,14 @@ func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) {
 		if payloadStatus != http.StatusOK {
 			// bad status code received, process request and don't store in cache, removed after use of course
 			defer newEntry.Remove()
+
+			payloadLastModified = time.Now().UnixNano()
 		} else {
 			// build and store new VersionPointer in cache
 			foundEntry = c.cache.Set(model.NewVersionPointer(newEntry))
 			defer foundEntry.Release() // an Entry stored in the cache must be released after use
+
+			payloadLastModified = foundEntry.UpdateAt()
 		}
 	} else {
 		hits.Add(1)
@@ -185,6 +190,8 @@ func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) {
 		// deferred release and remove
 		newEntry.Remove()          // new Entry which was used as request for query cache does not need anymore
 		defer foundEntry.Release() // an Entry retrieved from the cache must be released after use
+
+		payloadLastModified = foundEntry.UpdateAt()
 
 		// unpack found Entry data
 		var queryHeaders *[][2][]byte
@@ -204,7 +211,7 @@ func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) {
 	}
 
 	// Set up Last-Modified header
-	header.SetLastModifiedFastHttp(r, foundEntry)
+	header.SetLastModifiedValueFastHttp(r, payloadLastModified)
 
 	// Write payloadBody
 	if _, err = serverutils.Write(payloadBody, r); err != nil {
