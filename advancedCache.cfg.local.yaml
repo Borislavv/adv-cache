@@ -2,9 +2,29 @@ cache:
   env: "dev"
   enabled: true
 
-  mocks:
-    load: false
-    length: 10000000
+  proxy:
+    name: "star.fast" # Proxy server name
+    from: ":8021"     # Backend (example of full qualified url: http://localhost:8020)
+    to: ":8020"       # Current server port
+    rate: 80000000    # Rate limiting reqs to backend per second.
+    timeout: "10s"    # Timeout for requests to backend.
+
+  metrics:
+    enabled: true
+
+  k8s:
+    probe:
+      timeout: "5s"
+
+  persistence:
+    dump:
+      enabled: true
+      dump_dir: "public/dump"     # dump dir.
+      dump_name: "cache.dump.gz"  # dump name
+      max_versions: 3
+    mock:
+      enabled: true
+      length: 10000000
 
   logs:
     level: "info" # Any zerolog.Level.
@@ -17,11 +37,6 @@ cache:
   lifetime:
     max_req_dur: "100ms"                # If a request lifetime is longer than 100ms then request will be canceled by context.
     escape_max_req_dur: "X-Google-Bot"  # If the header exists the timeout above will be skipped.
-
-  upstream:
-    url: "http://localhost:8021" # downstream reverse proxy host:port
-    rate: 80000000               # Rate limiting reqs to backend per second.
-    timeout: "10s"               # Timeout for requests to backend.
 
   preallocate:
     num_shards: 2048  # Fixed constant (see `NumOfShards` in code). Controls the number of sharded maps.
@@ -41,13 +56,6 @@ cache:
     rate: 80               # Rate limiting reqs to backend per second.
     scan_rate: 10000       # Rate limiting of num scans items per second.
     beta: 0.4              # Controls randomness in refresh timing to avoid thundering herd (from 0 to 1).
-
-  persistence:
-    dump:
-      enabled: true
-      dump_dir: "public/dump"     # dump dir.
-      dump_name: "cache.dump.gz"  # dump name
-      max_versions: 3
 
   rules:
     /api/v2/pagedata:
