@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"github.com/Borislavv/advanced-cache/pkg/rate"
-	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
 	"runtime"
 	"strconv"
 	"time"
@@ -17,7 +16,7 @@ import (
 var numProducers = runtime.GOMAXPROCS(0)
 
 type Refresher interface {
-	Run()
+	run()
 }
 
 // Refresh is responsible for background refreshing of cache entries.
@@ -27,7 +26,6 @@ type Refresher interface {
 type Refresh struct {
 	ctx                 context.Context
 	cfg                 *config.Cache
-	balancer            lru.Balancer
 	storage             Storage
 	rateLogCh           chan int
 	refreshSuccessNumCh chan struct{}
@@ -36,7 +34,7 @@ type Refresh struct {
 }
 
 // NewRefresher constructs a Refresh.
-func NewRefresher(ctx context.Context, cfg *config.Cache, balancer lru.Balancer, storage Storage) *Refresh {
+func NewRefresher(ctx context.Context, cfg *config.Cache, storage Storage) *Refresh {
 	scanRate := cfg.Cache.Refresh.Rate * 10
 	if scanRate < 1 {
 		scanRate = 1
@@ -50,7 +48,6 @@ func NewRefresher(ctx context.Context, cfg *config.Cache, balancer lru.Balancer,
 		ctx:                 ctx,
 		cfg:                 cfg,
 		storage:             storage,
-		balancer:            balancer,
 		rateLogCh:           make(chan int, cfg.Cache.Refresh.Rate),
 		refreshSuccessNumCh: make(chan struct{}, cfg.Cache.Refresh.Rate),              // Successful refreshes counter channel
 		refreshErroredNumCh: make(chan struct{}, cfg.Cache.Refresh.Rate),              // Failed refreshes counter channel
@@ -61,12 +58,13 @@ func NewRefresher(ctx context.Context, cfg *config.Cache, balancer lru.Balancer,
 // Run starts the refresher background loop.
 // It runs a logger (if debugging is enabled), spawns a provider for sampling shards,
 // and continuously processes shard samples for candidate responses to refreshItem.
-func (r *Refresh) Run() {
+func (r *Refresh) Run() *Refresh {
 	if r.cfg.Cache.Refresh.Enabled {
 		r.runLogger()    // handle consumer stats and print logs
 		r.runConsumers() // scans rand items and checks whether they should be refreshed
 		r.runProducers() // produces items which should be refreshed on processing
 	}
+	return r
 }
 
 func (r *Refresh) runProducers() {
@@ -108,7 +106,7 @@ func (r *Refresh) runProducer(scanRate, scanBurst int) {
 				r.runProducer(actualRate*10, actualBurst*10)
 				return
 			case <-scansRateLimiter.Chan():
-				if item, ok := r.balancer.RandNode().RandItem(); ok && item.ShouldBeRefreshed(r.cfg) {
+				if item, ok := r.storage.Rand(); ok && item.ShouldBeRefreshed(r.cfg) {
 					r.refreshItemsCh <- item
 				}
 			}

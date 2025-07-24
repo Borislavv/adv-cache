@@ -38,6 +38,7 @@ type CacheBox struct {
 	Env         string           `yaml:"env"`
 	Enabled     bool             `yaml:"enabled"`
 	Logs        Logs             `yaml:"logs"`
+	Mocks       Mocks            `yaml:"mocks"`
 	ForceGC     ForceGC          `yaml:"forceGC"`
 	LifeTime    Lifetime         `yaml:"lifetime"`
 	Upstream    Upstream         `yaml:"upstream"`
@@ -47,6 +48,11 @@ type CacheBox struct {
 	Refresh     Refresh          `yaml:"refresh"`
 	Storage     Storage          `yaml:"storage"`
 	Rules       map[string]*Rule `yaml:"rules"`
+}
+
+type Mocks struct {
+	Load   bool `yaml:"load"`
+	Length int  `yaml:"length"`
 }
 
 type ForceGC struct {

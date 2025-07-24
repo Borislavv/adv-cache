@@ -2,6 +2,7 @@ package lru
 
 import (
 	"context"
+	"github.com/Borislavv/advanced-cache/pkg/storage"
 	"github.com/Borislavv/advanced-cache/pkg/storage/lfu"
 	"runtime"
 	"strconv"
@@ -28,23 +29,24 @@ type Storage struct {
 }
 
 // NewStorage constructs a new Storage cache instance and launches eviction and refreshItem routines.
-func NewStorage(
-	ctx context.Context,
-	cfg *config.Cache,
-	balancer Balancer,
-	backend repository.Backender,
-	tinyLFU *lfu.TinyLFU,
-	shardedMap *sharded.Map[*model.VersionPointer],
-) *Storage {
-	return (&Storage{
+func NewStorage(ctx context.Context, cfg *config.Cache, backend repository.Backender) *Storage {
+	shardedMap := sharded.NewMap[*model.VersionPointer](ctx, cfg.Cache.Preallocate.PerShard)
+	balancer := NewBalancer(ctx, shardedMap)
+
+	db := (&Storage{
 		ctx:             ctx,
 		cfg:             cfg,
 		shardedMap:      shardedMap,
 		balancer:        balancer,
 		backend:         backend,
-		tinyLFU:         tinyLFU,
+		tinyLFU:         lfu.NewTinyLFU(ctx),
 		memoryThreshold: int64(float64(cfg.Cache.Storage.Size) * cfg.Cache.Eviction.Threshold),
-	}).init()
+	}).init().runLogger()
+
+	storage.NewRefresher(ctx, cfg, db).Run()
+	NewEvictor(ctx, cfg, db, balancer).Run()
+
+	return db
 }
 
 func (s *Storage) init() *Storage {
@@ -54,10 +56,6 @@ func (s *Storage) init() *Storage {
 	})
 
 	return s
-}
-
-func (s *Storage) Run() {
-	s.runLogger()
 }
 
 func (s *Storage) Clear() {
@@ -76,8 +74,8 @@ func (s *Storage) Get(req *model.Entry) (entry *model.VersionPointer, ok bool) {
 	return nil, false
 }
 
-// GetRand returns a random item from storage.
-func (s *Storage) GetRand() (entry *model.VersionPointer, ok bool) {
+// Rand returns a random item from storage.
+func (s *Storage) Rand() (entry *model.VersionPointer, ok bool) {
 	return s.shardedMap.Rnd()
 }
 
@@ -87,7 +85,7 @@ func (s *Storage) Set(new *model.VersionPointer) (entry *model.VersionPointer) {
 	s.tinyLFU.Increment(new.MapKey())
 
 	// Attempt to find entry in cache, if found then touch and return it
-	if old, found := s.shardedMap.Get(new.MapKey()); found && old.IsSameEntry(new.Entry) { // TODO need to test payload comparison
+	if old, found := s.shardedMap.Get(new.MapKey()); found && old.IsSameEntry(new.Entry) {
 		// Check the pointers are really different,
 		// if so then update the 'old' data and remove 'new' one, return old of course
 		if old != new && old.Entry != new.Entry {
@@ -138,6 +136,10 @@ func (s *Storage) ShouldEvict() bool {
 	return s.Mem() >= s.memoryThreshold
 }
 
+func (s *Storage) WalkShards(fn func(key uint64, shard *sharded.Shard[*model.VersionPointer])) {
+	s.shardedMap.WalkShards(fn)
+}
+
 // touch bumps the Storage position of an existing entry (MoveToFront) and increases its refCount.
 func (s *Storage) touch(existing *model.VersionPointer) {
 	s.balancer.Update(existing)
@@ -156,7 +158,7 @@ func (s *Storage) set(new *model.VersionPointer) (ok bool) {
 }
 
 // runLogger emits detailed stats about evictions, Weight, and GC activity every 5 seconds if debugging is enabled.
-func (s *Storage) runLogger() {
+func (s *Storage) runLogger() *Storage {
 	go func() {
 		var ticker = utils.NewTicker(s.ctx, 5*time.Second)
 
@@ -199,4 +201,5 @@ func (s *Storage) runLogger() {
 			}
 		}
 	}()
+	return s
 }

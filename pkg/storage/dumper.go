@@ -34,19 +34,17 @@ type Dumper interface {
 
 // Dump implements persistence with versioned directories.
 type Dump struct {
-	cfg        *config.Cache
-	shardedMap *sharded.Map[*model.VersionPointer]
-	storage    Storage
-	backend    repository.Backender
+	cfg     *config.Cache
+	storage Storage
+	backend repository.Backender
 }
 
 // NewDumper constructs a Dump.
-func NewDumper(cfg *config.Cache, sm *sharded.Map[*model.VersionPointer], storage Storage, backend repository.Backender) *Dump {
+func NewDumper(cfg *config.Cache, storage Storage, backend repository.Backender) *Dump {
 	return &Dump{
-		cfg:        cfg,
-		shardedMap: sm,
-		storage:    storage,
-		backend:    backend,
+		cfg:     cfg,
+		storage: storage,
+		backend: backend,
 	}
 }
 
@@ -76,7 +74,7 @@ func (d *Dump) Dump(ctx context.Context) error {
 	var successNum, errorNum int32
 
 	// Parallel dump shards
-	d.shardedMap.WalkShards(func(shardKey uint64, shard *sharded.Shard[*model.VersionPointer]) {
+	d.storage.WalkShards(func(shardKey uint64, shard *sharded.Shard[*model.VersionPointer]) {
 		wg.Add(1)
 		go func(sh uint64) {
 			defer wg.Done()

@@ -1,9 +1,9 @@
-package storage
+package lru
 
 import (
 	"context"
 	"github.com/Borislavv/advanced-cache/pkg/config"
-	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
+	"github.com/Borislavv/advanced-cache/pkg/storage"
 	"github.com/rs/zerolog/log"
 	"runtime"
 	"strconv"
@@ -27,18 +27,18 @@ type EvictionStat struct {
 }
 
 type Evictor interface {
-	Run()
+	run()
 }
 
 type Evict struct {
 	ctx             context.Context
 	cfg             *config.Cache
-	db              Storage
-	balancer        lru.Balancer
+	db              storage.Storage
+	balancer        Balancer
 	memoryThreshold int64
 }
 
-func NewEvictor(ctx context.Context, cfg *config.Cache, db Storage, balancer lru.Balancer) *Evict {
+func NewEvictor(ctx context.Context, cfg *config.Cache, db storage.Storage, balancer Balancer) *Evict {
 	return &Evict{
 		ctx:             ctx,
 		cfg:             cfg,
@@ -48,31 +48,29 @@ func NewEvictor(ctx context.Context, cfg *config.Cache, db Storage, balancer lru
 	}
 }
 
-// Run launches multiple evictor goroutines for concurrent eviction.
-func (e *Evict) Run() {
-	e.runLogger()
-	go e.run()
-}
-
-// run is the main background eviction loop for one worker.
+// Run is the main background eviction loop for one worker.
 // Each worker tries to bring Weight usage under the threshold by evicting from most loaded shards.
-func (e *Evict) run() {
-	t := utils.NewTicker(e.ctx, time.Millisecond*500)
-	for {
-		select {
-		case <-e.ctx.Done():
-			return
-		case <-t:
-			items, freedMem := e.evictUntilWithinLimit()
-			if items > 0 || freedMem > 0 {
-				select {
-				case <-e.ctx.Done():
-					return
-				case evictionStatCh <- EvictionStat{items: items, freedMem: freedMem}:
+func (e *Evict) Run() *Evict {
+	e.runLogger()
+	go func() {
+		t := utils.NewTicker(e.ctx, time.Millisecond*500)
+		for {
+			select {
+			case <-e.ctx.Done():
+				return
+			case <-t:
+				items, freedMem := e.evictUntilWithinLimit()
+				if items > 0 || freedMem > 0 {
+					select {
+					case <-e.ctx.Done():
+						return
+					case evictionStatCh <- EvictionStat{items: items, freedMem: freedMem}:
+					}
 				}
 			}
 		}
-	}
+	}()
+	return e
 }
 
 // ShouldEvict [HOT PATH METHOD] (max stale value = 25ms) checks if current Weight usage has reached or exceeded the threshold.

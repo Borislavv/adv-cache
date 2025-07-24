@@ -8,6 +8,7 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
+	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
 	httpwriter "github.com/Borislavv/advanced-cache/pkg/writer"
 	"net/http"
 	"sync/atomic"
@@ -39,7 +40,7 @@ type TraefikCacheMiddleware struct {
 	storage   storage.Storage
 	backend   repository.Backender
 	refresher storage.Refresher
-	evictor   storage.Evictor
+	evictor   lru.Evictor
 	dumper    storage.Dumper
 	metrics   metrics.Meter
 	count     int64 // Num
@@ -96,7 +97,7 @@ func (m *TraefikCacheMiddleware) handleThroughCache(w http.ResponseWriter, r *ht
 		captured, releaseCapturer := httpwriter.NewCaptureResponseWriter(w)
 		defer releaseCapturer()
 
-		// Run downstream handler
+		// run downstream handler
 		m.next.ServeHTTP(captured, r)
 
 		// path is immutable and used only inside request

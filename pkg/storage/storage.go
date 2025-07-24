@@ -2,20 +2,15 @@ package storage
 
 import (
 	"github.com/Borislavv/advanced-cache/pkg/model"
+	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
 )
 
 // Storage is a generic interface for cache storages.
 // It supports typical Get/Set operations with reference management.
 type Storage interface {
-	// Run starts storage background worker (just logging at now).
-	Run()
-
 	// Get attempts to retrieve a cached response for the given request.
 	// Returns the response, a releaser for safe concurrent access, and a hit/miss flag.
 	Get(*model.Entry) (entry *model.VersionPointer, ok bool)
-
-	// GetRand returns a random elem from the map.
-	GetRand() (entry *model.VersionPointer, ok bool)
 
 	// Set stores a new response in the cache and returns a releaser for managing resource lifetime.
 	// 1. You definitely cannot use 'request' after use in Set due to it can be removed, you will receive a cache entry on hit!
@@ -38,4 +33,9 @@ type Storage interface {
 
 	// RealMem - calculates and return value.
 	RealMem() int64
+
+	// Rand returns a random elem from the map.
+	Rand() (entry *model.VersionPointer, ok bool)
+
+	WalkShards(fn func(key uint64, shard *sharded.Shard[*model.VersionPointer]))
 }
