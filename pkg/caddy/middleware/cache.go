@@ -5,6 +5,7 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/header"
 	"github.com/Borislavv/advanced-cache/pkg/model"
+	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
 	httpwriter "github.com/Borislavv/advanced-cache/pkg/writer"
@@ -18,6 +19,17 @@ import (
 )
 
 var _ caddy.Module = (*CacheMiddleware)(nil)
+
+// enabled indicates whether the advanced cache is turned on or off.
+// It can be safely accessed and modified concurrently.
+var enabled atomic.Bool
+
+var (
+	hits          = &atomic.Uint64{}
+	misses        = &atomic.Uint64{}
+	errors        = &atomic.Uint64{}
+	totalDuration = &atomic.Int64{} // UnixNano
+)
 
 var (
 	contentTypeKey                  = "Content-Type"
@@ -41,6 +53,7 @@ type CacheMiddleware struct {
 	refresher  storage.Refresher
 	evictor    storage.Evictor
 	dumper     storage.Dumper
+	metrics    metrics.Meter
 	count      int64 // Num
 	duration   int64 // UnixNano
 }
@@ -57,10 +70,27 @@ func (m *CacheMiddleware) Provision(ctx caddy.Context) error {
 }
 
 func (m *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
-	from := time.Now()
+	var from = time.Now()
+	defer func() { totalDuration.Add(time.Since(from).Nanoseconds()) }()
 
+	if enabled.Load() {
+		if err := m.handleThroughCache(w, r, next); err != nil {
+			return err
+		}
+	} else {
+		hits.Add(1)
+		if err := next.ServeHTTP(w, r); err != nil {
+			errors.Add(1)
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *CacheMiddleware) handleThroughCache(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	newEntry, err := model.NewEntryNetHttp(m.cfg, r)
 	if err != nil {
+		errors.Add(1)
 		// Path was not matched, then handle request through upstream without cache.
 		return next.ServeHTTP(w, r)
 	}
@@ -73,12 +103,15 @@ func (m *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next
 
 	foundEntry, found := m.storage.Get(newEntry)
 	if !found {
+		misses.Add(1)
+
 		// MISS — prepare capture writer
 		captured, releaseCapturer := httpwriter.NewCaptureResponseWriter(w)
 		defer releaseCapturer()
 
 		// Run downstream handler
 		if srvErr := next.ServeHTTP(captured, r); srvErr != nil {
+			errors.Add(1)
 			captured.Reset()
 			captured.SetStatusCode(http.StatusServiceUnavailable)
 			captured.WriteHeader(captured.StatusCode())
@@ -99,14 +132,23 @@ func (m *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next
 		status, headers, body, extractReleaser = captured.ExtractPayload()
 		defer extractReleaser(headers)
 
-		// Save the response into the new newEntry
-		newEntry.SetPayload(path, query, queryHeaders, headers, body, status)
-		newEntry.SetRevalidator(m.backend.RevalidatorMaker())
+		if status != http.StatusOK {
+			errors.Add(1)
 
-		// build and store new Entry in cache
-		foundEntry = m.storage.Set(model.NewVersionPointer(newEntry))
-		defer foundEntry.Release() // an Entry stored in the cache must be released after use
+			// non-positive status code received, skip saving
+			defer newEntry.Remove()
+		} else {
+			// Save the response into the new newEntry
+			newEntry.SetPayload(path, query, queryHeaders, headers, body, status)
+			newEntry.SetRevalidator(m.backend.RevalidatorMaker())
+
+			// build and store new Entry in cache
+			foundEntry = m.storage.Set(model.NewVersionPointer(newEntry))
+			defer foundEntry.Release() // an Entry stored in the cache must be released after use
+		}
 	} else {
+		hits.Add(1)
+
 		// deferred release and remove
 		newEntry.Remove()          // new Entry which was used as request for query cache does not need anymore
 		defer foundEntry.Release() // an Entry retrieved from the cache must be released after use
@@ -117,11 +159,14 @@ func (m *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next
 		_, _, queryHeaders, headers, body, status, payloadReleaser, err = foundEntry.Payload()
 		defer payloadReleaser(queryHeaders, headers)
 		if err != nil {
+			errors.Add(1)
+
 			// ERROR — prepare capture writer
 			captured, releaseCapturer := httpwriter.NewCaptureResponseWriter(w)
 			defer releaseCapturer()
 
 			if srvErr := next.ServeHTTP(captured, r); srvErr != nil {
+				errors.Add(1)
 				captured.Reset()
 				captured.SetStatusCode(http.StatusServiceUnavailable)
 				captured.WriteHeader(captured.StatusCode())
@@ -156,7 +201,6 @@ func (m *CacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request, next
 
 	// Metrics
 	atomic.AddInt64(&m.count, 1)
-	atomic.AddInt64(&m.duration, time.Since(from).Nanoseconds())
 
 	return nil
 }

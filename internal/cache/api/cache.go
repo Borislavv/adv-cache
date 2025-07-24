@@ -169,8 +169,6 @@ func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) {
 			c.respondThatServiceIsTemporaryUnavailable(err, r)
 			return
 		}
-		newEntry.SetPayload(path, queryString, queryHeaders, payloadHeaders, payloadBody, payloadStatus)
-		newEntry.SetRevalidator(c.backend.RevalidatorMaker())
 
 		if payloadStatus != http.StatusOK {
 			// bad status code received, process request and don't store in cache, removed after use of course
@@ -178,6 +176,9 @@ func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) {
 
 			payloadLastModified = time.Now().UnixNano()
 		} else {
+			newEntry.SetPayload(path, queryString, queryHeaders, payloadHeaders, payloadBody, payloadStatus)
+			newEntry.SetRevalidator(c.backend.RevalidatorMaker())
+
 			// build and store new VersionPointer in cache
 			foundEntry = c.cache.Set(model.NewVersionPointer(newEntry))
 			defer foundEntry.Release() // an Entry stored in the cache must be released after use

@@ -5,6 +5,7 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/header"
 	"github.com/Borislavv/advanced-cache/pkg/model"
+	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
 	httpwriter "github.com/Borislavv/advanced-cache/pkg/writer"
@@ -19,6 +20,17 @@ var (
 	applicationJsonValue = "application/json"
 )
 
+// enabled indicates whether the advanced cache is turned on or off.
+// It can be safely accessed and modified concurrently.
+var enabled atomic.Bool
+
+var (
+	hits          = &atomic.Uint64{}
+	misses        = &atomic.Uint64{}
+	errors        = &atomic.Uint64{}
+	totalDuration = &atomic.Int64{} // UnixNano
+)
+
 type TraefikCacheMiddleware struct {
 	ctx       context.Context
 	next      http.Handler
@@ -29,6 +41,7 @@ type TraefikCacheMiddleware struct {
 	refresher storage.Refresher
 	evictor   storage.Evictor
 	dumper    storage.Dumper
+	metrics   metrics.Meter
 	count     int64 // Num
 	duration  int64 // UnixNano
 }
@@ -48,10 +61,22 @@ func New(ctx context.Context, next http.Handler, name string) http.Handler {
 }
 
 func (m *TraefikCacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	from := time.Now()
+	var from = time.Now()
+	defer func() { totalDuration.Add(time.Since(from).Nanoseconds()) }()
 
+	if enabled.Load() {
+		m.handleThroughCache(w, r)
+	} else {
+		hits.Add(1)
+		m.next.ServeHTTP(w, r)
+	}
+	return
+}
+
+func (m *TraefikCacheMiddleware) handleThroughCache(w http.ResponseWriter, r *http.Request) {
 	newEntry, err := model.NewEntryNetHttp(m.cfg, r)
 	if err != nil {
+		errors.Add(1)
 		// Path was not matched, then handle request through upstream without cache.
 		m.next.ServeHTTP(w, r)
 		return
@@ -65,6 +90,8 @@ func (m *TraefikCacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Reques
 
 	foundEntry, found := m.storage.Get(newEntry)
 	if !found {
+		misses.Add(1)
+
 		// MISS — prepare capture writer
 		captured, releaseCapturer := httpwriter.NewCaptureResponseWriter(w)
 		defer releaseCapturer()
@@ -86,14 +113,23 @@ func (m *TraefikCacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		status, headers, body, extractReleaser = captured.ExtractPayload()
 		defer extractReleaser(headers)
 
-		// Save the response into the new newEntry
-		newEntry.SetPayload(path, query, queryHeaders, headers, body, status)
-		newEntry.SetRevalidator(m.backend.RevalidatorMaker())
+		if status != http.StatusOK {
+			errors.Add(1)
 
-		// build and storage new Entry in cache
-		foundEntry = m.storage.Set(model.NewVersionPointer(newEntry))
-		defer foundEntry.Release() // an Entry stored in the cache must be released after use
+			// non-positive status code received, skip saving
+			defer newEntry.Remove()
+		} else {
+			// Save the response into the new newEntry
+			newEntry.SetPayload(path, query, queryHeaders, headers, body, status)
+			newEntry.SetRevalidator(m.backend.RevalidatorMaker())
+
+			// build and store new Entry in cache
+			foundEntry = m.storage.Set(model.NewVersionPointer(newEntry))
+			defer foundEntry.Release() // an Entry stored in the cache must be released after use
+		}
 	} else {
+		hits.Add(1)
+
 		// deferred release and remove
 		newEntry.Remove()          // new Entry which was used as request for query cache does not need anymore
 		defer foundEntry.Release() // an Entry retrieved from the cache must be released after use
@@ -104,11 +140,13 @@ func (m *TraefikCacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		_, _, queryHeaders, headers, body, status, payloadReleaser, err = foundEntry.Payload()
 		defer payloadReleaser(queryHeaders, headers)
 		if err != nil {
-			m.next.ServeHTTP(w, r)
+			errors.Add(1)
 
-			// Error — prepare capture writer
+			// ERROR — prepare capture writer
 			captured, releaseCapturer := httpwriter.NewCaptureResponseWriter(w)
 			defer releaseCapturer()
+
+			m.next.ServeHTTP(captured, r)
 
 			var extractReleaser func(*[][2][]byte)
 			status, headers, body, extractReleaser = captured.ExtractPayload()
@@ -138,5 +176,4 @@ func (m *TraefikCacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Reques
 
 	// Metrics
 	atomic.AddInt64(&m.count, 1)
-	atomic.AddInt64(&m.duration, time.Since(from).Nanoseconds())
 }
