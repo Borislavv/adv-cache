@@ -1,3 +1,4 @@
 .idea
 .env.local
 public/dump
+*.local.yaml

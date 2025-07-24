@@ -1,5 +1,5 @@
 cache:
-  env: "dev"
+  env: "prod"
   enabled: true
 
   proxy:
