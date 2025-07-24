@@ -3,37 +3,20 @@ package main
 import (
 	"context"
 	"github.com/Borislavv/advanced-cache/internal/cache"
-	"github.com/Borislavv/advanced-cache/internal/cache/config"
-	appconfig "github.com/Borislavv/advanced-cache/pkg/config"
+	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/gc"
 	"github.com/Borislavv/advanced-cache/pkg/k8s/probe/liveness"
 	"github.com/Borislavv/advanced-cache/pkg/shutdown"
-	"github.com/joho/godotenv"
 	"github.com/rs/zerolog/log"
-	"github.com/spf13/viper"
 	"go.uber.org/automaxprocs/maxprocs"
 	"runtime"
 	"time"
 )
 
-// Initializes environment variables from .env files and binds them using Viper.
-// This allows overriding any value via environment variables.
-func init() {
-	// Load .env and .env.local files for configuration overrides.
-	if err := godotenv.Overload(".env"); err != nil {
-		panic(err)
-	}
-
-	// Bind all relevant environment variables using Viper.
-	viper.AutomaticEnv()
-	_ = viper.BindEnv("CACHE_CONFIG_PATH")
-	_ = viper.BindEnv("FASTHTTP_SERVER_NAME")
-	_ = viper.BindEnv("FASTHTTP_SERVER_PORT")
-	_ = viper.BindEnv("FASTHTTP_SERVER_SHUTDOWN_TIMEOUT")
-	_ = viper.BindEnv("FASTHTTP_SERVER_REQUEST_TIMEOUT")
-	_ = viper.BindEnv("LIVENESS_PROBE_TIMEOUT")
-	_ = viper.BindEnv("IS_PROMETHEUS_METRICS_ENABLED")
-}
+const (
+	configPath      = "advancedCache.cfg.yaml"
+	configPathLocal = "advancedCache.cfg.local.yaml"
+)
 
 // setMaxProcs automatically sets the optimal GOMAXPROCS value (CPU parallelism)
 // based on the available CPUs and cgroup/docker CPU quotas (uses automaxprocs).
@@ -47,31 +30,20 @@ func setMaxProcs() {
 
 // loadCfg loads the configuration struct from environment variables
 // and computes any derived configuration values.
-func loadCfg() *config.Config {
-	cfg := &config.Config{}
-	if err := viper.Unmarshal(cfg); err != nil {
-		log.Err(err).Msg("[main] failed to unmarshal config from envs")
-		panic(err)
-	}
-
-	type configPath struct {
-		ConfigPath string `envconfig:"IS_PROMETHEUS_METRICS_ENABLED" mapstructure:"CACHE_CONFIG_PATH" default:"/config/config.dev.yaml"`
-	}
-
-	cfgPath := &configPath{}
-	if err := viper.Unmarshal(cfgPath); err != nil {
-		log.Err(err).Msg("[main] failed to unmarshal config from envs")
-		panic(err)
-	}
-
-	cacheConfig, err := appconfig.LoadConfig(cfgPath.ConfigPath)
+func loadCfg() (*config.Cache, error) {
+	cfg, err := config.LoadConfig(configPathLocal)
 	if err != nil {
-		log.Err(err).Msg("[main] failed to load config from envs")
-		panic(err)
+		cfg, err = config.LoadConfig(configPath)
+		if err != nil {
+			log.Err(err).Msg("[config] failed to load")
+			return nil, err
+		} else {
+			log.Info().Msgf("[config] config loaded from '%v'", configPath)
+		}
+	} else {
+		log.Info().Msgf("[config] config loaded from '%v'", configPathLocal)
 	}
-	cfg.Cache = cacheConfig
-
-	return cfg
+	return cfg, nil
 }
 
 // Main entrypoint: configures and starts the cache application.
@@ -84,27 +56,34 @@ func main() {
 	setMaxProcs()
 
 	// Load the application configuration from env vars.
-	cfg := loadCfg()
+	cfg, cfgError := loadCfg()
+	if cfgError != nil {
+		log.Err(cfgError).Msg("[main] failed to load cache config")
+		return
+	}
 
 	// Setup gracefulShutdown shutdown handler (SIGTERM, SIGINT, etc).
 	gracefulShutdown := shutdown.NewGraceful(ctx, cancel)
 	gracefulShutdown.SetGracefulTimeout(time.Minute * 5)
 
 	// Initialize liveness probe for Kubernetes/Cloud health checks.
-	probe := liveness.NewProbe(cfg.LivenessTimeout())
+	probe := liveness.NewProbe(cfg.Cache.K8S.Probe.Timeout)
 
 	// Initialize and start the cache application.
-	if app, err := cache.NewApp(ctx, cfg, probe); err != nil {
+	app, err := cache.NewApp(ctx, cfg, probe)
+	if err != nil {
 		log.Err(err).Msg("[main] failed to init cache app")
-	} else {
-		// Register app for gracefulShutdown shutdown.
-		gracefulShutdown.Add(1)
-		go app.Start(gracefulShutdown)
 	}
+
+	// Register app for gracefulShutdown shutdown.
+	gracefulShutdown.Add(1)
+	go app.Start(gracefulShutdown)
 
 	gcCtx, gcCancel := context.WithCancel(context.Background())
 	defer gcCancel()
-	go gc.Run(gcCtx, cfg.Cache)
+
+	// Run forced GC.
+	go gc.Run(gcCtx, cfg)
 
 	// Listen for OS signals or context cancellation and wait for gracefulShutdown shutdown.
 	if err := gracefulShutdown.ListenCancelAndAwait(); err != nil {

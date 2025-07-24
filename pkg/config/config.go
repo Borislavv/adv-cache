@@ -37,11 +37,12 @@ type Env struct {
 type CacheBox struct {
 	Env         string           `yaml:"env"`
 	Enabled     bool             `yaml:"enabled"`
+	Proxy       Proxy            `yaml:"proxy"`
 	Logs        Logs             `yaml:"logs"`
-	Mocks       Mocks            `yaml:"mocks"`
+	K8S         K8S              `yaml:"k8s"`
+	Metrics     Metrics          `yaml:"metrics"`
 	ForceGC     ForceGC          `yaml:"forceGC"`
 	LifeTime    Lifetime         `yaml:"lifetime"`
-	Upstream    Upstream         `yaml:"upstream"`
 	Persistence Persistence      `yaml:"persistence"`
 	Preallocate Preallocation    `yaml:"preallocate"`
 	Eviction    Eviction         `yaml:"eviction"`
@@ -50,9 +51,21 @@ type CacheBox struct {
 	Rules       map[string]*Rule `yaml:"rules"`
 }
 
-type Mocks struct {
-	Load   bool `yaml:"load"`
-	Length int  `yaml:"length"`
+type Probe struct {
+	Timeout time.Duration `yaml:"timeout"`
+}
+
+type K8S struct {
+	Probe Probe `yaml:"probe"`
+}
+
+type Metrics struct {
+	Enabled bool `yaml:"enabled"`
+}
+
+type Mock struct {
+	Enabled bool `yaml:"enabled"`
+	Length  int  `yaml:"length"`
 }
 
 type ForceGC struct {
@@ -71,8 +84,11 @@ type Lifetime struct {
 	EscapeMaxReqDurationHeaderBytes []byte        // The same value but converted into slice bytes.
 }
 
-type Upstream struct {
-	Url     string        `yaml:"url"`     // Reverse Proxy url (can be found in Caddyfile). URL to underlying backend.
+type Proxy struct {
+	Name    string        `yaml:"name"`
+	FromUrl []byte        // Reverse Proxy url (can be found in Caddyfile). URL to underlying backend.
+	From    string        `yaml:"from"`
+	To      string        `yaml:"to"`
 	Rate    int           `yaml:"rate"`    // Rate limiting reqs to backend per second.
 	Timeout time.Duration `yaml:"timeout"` // Timeout for requests to backend.
 }
@@ -86,6 +102,7 @@ type Dump struct {
 
 type Persistence struct {
 	Dump Dump `yaml:"dump"`
+	Mock Mock `yaml:"mock"`
 }
 
 type Preallocation struct {
@@ -154,7 +171,7 @@ func LoadConfig(path string) (*Cache, error) {
 		return nil, err
 	}
 
-	path, err = filepath.Abs(filepath.Clean(dir + path))
+	path, err = filepath.Abs(filepath.Clean(filepath.Join(dir, path)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve absolute config filepath: %w", err)
 	}
@@ -198,6 +215,8 @@ func LoadConfig(path string) (*Cache, error) {
 		// Other
 		rule.MinStale = time.Duration(float64(rule.TTL) * rule.Beta)
 	}
+
+	cfg.Cache.Proxy.FromUrl = []byte(cfg.Cache.Proxy.From)
 
 	cfg.Cache.Refresh.MinStale = time.Duration(float64(cfg.Cache.Refresh.TTL) * cfg.Cache.Refresh.Beta)
 

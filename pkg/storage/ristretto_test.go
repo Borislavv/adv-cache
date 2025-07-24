@@ -58,8 +58,8 @@ func init() {
 				MaxReqDuration:             time.Millisecond * 100,
 				EscapeMaxReqDurationHeader: "X-Target-Bot",
 			},
-			Upstream: config.Upstream{
-				Url:     "https://google.com",
+			Proxy: config.Proxy{
+				FromUrl: []byte("https://google.com"),
 				Rate:    1000,
 				Timeout: time.Second * 5,
 			},

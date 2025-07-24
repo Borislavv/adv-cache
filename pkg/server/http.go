@@ -3,24 +3,25 @@ package httpserver
 import (
 	"context"
 	"errors"
-	"github.com/Borislavv/advanced-cache/pkg/server/config"
+	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/server/controller"
 	"github.com/Borislavv/advanced-cache/pkg/server/middleware"
 	"github.com/fasthttp/router"
 	"github.com/rs/zerolog/log"
 	"github.com/valyala/fasthttp"
 	"sync"
+	"time"
 )
 
 type HTTP struct {
 	ctx    context.Context
+	config *config.Cache
 	server *fasthttp.Server
-	config fasthttpconfig.Configurator
 }
 
 func New(
 	ctx context.Context,
-	config fasthttpconfig.Configurator,
+	config *config.Cache,
 	controllers []controller.HttpController,
 	middlewares []middleware.HttpMiddleware,
 ) (*HTTP, error) {
@@ -43,8 +44,8 @@ func (s *HTTP) ListenAndServe() {
 func (s *HTTP) serve(wg *sync.WaitGroup) {
 	defer wg.Done()
 
-	name := s.config.GetHttpServerName()
-	port := s.config.GetHttpServerPort()
+	name := s.config.Cache.Proxy.Name
+	port := s.config.Cache.Proxy.To
 
 	log.Info().Msgf("[server] %v was started (port: %v)", name, port)
 	defer log.Info().Msgf("[server] %v was stopped (port: %v)", name, port)
@@ -59,12 +60,12 @@ func (s *HTTP) shutdown(wg *sync.WaitGroup) {
 
 	<-s.ctx.Done()
 
-	ctx, cancel := context.WithTimeout(context.Background(), s.config.GetHttpServerShutDownTimeout())
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer cancel()
 
 	if err := s.server.ShutdownWithContext(ctx); err != nil {
 		if !errors.Is(err, context.Canceled) {
-			log.Warn().Msgf("[server] %v shutdown failed: %v", s.config.GetHttpServerName(), err.Error())
+			log.Warn().Msgf("[server] %v shutdown failed: %v", s.config.Cache.Proxy.Name, err.Error())
 		}
 		return
 	}

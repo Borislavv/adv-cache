@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/Borislavv/advanced-cache/internal/cache/api"
-	"github.com/Borislavv/advanced-cache/internal/cache/config"
+	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/k8s/probe/liveness"
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
 	controller2 "github.com/Borislavv/advanced-cache/pkg/prometheus/metrics/controller"
@@ -31,7 +31,7 @@ type Http interface {
 // HttpServer implements Http, wraps all dependencies required for running the HTTP server.
 type HttpServer struct {
 	ctx           context.Context
-	cfg           *config.Config
+	cfg           *config.Cache
 	db            storage.Storage
 	backend       repository.Backender
 	probe         liveness.Prober
@@ -44,7 +44,7 @@ type HttpServer struct {
 // If any step fails, returns an error and performs cleanup.
 func New(
 	ctx context.Context,
-	cfg *config.Config,
+	cfg *config.Cache,
 	db storage.Storage,
 	backend repository.Backender,
 	probe liveness.Prober,
@@ -106,7 +106,7 @@ func (s *HttpServer) spawnServer(wg *sync.WaitGroup) {
 // initServer creates the HTTP server instance, sets up controllers and middlewares, and stores the result.
 func (s *HttpServer) initServer() error {
 	// Compose server with controllers and middlewares.
-	if server, err := httpserver.New(s.ctx, s.cfg.Server, s.controllers(), s.middlewares()); err != nil {
+	if server, err := httpserver.New(s.ctx, s.cfg, s.controllers(), s.middlewares()); err != nil {
 		log.Err(err).Msg(InitFailedErrorMessage)
 		return errors.New(InitFailedErrorMessage)
 	} else {

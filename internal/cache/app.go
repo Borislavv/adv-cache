@@ -2,8 +2,8 @@ package cache
 
 import (
 	"context"
-	"github.com/Borislavv/advanced-cache/internal/cache/config"
 	"github.com/Borislavv/advanced-cache/internal/cache/server"
+	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/k8s/probe/liveness"
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
@@ -21,7 +21,7 @@ type App interface {
 
 // Cache encapsulates the entire cache application state, including HTTP server, config, and probes.
 type Cache struct {
-	cfg     *config.Config
+	cfg     *config.Cache
 	ctx     context.Context
 	cancel  context.CancelFunc
 	probe   liveness.Prober
@@ -32,13 +32,13 @@ type Cache struct {
 }
 
 // NewApp builds a new Cache app, wiring together db, repo, reader, and server.
-func NewApp(ctx context.Context, cfg *config.Config, probe liveness.Prober) (*Cache, error) {
+func NewApp(ctx context.Context, cfg *config.Cache, probe liveness.Prober) (*Cache, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
 	meter := metrics.New()
-	backend := repository.NewBackend(ctx, cfg.Cache)
-	db := lru.NewStorage(ctx, cfg.Cache, backend)
-	dumper := storage.NewDumper(cfg.Cache, db, backend)
+	backend := repository.NewBackend(ctx, cfg)
+	db := lru.NewStorage(ctx, cfg, backend)
+	dumper := storage.NewDumper(cfg, db, backend)
 
 	cacheObj := &Cache{
 		ctx:     ctx,
@@ -71,14 +71,14 @@ func (c *Cache) Start(gc shutdown.Gracefuller) {
 
 	log.Info().Msg("[app] starting cache")
 
-	if c.cfg.Cache.Cache.Persistence.Dump.IsEnabled {
+	if c.cfg.Cache.Persistence.Dump.IsEnabled {
 		if err := c.dumper.Load(c.ctx); err != nil {
 			log.Warn().Msg("[dump] failed to load dump: " + err.Error())
 		}
 	}
 
-	if c.cfg.Cache.Cache.Mocks.Load {
-		storage.LoadMocks(c.ctx, c.cfg.Cache, c.backend, c.db, c.cfg.Cache.Cache.Mocks.Length)
+	if c.cfg.Cache.Persistence.Mock.Enabled {
+		storage.LoadMocks(c.ctx, c.cfg, c.backend, c.db, c.cfg.Cache.Persistence.Mock.Length)
 	}
 
 	waitCh := make(chan struct{})

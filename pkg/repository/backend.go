@@ -78,8 +78,8 @@ func NewBackend(ctx context.Context, cfg *config.Cache) *Backend {
 			},
 		},
 		rateLimiter: rate.NewLimiter(
-			rate.Limit(cfg.Cache.Upstream.Rate),
-			cfg.Cache.Upstream.Rate/10,
+			rate.Limit(cfg.Cache.Proxy.Rate),
+			cfg.Cache.Proxy.Rate/10,
 		),
 	}
 }
@@ -129,15 +129,11 @@ func (s *Backend) requestExternalBackend(
 	defer fasthttp.ReleaseRequest(req)
 
 	req.Header.SetMethod(fasthttp.MethodGet)
-	url := unsafe.Slice(unsafe.StringData(s.cfg.Cache.Upstream.Url), len(s.cfg.Cache.Upstream.Url))
-
 	urlBuf := urlBufPool.Get().(*bytes.Buffer)
-	urlBuf.Grow(len(url) + len(path) + len(query) + 1)
-	defer func() {
-		urlBuf.Reset()
-		urlBufPool.Put(urlBuf)
-	}()
-	if _, err = urlBuf.Write(url); err != nil {
+	urlBuf.Grow(len(s.cfg.Cache.Proxy.FromUrl) + len(path) + len(query) + 1)
+	defer func() { urlBuf.Reset(); urlBufPool.Put(urlBuf) }()
+
+	if _, err = urlBuf.Write(s.cfg.Cache.Proxy.FromUrl); err != nil {
 		return 0, nil, nil, emptyReleaseFn, err
 	}
 	if _, err = urlBuf.Write(path); err != nil {
@@ -154,15 +150,16 @@ func (s *Backend) requestExternalBackend(
 	var isBot bool
 	for _, kv := range *queryHeaders {
 		req.Header.SetBytesKV(kv[0], kv[1])
-
 		if bytes.Equal(kv[0], s.cfg.Cache.LifeTime.EscapeMaxReqDurationHeaderBytes) {
 			isBot = true
 		}
 	}
 
-	var timeout = s.cfg.Cache.LifeTime.MaxReqDuration
+	var timeout time.Duration
 	if isBot {
-		timeout = s.cfg.Cache.Upstream.Timeout
+		timeout = s.cfg.Cache.Proxy.Timeout
+	} else {
+		timeout = s.cfg.Cache.LifeTime.MaxReqDuration
 	}
 
 	resp := fasthttp.AcquireResponse()
@@ -170,9 +167,8 @@ func (s *Backend) requestExternalBackend(
 		return 0, nil, nil, emptyReleaseFn, err
 	}
 
-	headers = pools.KeyValueSlicePool.Get().(*[][2][]byte)
-
 	allowedHeadersMap := rule.CacheValue.HeadersMap
+	headers = pools.KeyValueSlicePool.Get().(*[][2][]byte)
 	resp.Header.All()(func(k, v []byte) bool {
 		if _, ok := allowedHeadersMap[unsafe.String(unsafe.SliceData(k), len(k))]; ok {
 			*headers = append(*headers, [2][]byte{k, v})

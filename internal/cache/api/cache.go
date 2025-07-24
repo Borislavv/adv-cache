@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"github.com/Borislavv/advanced-cache/internal/cache/config"
+	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/header"
 	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/Borislavv/advanced-cache/pkg/pools"
@@ -48,7 +48,7 @@ var (
 
 // CacheController handles cache API requests (read/write-through, error reporting, metrics).
 type CacheController struct {
-	cfg     *config.Config
+	cfg     *config.Cache
 	ctx     context.Context
 	cache   storage.Storage
 	metrics metrics.Meter
@@ -59,7 +59,7 @@ type CacheController struct {
 // If debug is enabled, launches internal stats logger goroutine.
 func NewCacheController(
 	ctx context.Context,
-	cfg *config.Config,
+	cfg *config.Cache,
 	cache storage.Storage,
 	metrics metrics.Meter,
 	backend repository.Backender,
@@ -71,7 +71,7 @@ func NewCacheController(
 		metrics: metrics,
 		backend: backend,
 	}
-	enabled.Store(cfg.Cache.Cache.Enabled)
+	enabled.Store(cfg.Cache.Enabled)
 	c.runLoggerMetricsWriter()
 	return c
 }
@@ -92,7 +92,7 @@ func (c *CacheController) handleTroughProxy(r *fasthttp.RequestCtx) {
 	hits.Add(1)
 
 	// make a lightweight request Entry (contains only key, shardKey and fingerprint)
-	newEntry, err := model.NewEntryFastHttp(c.cfg.Cache, r) // must be removed on hit and release on miss
+	newEntry, err := model.NewEntryFastHttp(c.cfg, r) // must be removed on hit and release on miss
 	defer newEntry.Remove()
 	if err != nil {
 		errors.Add(1)
@@ -136,7 +136,7 @@ func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) {
 	defer func() { totalDuration.Add(time.Since(from).Nanoseconds()) }()
 
 	// make a lightweight request Entry (contains only key, shardKey and fingerprint)
-	newEntry, err := model.NewEntryFastHttp(c.cfg.Cache, r) // must be removed on hit and release on miss
+	newEntry, err := model.NewEntryFastHttp(c.cfg, r) // must be removed on hit and release on miss
 	if err != nil {
 		c.respondThatServiceIsTemporaryUnavailable(err, r)
 		return
