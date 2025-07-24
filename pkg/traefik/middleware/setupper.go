@@ -1,21 +1,13 @@
 package middleware
 
 import (
-	"github.com/Borislavv/advanced-cache/pkg/model"
+	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
-	"github.com/Borislavv/advanced-cache/pkg/storage"
-	"github.com/Borislavv/advanced-cache/pkg/storage/lfu"
 	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
-	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
 )
 
 func (m *TraefikCacheMiddleware) setUpCache() {
-	shardedMap := sharded.NewMap[*model.VersionPointer](m.ctx, m.cfg.Cache.Preallocate.PerShard)
+	m.metrics = metrics.New()
 	m.backend = repository.NewBackend(m.ctx, m.cfg)
-	balancer := lru.NewBalancer(m.ctx, shardedMap)
-	tinyLFU := lfu.NewTinyLFU(m.ctx)
-	m.storage = lru.NewStorage(m.ctx, m.cfg, balancer, m.backend, tinyLFU, shardedMap)
-	m.refresher = storage.NewRefresher(m.ctx, m.cfg, balancer, m.storage)
-	m.dumper = storage.NewDumper(m.cfg, shardedMap, m.storage, m.backend)
-	m.evictor = storage.NewEvictor(m.ctx, m.cfg, m.storage, balancer)
+	m.storage = lru.NewStorage(m.ctx, m.cfg, m.backend)
 }

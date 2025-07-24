@@ -133,7 +133,7 @@ func (d *Dump) Dump(ctx context.Context) error {
 // Load reads from the latest versioned dir; if none, falls back to mock.
 func (d *Dump) Load(ctx context.Context) error {
 	var successNum int32
-
+	
 	start := time.Now()
 	cfg := d.cfg.Cache.Persistence.Dump
 	if !d.cfg.Cache.Enabled || !cfg.IsEnabled {

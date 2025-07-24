@@ -2,6 +2,7 @@ package lru
 
 import (
 	"context"
+	"github.com/Borislavv/advanced-cache/pkg/storage"
 	"github.com/Borislavv/advanced-cache/pkg/storage/lfu"
 	"runtime"
 	"strconv"
@@ -28,23 +29,38 @@ type Storage struct {
 }
 
 // NewStorage constructs a new Storage cache instance and launches eviction and refreshItem routines.
-func NewStorage(
-	ctx context.Context,
-	cfg *config.Cache,
-	balancer Balancer,
-	backend repository.Backender,
-	tinyLFU *lfu.TinyLFU,
-	shardedMap *sharded.Map[*model.VersionPointer],
-) *Storage {
-	return (&Storage{
+func NewStorage(ctx context.Context, cfg *config.Cache, backend repository.Backender) *Storage {
+	shardedMap := sharded.NewMap[*model.VersionPointer](ctx, cfg.Cache.Preallocate.PerShard)
+	balancer := NewBalancer(ctx, shardedMap)
+
+	db := (&Storage{
 		ctx:             ctx,
 		cfg:             cfg,
 		shardedMap:      shardedMap,
 		balancer:        balancer,
 		backend:         backend,
-		tinyLFU:         tinyLFU,
+		tinyLFU:         lfu.NewTinyLFU(ctx),
 		memoryThreshold: int64(float64(cfg.Cache.Storage.Size) * cfg.Cache.Eviction.Threshold),
 	}).init()
+
+	refresher := storage.NewRefresher(ctx, cfg, balancer, db)
+	dumper := storage.NewDumper(cfg, shardedMap, db, backend)
+	evictor := storage.NewEvictor(ctx, cfg, db, balancer)
+
+	db.Run()
+	evictor.Run()
+	refresher.Run()
+	db.runLogger()
+
+	if cfg.Cache.Mocks.Load {
+		storage.LoadMocks(ctx, cfg, backend, db, cfg.Cache.Mocks.Length)
+	} else if cfg.Cache.Persistence.Dump.IsEnabled {
+		if err := dumper.Load(ctx); err != nil {
+			log.Warn().Msg("[dump] failed to load dump: " + err.Error())
+		}
+	}
+
+	return db
 }
 
 func (s *Storage) init() *Storage {
@@ -54,10 +70,6 @@ func (s *Storage) init() *Storage {
 	})
 
 	return s
-}
-
-func (s *Storage) Run() {
-	s.runLogger()
 }
 
 func (s *Storage) Clear() {
@@ -77,7 +89,7 @@ func (s *Storage) Get(req *model.Entry) (entry *model.VersionPointer, ok bool) {
 }
 
 // GetRand returns a random item from storage.
-func (s *Storage) GetRand() (entry *model.VersionPointer, ok bool) {
+func (s *Storage) Rand() (entry *model.VersionPointer, ok bool) {
 	return s.shardedMap.Rnd()
 }
 

@@ -10,7 +10,6 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/repository"
 	"github.com/Borislavv/advanced-cache/pkg/shutdown"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
-	"github.com/Borislavv/advanced-cache/pkg/storage/lfu"
 	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
 	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
 	"github.com/rs/zerolog/log"
@@ -43,30 +42,16 @@ type Cache struct {
 func NewApp(ctx context.Context, cfg *config.Config, probe liveness.Prober) (*Cache, error) {
 	ctx, cancel := context.WithCancel(ctx)
 
-	// Setup sharded map for high-concurrency cache db.
-	shardedMap := sharded.NewMap[*model.VersionPointer](ctx, cfg.Cache.Cache.Preallocate.PerShard)
-	backend := repository.NewBackend(ctx, cfg.Cache)
-	balancer := lru.NewBalancer(ctx, shardedMap)
-	tinyLFU := lfu.NewTinyLFU(ctx)
-	db := lru.NewStorage(ctx, cfg.Cache, balancer, backend, tinyLFU, shardedMap)
-	refresher := storage.NewRefresher(ctx, cfg.Cache, balancer, db)
-	dumper := storage.NewDumper(cfg.Cache, shardedMap, db, backend)
-	evictor := storage.NewEvictor(ctx, cfg.Cache, db, balancer)
 	meter := metrics.New()
+	backend := repository.NewBackend(ctx, cfg.Cache)
+	db := lru.NewStorage(ctx, cfg.Cache, backend)
 
-	c := &Cache{
-		ctx:        ctx,
-		cancel:     cancel,
-		cfg:        cfg,
-		probe:      probe,
-		db:         db,
-		dumper:     dumper,
-		evictor:    evictor,
-		metrics:    meter,
-		backend:    backend,
-		balancer:   balancer,
-		refresher:  refresher,
-		shardedMap: shardedMap,
+	cacheObj := &Cache{
+		ctx:    ctx,
+		cancel: cancel,
+		cfg:    cfg,
+		probe:  probe,
+		db:     db,
 	}
 
 	// Compose the HTTP server (API, metrics and so on)
@@ -75,9 +60,9 @@ func NewApp(ctx context.Context, cfg *config.Config, probe liveness.Prober) (*Ca
 		cancel()
 		return nil, err
 	}
-	c.server = srv
+	cacheObj.server = srv
 
-	return c.run(), nil
+	return cacheObj, nil
 }
 
 // Start runs the cache server and liveness probe, and handles graceful shutdown.
@@ -101,18 +86,6 @@ func (c *Cache) Start(gc shutdown.Gracefuller) {
 	log.Info().Msg("[app] cache has been started")
 
 	<-waitCh // Wait until the server exits
-}
-
-func (c *Cache) run() *Cache {
-	if err := c.dumper.Load(c.ctx); err != nil {
-		log.Warn().Msg("[dump] failed to load dump: " + err.Error())
-	}
-
-	c.db.Run()
-	c.evictor.Run()
-	c.refresher.Run()
-
-	return c
 }
 
 // stop cancels the main application context and logs shutdown.

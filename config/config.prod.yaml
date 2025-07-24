@@ -2,6 +2,10 @@ cache:
   env: "prod"
   enabled: true
 
+  mocks:
+    load: true
+    length: 10000000
+
   logs:
     level: "info" # Any zerolog.Level.
     stats: true   # Should the statistic like num evictions, refreshes, rps, memory usage and so on be written in /std/out?

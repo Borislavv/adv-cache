@@ -2,7 +2,6 @@ package storage
 
 import (
 	"context"
-	"github.com/Borislavv/advanced-cache/pkg/storage/lfu"
 	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
 	"runtime"
 	"testing"
@@ -10,9 +9,7 @@ import (
 
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/mock"
-	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
-	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
 	"github.com/rs/zerolog"
 )
 
@@ -92,11 +89,8 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	shardedMap := sharded.NewMap[*model.VersionPointer](ctx, cfg.Cache.Preallocate.PerShard)
-	balancer := lru.NewBalancer(ctx, shardedMap)
 	backend := repository.NewBackend(ctx, cfg)
-	tinyLFU := lfu.NewTinyLFU(ctx)
-	db := lru.NewStorage(ctx, cfg, balancer, backend, tinyLFU, shardedMap)
+	db := lru.NewStorage(ctx, cfg, backend)
 
 	numEntries := b.N + 1
 	if numEntries > maxEntriesNum {
@@ -120,19 +114,14 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 		}
 	})
 	b.StopTimer()
-
-	reportMemAndAdvancedCache(b, shardedMap.Mem())
 }
 
 func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	shardedMap := sharded.NewMap[*model.VersionPointer](ctx, cfg.Cache.Preallocate.PerShard)
-	balancer := lru.NewBalancer(ctx, shardedMap)
 	backend := repository.NewBackend(ctx, cfg)
-	tinyLFU := lfu.NewTinyLFU(ctx)
-	db := lru.NewStorage(ctx, cfg, balancer, backend, tinyLFU, shardedMap)
+	db := lru.NewStorage(ctx, cfg, backend)
 
 	numEntries := b.N + 1
 	if numEntries > maxEntriesNum {
@@ -153,19 +142,14 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 		}
 	})
 	b.StopTimer()
-
-	reportMemAndAdvancedCache(b, shardedMap.Mem())
 }
 
 func BenchmarkGetAllocs(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	shardedMap := sharded.NewMap[*model.VersionPointer](ctx, cfg.Cache.Preallocate.PerShard)
-	balancer := lru.NewBalancer(ctx, shardedMap)
 	backend := repository.NewBackend(ctx, cfg)
-	tinyLFU := lfu.NewTinyLFU(ctx)
-	db := lru.NewStorage(ctx, cfg, balancer, backend, tinyLFU, shardedMap)
+	db := lru.NewStorage(ctx, cfg, backend)
 
 	entry := mock.GenerateEntryPointersConsecutive(cfg, backend, path, 1)[0]
 	db.Set(entry)
@@ -174,19 +158,14 @@ func BenchmarkGetAllocs(b *testing.B) {
 		db.Get(entry.Entry)
 	})
 	b.ReportMetric(allocs, "allocs/op")
-
-	reportMemAndAdvancedCache(b, shardedMap.Mem())
 }
 
 func BenchmarkSetAllocs(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	shardedMap := sharded.NewMap[*model.VersionPointer](ctx, cfg.Cache.Preallocate.PerShard)
-	balancer := lru.NewBalancer(ctx, shardedMap)
 	backend := repository.NewBackend(ctx, cfg)
-	tinyLFU := lfu.NewTinyLFU(ctx)
-	db := lru.NewStorage(ctx, cfg, balancer, backend, tinyLFU, shardedMap)
+	db := lru.NewStorage(ctx, cfg, backend)
 
 	entry := mock.GenerateEntryPointersConsecutive(cfg, backend, path, 1)[0]
 
@@ -194,6 +173,4 @@ func BenchmarkSetAllocs(b *testing.B) {
 		db.Set(entry)
 	})
 	b.ReportMetric(allocs, "allocs/op")
-
-	reportMemAndAdvancedCache(b, shardedMap.Mem())
 }
