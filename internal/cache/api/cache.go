@@ -296,7 +296,7 @@ func (c *CacheController) runLoggerMetricsWriter() {
 				c.metrics.SetHits(hitsNumLoc)
 				c.metrics.SetMisses(missesNumLoc)
 				c.metrics.SetErrors(errorsNumLoc)
-				c.metrics.SetRPS(totalNumLoc)
+				c.metrics.SetRPS(float64(totalNumLoc))
 				c.metrics.SetAvgResponseTime(avgDuration)
 
 				totalNum += totalNumLoc

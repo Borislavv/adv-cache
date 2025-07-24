@@ -1,7 +1,7 @@
 package keyword
 
 var (
-	AvgDuration              = "cache_response_duration_ms"
+	AvgDuration              = "cache_response_duration_ns"
 	Hits                     = "cache_hits"
 	Misses                   = "cache_misses"
 	RPS                      = "cache_rps"

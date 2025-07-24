@@ -24,7 +24,7 @@ type Meter interface {
 	SetHits(value uint64)
 	SetMisses(value uint64)
 	SetErrors(value uint64)
-	SetRPS(value uint64)
+	SetRPS(value float64)
 	SetCacheLength(count uint64)
 	SetCacheMemory(bytes uint64)
 	SetAvgResponseTime(avg float64)
@@ -46,8 +46,8 @@ func (m *Metrics) SetMisses(value uint64) {
 	metrics.GetOrCreateCounter(keyword.Misses).Set(value)
 }
 
-func (m *Metrics) SetRPS(value uint64) {
-	metrics.GetOrCreateCounter(keyword.RPS).Set(value)
+func (m *Metrics) SetRPS(value float64) {
+	metrics.GetOrCreateGauge(keyword.RPS, nil).Set(value)
 }
 
 func (m *Metrics) SetCacheMemory(bytes uint64) {
