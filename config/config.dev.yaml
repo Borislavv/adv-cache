@@ -2,6 +2,10 @@ cache:
   env: "dev"
   enabled: true
 
+  mocks:
+    load: true
+    length: 10000000
+
   logs:
     level: "info" # Any zerolog.Level.
     stats: true   # Should the statistic like num evictions, refreshes, rps, memory usage and so on be written in /std/out?
@@ -15,8 +19,8 @@ cache:
     escape_max_req_dur: "X-Google-Bot"  # If the header exists the timeout above will be skipped.
 
   upstream:
-    url: "https://seo-master.lux.kube.xbet.lan" # downstream reverse proxy host:port
-    rate: 80                                    # Rate limiting reqs to backend per second.
+    url: "http://localhost:8021" # downstream reverse proxy host:port
+    rate: 80000000                                    # Rate limiting reqs to backend per second.
     timeout: "10s"                              # Timeout for requests to backend.
 
   preallocate:
