@@ -2,6 +2,7 @@ package storage
 
 import (
 	"github.com/Borislavv/advanced-cache/pkg/model"
+	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
 )
 
 // Storage is a generic interface for cache storages.
@@ -35,4 +36,6 @@ type Storage interface {
 
 	// Rand returns a random elem from the map.
 	Rand() (entry *model.VersionPointer, ok bool)
+
+	WalkShards(fn func(key uint64, shard *sharded.Shard[*model.VersionPointer]))
 }

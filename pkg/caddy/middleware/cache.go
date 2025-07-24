@@ -8,6 +8,7 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
+	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
 	httpwriter "github.com/Borislavv/advanced-cache/pkg/writer"
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
@@ -51,7 +52,7 @@ type CacheMiddleware struct {
 	storage    storage.Storage
 	backend    repository.Backender
 	refresher  storage.Refresher
-	evictor    storage.Evictor
+	evictor    lru.Evictor
 	dumper     storage.Dumper
 	metrics    metrics.Meter
 	count      int64 // Num
@@ -109,7 +110,7 @@ func (m *CacheMiddleware) handleThroughCache(w http.ResponseWriter, r *http.Requ
 		captured, releaseCapturer := httpwriter.NewCaptureResponseWriter(w)
 		defer releaseCapturer()
 
-		// Run downstream handler
+		// run downstream handler
 		if srvErr := next.ServeHTTP(captured, r); srvErr != nil {
 			errors.Add(1)
 			captured.Reset()

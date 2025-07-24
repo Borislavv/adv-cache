@@ -5,13 +5,11 @@ import (
 	"github.com/Borislavv/advanced-cache/internal/cache/config"
 	"github.com/Borislavv/advanced-cache/internal/cache/server"
 	"github.com/Borislavv/advanced-cache/pkg/k8s/probe/liveness"
-	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
 	"github.com/Borislavv/advanced-cache/pkg/shutdown"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
 	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
-	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
 	"github.com/rs/zerolog/log"
 	"time"
 )
@@ -23,19 +21,14 @@ type App interface {
 
 // Cache encapsulates the entire cache application state, including HTTP server, config, and probes.
 type Cache struct {
-	cfg        *config.Config
-	ctx        context.Context
-	cancel     context.CancelFunc
-	probe      liveness.Prober
-	server     server.Http
-	metrics    metrics.Meter
-	db         storage.Storage
-	dumper     storage.Dumper
-	balancer   lru.Balancer
-	evictor    storage.Evictor
-	refresher  storage.Refresher
-	backend    repository.Backender
-	shardedMap *sharded.Map[*model.VersionPointer]
+	cfg     *config.Config
+	ctx     context.Context
+	cancel  context.CancelFunc
+	probe   liveness.Prober
+	dumper  storage.Dumper
+	server  server.Http
+	backend repository.Backender
+	db      storage.Storage
 }
 
 // NewApp builds a new Cache app, wiring together db, repo, reader, and server.
@@ -45,13 +38,16 @@ func NewApp(ctx context.Context, cfg *config.Config, probe liveness.Prober) (*Ca
 	meter := metrics.New()
 	backend := repository.NewBackend(ctx, cfg.Cache)
 	db := lru.NewStorage(ctx, cfg.Cache, backend)
+	dumper := storage.NewDumper(cfg.Cache, db, backend)
 
 	cacheObj := &Cache{
-		ctx:    ctx,
-		cancel: cancel,
-		cfg:    cfg,
-		probe:  probe,
-		db:     db,
+		ctx:     ctx,
+		cancel:  cancel,
+		cfg:     cfg,
+		db:      db,
+		backend: backend,
+		probe:   probe,
+		dumper:  dumper,
 	}
 
 	// Compose the HTTP server (API, metrics and so on)
@@ -75,6 +71,16 @@ func (c *Cache) Start(gc shutdown.Gracefuller) {
 
 	log.Info().Msg("[app] starting cache")
 
+	if c.cfg.Cache.Cache.Persistence.Dump.IsEnabled {
+		if err := c.dumper.Load(c.ctx); err != nil {
+			log.Warn().Msg("[dump] failed to load dump: " + err.Error())
+		}
+	}
+
+	if c.cfg.Cache.Cache.Mocks.Load {
+		storage.LoadMocks(c.ctx, c.cfg.Cache, c.backend, c.db, c.cfg.Cache.Cache.Mocks.Length)
+	}
+
 	waitCh := make(chan struct{})
 
 	go func() {
@@ -91,14 +97,15 @@ func (c *Cache) Start(gc shutdown.Gracefuller) {
 // stop cancels the main application context and logs shutdown.
 func (c *Cache) stop() {
 	log.Info().Msg("[app] stopping cache")
+
 	defer c.cancel()
 
 	// spawn a new one with limit for k8s timeout before the service will be received SIGKILL
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
 	if err := c.dumper.Dump(ctx); err != nil {
-		log.Err(err).Msg("[dump] failed to dump cache")
+		log.Err(err).Msg("[dump] failed to store cache dump")
 	}
 
 	log.Info().Msg("[app] cache has been stopped")

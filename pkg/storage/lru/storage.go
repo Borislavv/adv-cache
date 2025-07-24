@@ -41,24 +41,10 @@ func NewStorage(ctx context.Context, cfg *config.Cache, backend repository.Backe
 		backend:         backend,
 		tinyLFU:         lfu.NewTinyLFU(ctx),
 		memoryThreshold: int64(float64(cfg.Cache.Storage.Size) * cfg.Cache.Eviction.Threshold),
-	}).init()
+	}).init().runLogger()
 
-	refresher := storage.NewRefresher(ctx, cfg, balancer, db)
-	dumper := storage.NewDumper(cfg, shardedMap, db, backend)
-	evictor := storage.NewEvictor(ctx, cfg, db, balancer)
-
-	db.Run()
-	evictor.Run()
-	refresher.Run()
-	db.runLogger()
-
-	if cfg.Cache.Mocks.Load {
-		storage.LoadMocks(ctx, cfg, backend, db, cfg.Cache.Mocks.Length)
-	} else if cfg.Cache.Persistence.Dump.IsEnabled {
-		if err := dumper.Load(ctx); err != nil {
-			log.Warn().Msg("[dump] failed to load dump: " + err.Error())
-		}
-	}
+	storage.NewRefresher(ctx, cfg, db).Run()
+	NewEvictor(ctx, cfg, db, balancer).Run()
 
 	return db
 }
@@ -88,7 +74,7 @@ func (s *Storage) Get(req *model.Entry) (entry *model.VersionPointer, ok bool) {
 	return nil, false
 }
 
-// GetRand returns a random item from storage.
+// Rand returns a random item from storage.
 func (s *Storage) Rand() (entry *model.VersionPointer, ok bool) {
 	return s.shardedMap.Rnd()
 }
@@ -99,7 +85,7 @@ func (s *Storage) Set(new *model.VersionPointer) (entry *model.VersionPointer) {
 	s.tinyLFU.Increment(new.MapKey())
 
 	// Attempt to find entry in cache, if found then touch and return it
-	if old, found := s.shardedMap.Get(new.MapKey()); found && old.IsSameEntry(new.Entry) { // TODO need to test payload comparison
+	if old, found := s.shardedMap.Get(new.MapKey()); found && old.IsSameEntry(new.Entry) {
 		// Check the pointers are really different,
 		// if so then update the 'old' data and remove 'new' one, return old of course
 		if old != new && old.Entry != new.Entry {
@@ -150,6 +136,10 @@ func (s *Storage) ShouldEvict() bool {
 	return s.Mem() >= s.memoryThreshold
 }
 
+func (s *Storage) WalkShards(fn func(key uint64, shard *sharded.Shard[*model.VersionPointer])) {
+	s.shardedMap.WalkShards(fn)
+}
+
 // touch bumps the Storage position of an existing entry (MoveToFront) and increases its refCount.
 func (s *Storage) touch(existing *model.VersionPointer) {
 	s.balancer.Update(existing)
@@ -168,7 +158,7 @@ func (s *Storage) set(new *model.VersionPointer) (ok bool) {
 }
 
 // runLogger emits detailed stats about evictions, Weight, and GC activity every 5 seconds if debugging is enabled.
-func (s *Storage) runLogger() {
+func (s *Storage) runLogger() *Storage {
 	go func() {
 		var ticker = utils.NewTicker(s.ctx, 5*time.Second)
 
@@ -211,4 +201,5 @@ func (s *Storage) runLogger() {
 			}
 		}
 	}()
+	return s
 }

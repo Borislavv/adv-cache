@@ -25,8 +25,8 @@ func (m *TraefikCacheMiddleware) run(ctx context.Context) error {
 	}
 
 	m.storage.Run()
-	m.evictor.Run()
-	m.refresher.Run()
+	m.evictor.run()
+	m.refresher.run()
 	m.runLoggerMetricsWriter()
 	gc.Run(ctx, cfg)
 
