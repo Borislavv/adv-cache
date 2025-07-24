@@ -20,7 +20,7 @@ import (
 // This allows overriding any value via environment variables.
 func init() {
 	// Load .env and .env.local files for configuration overrides.
-	if err := godotenv.Overload(".env", ".env.local"); err != nil {
+	if err := godotenv.Overload(".env"); err != nil {
 		panic(err)
 	}
 
