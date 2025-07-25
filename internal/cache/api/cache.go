@@ -40,6 +40,7 @@ var (
 )
 
 var (
+	total         = &atomic.Uint64{}
 	hits          = &atomic.Uint64{}
 	misses        = &atomic.Uint64{}
 	errors        = &atomic.Uint64{}
@@ -78,6 +79,10 @@ func NewCacheController(
 
 // Index is the main HTTP handler.
 func (c *CacheController) Index(r *fasthttp.RequestCtx) {
+	var from = time.Now()
+	defer func() { totalDuration.Add(time.Since(from).Nanoseconds()) }()
+
+	total.Add(1)
 	if enabled.Load() {
 		c.handleTroughCache(r)
 	} else {
@@ -86,29 +91,14 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 }
 
 func (c *CacheController) handleTroughProxy(r *fasthttp.RequestCtx) {
-	var from = time.Now()
-	defer func() { totalDuration.Add(time.Since(from).Nanoseconds()) }()
-
-	hits.Add(1)
-
-	// make a lightweight request Entry (contains only key, shardKey and fingerprint)
-	newEntry, err := model.NewEntryFastHttp(c.cfg, r) // must be removed on hit and release on miss
-	defer newEntry.Remove()
-	if err != nil {
-		errors.Add(1)
-		c.respondThatServiceIsTemporaryUnavailable(err, r)
-		return
-	}
-
 	// extract request data
 	path := r.Path()
-	rule := newEntry.Rule()
 	queryString := r.QueryArgs().QueryString()
 	queryHeaders, queryReleaser := c.queryHeaders(r)
 	defer queryReleaser(queryHeaders)
 
 	// fetch data from upstream
-	payloadStatus, payloadHeaders, payloadBody, payloadReleaser, err := c.backend.Fetch(rule, path, queryString, queryHeaders)
+	payloadStatus, payloadHeaders, payloadBody, payloadReleaser, err := c.backend.Fetch(nil, path, queryString, queryHeaders)
 	defer payloadReleaser()
 	if err != nil {
 		c.respondThatServiceIsTemporaryUnavailable(err, r)
@@ -132,12 +122,13 @@ func (c *CacheController) handleTroughProxy(r *fasthttp.RequestCtx) {
 }
 
 func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) {
-	var from = time.Now()
-	defer func() { totalDuration.Add(time.Since(from).Nanoseconds()) }()
-
 	// make a lightweight request Entry (contains only key, shardKey and fingerprint)
 	newEntry, err := model.NewEntryFastHttp(c.cfg, r) // must be removed on hit and release on miss
 	if err != nil {
+		if model.IsRouteWasNotFound(err) {
+			c.handleTroughProxy(r)
+			return
+		}
 		c.respondThatServiceIsTemporaryUnavailable(err, r)
 		return
 	}
@@ -268,6 +259,7 @@ func (c *CacheController) runLoggerMetricsWriter() {
 			hitsNum          uint64
 			missesNum        uint64
 			errorsNum        uint64
+			proxiedNum       uint64
 			totalDurationNum int64
 		)
 
@@ -279,11 +271,12 @@ func (c *CacheController) runLoggerMetricsWriter() {
 			case <-c.ctx.Done():
 				return
 			case <-metricsTicker:
-				hitsNumLoc := hits.Load()
-				missesNumLoc := misses.Load()
-				errorsNumLoc := errors.Load()
-				totalNumLoc := hitsNumLoc + missesNumLoc
-				totalDurationNumLoc := totalDuration.Load()
+				totalNumLoc := total.Swap(0)
+				hitsNumLoc := hits.Swap(0)
+				missesNumLoc := misses.Swap(0)
+				errorsNumLoc := errors.Swap(0)
+				proxiedNumLoc := totalNumLoc - hitsNumLoc - missesNumLoc - errorsNumLoc
+				totalDurationNumLoc := totalDuration.Swap(0)
 
 				var avgDuration float64
 				if totalNumLoc > 0 {
@@ -296,6 +289,7 @@ func (c *CacheController) runLoggerMetricsWriter() {
 				c.metrics.SetHits(hitsNumLoc)
 				c.metrics.SetMisses(missesNumLoc)
 				c.metrics.SetErrors(errorsNumLoc)
+				c.metrics.SetProxiedNum(proxiedNumLoc)
 				c.metrics.SetRPS(float64(totalNumLoc))
 				c.metrics.SetAvgResponseTime(avgDuration)
 
@@ -303,17 +297,13 @@ func (c *CacheController) runLoggerMetricsWriter() {
 				hitsNum += hitsNumLoc
 				missesNum += missesNumLoc
 				errorsNum += errorsNumLoc
+				proxiedNum += proxiedNumLoc
 				totalDurationNum += totalDurationNumLoc
 
 				if i == logIntervalSecs {
 					elapsed := time.Since(prev)
 					duration := time.Duration(int(avgDuration))
-					rps := float64(totalNumLoc) / elapsed.Seconds()
-
-					hits.Store(0)
-					misses.Store(0)
-					errors.Store(0)
-					totalDuration.Store(0)
+					rps := float64(totalNum) / elapsed.Seconds()
 
 					logEvent := log.Info()
 
@@ -336,13 +326,13 @@ func (c *CacheController) runLoggerMetricsWriter() {
 
 					if enabled.Load() {
 						logEvent.Msgf(
-							"[%s][%s] served %d requests (rps: %.f, avg.dur.: %s hits: %d, misses: %d, errors: %d)",
-							target, elapsed.String(), totalNum, rps, duration.String(), hitsNum, missesNum, errorsNum,
+							"[%s][%s] served %d requests (rps: %.f, avg.dur.: %s hits: %d, misses: %d, proxied: %d, errors: %d)",
+							target, elapsed.String(), totalNum, rps, duration.String(), hitsNum, missesNum, proxiedNum, errorsNum,
 						)
 					} else {
 						logEvent.Msgf(
-							"[%s][%s] served %d requests (rps: %.f, avg.dur.: %s total: %d, errors: %d)",
-							target, elapsed.String(), totalNum, rps, duration.String(), totalNum, errorsNum,
+							"[%s][%s] served %d requests (rps: %.f, avg.dur.: %s total: %d, proxied: %d, errors: %d)",
+							target, elapsed.String(), totalNum, rps, duration.String(), totalNum, proxiedNum, errorsNum,
 						)
 					}
 
@@ -350,6 +340,7 @@ func (c *CacheController) runLoggerMetricsWriter() {
 					hitsNum = 0
 					missesNum = 0
 					errorsNum = 0
+					proxiedNum = 0
 					totalDurationNum = 0
 					prev = time.Now()
 					i = 0

@@ -128,10 +128,11 @@ func (s *Backend) requestExternalBackend(
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)
 
-	req.Header.SetMethod(fasthttp.MethodGet)
 	urlBuf := urlBufPool.Get().(*bytes.Buffer)
-	urlBuf.Grow(len(s.cfg.Cache.Proxy.FromUrl) + len(path) + len(query) + 1)
 	defer func() { urlBuf.Reset(); urlBufPool.Put(urlBuf) }()
+
+	req.Header.SetMethod(fasthttp.MethodGet)
+	urlBuf.Grow(len(s.cfg.Cache.Proxy.FromUrl) + len(path) + len(query) + 1)
 
 	if _, err = urlBuf.Write(s.cfg.Cache.Proxy.FromUrl); err != nil {
 		return 0, nil, nil, emptyReleaseFn, err
@@ -145,7 +146,7 @@ func (s *Backend) requestExternalBackend(
 	if _, err = urlBuf.Write(query); err != nil {
 		return 0, nil, nil, emptyReleaseFn, err
 	}
-	req.SetRequestURI(unsafe.String(unsafe.SliceData(urlBuf.Bytes()), urlBuf.Len()))
+	req.SetRequestURIBytes(urlBuf.Bytes())
 
 	var isBot bool
 	for _, kv := range *queryHeaders {
@@ -164,24 +165,31 @@ func (s *Backend) requestExternalBackend(
 
 	resp := fasthttp.AcquireResponse()
 	if err = pools.BackendHttpClientPool.DoTimeout(req, resp, timeout); err != nil {
+		fasthttp.ReleaseResponse(resp)
 		return 0, nil, nil, emptyReleaseFn, err
 	}
 
-	allowedHeadersMap := rule.CacheValue.HeadersMap
 	headers = pools.KeyValueSlicePool.Get().(*[][2][]byte)
-	resp.Header.All()(func(k, v []byte) bool {
-		if _, ok := allowedHeadersMap[unsafe.String(unsafe.SliceData(k), len(k))]; ok {
+
+	if rule != nil {
+		allowedHeadersMap := rule.CacheValue.HeadersMap
+		resp.Header.All()(func(k, v []byte) bool {
+			if _, ok := allowedHeadersMap[unsafe.String(unsafe.SliceData(k), len(k))]; ok {
+				*headers = append(*headers, [2][]byte{k, v})
+			}
+			return true
+		})
+	} else {
+		resp.Header.All()(func(k, v []byte) bool {
 			*headers = append(*headers, [2][]byte{k, v})
-		}
-		return true
-	})
+			return true
+		})
+	}
 
 	buf := pools.BackendBodyBufferPool.Get().(*bytes.Buffer)
-	if _, err = buf.Write(resp.Body()); err != nil {
-		return 0, nil, nil, emptyReleaseFn, err
-	}
 
-	return resp.StatusCode(), headers, buf.Bytes(), func() {
+	// make a final releaser func
+	releaseFn = func() {
 		*headers = (*headers)[:0]
 		pools.KeyValueSlicePool.Put(headers)
 
@@ -189,5 +197,12 @@ func (s *Backend) requestExternalBackend(
 		pools.BackendBodyBufferPool.Put(buf)
 
 		fasthttp.ReleaseResponse(resp)
-	}, nil
+	}
+
+	if err = resp.BodyWriteTo(buf); err != nil {
+		releaseFn() // release on error
+		return 0, nil, nil, emptyReleaseFn, err
+	}
+
+	return resp.StatusCode(), headers, buf.Bytes(), releaseFn, nil
 }
