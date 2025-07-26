@@ -222,10 +222,11 @@ func (e *Entry) finalize() (freedMem int64) {
 	e.updatedAt = 0
 	e.isCompressed = 0
 	e.revalidator = nil
-	lruElem := e.lruListElem.Swap(nil)
-	lruElem.List().FreeElement(lruElem)
 	e.payload.Store(nil)
 	freedMem = e.Weight()
+
+	lruElem := e.lruListElem.Swap(nil)
+	lruElem.List().Finalize(lruElem)
 
 	// return back to pool
 	entriesPool.Put(e)

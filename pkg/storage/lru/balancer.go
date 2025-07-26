@@ -35,7 +35,6 @@ type Balancer interface {
 	Register(shard *sharded.Shard[*model.VersionPointer])
 	Push(entry *model.VersionPointer)
 	Update(existing *model.VersionPointer)
-	Remove(shardKey uint64, el *list.Element[*model.VersionPointer])
 	MostLoaded(offset int) (*ShardNode, bool)
 	FindVictim(shardKey uint64) (*model.VersionPointer, bool)
 }
@@ -92,18 +91,7 @@ func (b *Balance) Push(entry *model.VersionPointer) {
 }
 
 func (b *Balance) Update(existing *model.VersionPointer) {
-	if b.shards[existing.ShardKey()].lruList == nil {
-		panic("b.shards[existing.ShardKey()].lruList is nil")
-	} else if existing.LruListElement() == nil {
-		panic("existing.LruListElement() is nil")
-	} else if existing.ShardKey() == 0 {
-		panic("existing.ShardKey() is zero")
-	}
 	b.shards[existing.ShardKey()].lruList.MoveToFront(existing.LruListElement())
-}
-
-func (b *Balance) Remove(shardKey uint64, el *list.Element[*model.VersionPointer]) {
-	b.shards[shardKey].lruList.Remove(el)
 }
 
 // MostLoaded returns the first non-empty Shard node from the front of memList,

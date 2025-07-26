@@ -14,6 +14,7 @@ import (
 
 const maxEntriesNum = 1_000_000
 
+var path = []byte("/api/v2/pagedata")
 var cfg *config.Cache
 
 func init() {

@@ -47,7 +47,7 @@ func TestList_ConcurrentOperations(t *testing.T) {
 				case 3:
 					if len(elements) > 0 {
 						idx := rng.Intn(len(elements))
-						l.Remove(elements[idx])
+						l.Finalize(elements[idx])
 						elements = append(elements[:idx], elements[idx+1:]...)
 					}
 				}
@@ -85,11 +85,11 @@ func TestList_ConcurrentOperations(t *testing.T) {
 		t.Errorf("Next() returned ok for out-of-range offset")
 	}
 
-	// Remove all elements and verify empty
+	// Finalize all elements and verify empty
 	e = l.root.next
 	for e != l.root {
 		next := e.next
-		l.Remove(e)
+		l.Finalize(e)
 		e = next
 	}
 	if l.Len() != 0 {

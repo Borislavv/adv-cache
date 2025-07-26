@@ -115,7 +115,7 @@ func (s *InMemoryStorage) Rand() (entry *model.VersionPointer, ok bool) {
 }
 
 // Set inserts or updates a response in the cache, updating Weight usage and InMemoryStorage position.
-// On 'wasPersisted=true' must be called Entry.Release, otherwise Entry.Remove.
+// On 'wasPersisted=true' must be called Entry.Finalize, otherwise Entry.Finalize.
 func (s *InMemoryStorage) Set(new *model.VersionPointer) (entry *model.VersionPointer, wasPersisted bool) {
 	// Track access frequency
 	s.tinyLFU.Increment(new.MapKey())
@@ -154,7 +154,6 @@ func (s *InMemoryStorage) Set(new *model.VersionPointer) (entry *model.VersionPo
 }
 
 func (s *InMemoryStorage) Remove(entry *model.VersionPointer) (freedBytes int64, isHit bool) {
-	s.balancer.Remove(entry.ShardKey(), entry.LruListElement())
 	return s.shardedMap.Remove(entry.MapKey())
 }
 

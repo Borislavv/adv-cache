@@ -36,14 +36,14 @@ func BenchmarkList_MoveToFrontParallel(b *testing.B) {
 	})
 }
 
-// BenchmarkList_RemoveParallel checks throughput for Remove with mixed elements.
+// BenchmarkList_RemoveParallel checks throughput for Finalize with mixed elements.
 func BenchmarkList_SetAndRemoveAtTheSameTimeParallel(b *testing.B) {
 	l := New[dummySized]()
 
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			e := l.PushFront(dummySized{id: rand.Int()})
-			l.Remove(e)
+			l.Finalize(e)
 		}
 	})
 }
