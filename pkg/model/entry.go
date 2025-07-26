@@ -101,6 +101,10 @@ func NewEntryFastHttp(cfg *config.Cache, r *fasthttp.RequestCtx) (*Entry, error)
 	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), nil
 }
 
+func IsRouteWasNotFound(err error) bool {
+	return errors.Is(err, ruleNotFoundError)
+}
+
 func NewEntryManual(cfg *config.Cache, path, query []byte, headers *[][2][]byte, revalidator Revalidator) (*Entry, error) {
 	rule := MatchRule(cfg, path)
 	if rule == nil {

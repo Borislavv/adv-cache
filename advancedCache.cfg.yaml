@@ -3,11 +3,11 @@ cache:
   enabled: true
 
   proxy:
-    name: "star.fast" # Proxy server name
-    from: ":8021"     # Backend (example of full qualified url: http://localhost:8020)
-    to: ":8020"       # Current server port
-    rate: 1000        # Rate limiting reqs to backend per second.
-    timeout: "10s"    # Timeout for requests to backend.
+    name: "star.fast"               # Proxy server name
+    from: "https://seo-master.lux.kube.xbet.lan"   # Backend (example of full qualified url: http://localhost:8020)
+    to: ":8020"                     # Current server port
+    rate: 1000                      # Rate limiting reqs to backend per second.
+    timeout: "10s"                  # Timeout for requests to backend.
 
   metrics:
     enabled: true
@@ -35,8 +35,8 @@ cache:
     interval: "10s"
 
   lifetime:
-    max_req_dur: "100ms"                # If a request lifetime is longer than 100ms then request will be canceled by context.
-    escape_max_req_dur: "X-Google-Bot"  # If the header exists the timeout above will be skipped.
+    max_req_dur: "1s"                          # If a request lifetime is longer than 100ms then request will be canceled by context.
+    escape_max_req_dur_header: "X-Google-Bot"  # If the header exists the timeout above will be skipped.
 
   preallocate:
     num_shards: 2048  # Fixed constant (see `NumOfShards` in code). Controls the number of sharded maps.
@@ -62,7 +62,11 @@ cache:
     /api/v2/pagedata:
       beta: 0.3 # Controls randomness in refresh timing to avoid thundering herd.
       cache_key:
-        query: ['project[id]', 'domain', 'language', 'choice'] # Match query parameters by prefix.
+        query: # Match query parameters by prefix.
+          - project[id]
+          - domain
+          - language
+          - choice
         headers:
           - Accept-Encoding
       cache_value:
@@ -82,7 +86,21 @@ cache:
       error_ttl: "3h"
       beta: 0.3 # Controls randomness in refresh timing to avoid thundering herd.
       cache_key:
-        query: ['project[id]', 'domain', 'language', 'choice'] # Match query parameters by prefix.
-        headers: ['Accept-Encoding', 'X-Project-ID']           # Match headers by exact value.
+        query: # Match query parameters by prefix.
+          - project[id]
+          - domain
+          - language
+          - choice
+        headers:
+          - Accept-Encoding
       cache_value:
-        headers: ['X-Project-ID']                              # Store only when headers match exactly.
+        headers:
+          - Content-Type
+          - Content-Encoding
+          - Cache-Control
+          - Vary
+          - Strict-Transport-Security
+          - Content-Length
+          - Cache-Control
+          - X-Content-Digest
+          - Age
