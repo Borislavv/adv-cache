@@ -1,6 +1,7 @@
 package sharded
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 )
@@ -104,17 +105,15 @@ func (shard *Shard[V]) Remove(key uint64) (freed int64, finalized bool) {
 	if found {
 		delete(shard.items, key)
 		shard.Unlock()
-		if item.Acquire() {
-			//fmt.Println(item.RefCount())
-			freed = item.Weight()
-			atomic.AddInt64(&shard.len, -1)
-			atomic.AddInt64(&shard.mem, -freed)
-			item.Release()
-		}
+
+		atomic.AddInt64(&shard.len, -1)
+		atomic.AddInt64(&shard.mem, -freed)
+
 		freed, finalized = item.Remove()
 		if finalized {
 			EvictRemoveHits.Add(1)
 		}
+		fmt.Println(item.RefCount())
 		return
 	}
 	shard.Unlock()
