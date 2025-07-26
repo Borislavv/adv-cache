@@ -112,8 +112,11 @@ func (shard *Shard[V]) Remove(key uint64) (freed int64, finalized bool) {
 		freed, finalized = item.Remove()
 		if finalized {
 			EvictRemoveHits.Add(1)
+			fmt.Println("finalized", item.RefCount(), item.IsDoomed())
+		} else {
+			fmt.Println("unfinalized", item.RefCount(), item.IsDoomed())
 		}
-		fmt.Println(item.RefCount())
+
 		return
 	}
 	shard.Unlock()

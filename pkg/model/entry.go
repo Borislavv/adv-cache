@@ -53,6 +53,10 @@ func (e *Entry) RefCount() int64 {
 	return atomic.LoadInt64(&e.refCount)
 }
 
+func (e *Entry) IsDoomed() int64 {
+	return atomic.LoadInt64(&e.isDoomed)
+}
+
 func (e *Entry) Init() *Entry {
 	e.payload = &atomic.Pointer[[]byte]{}
 	e.lruListElem = &atomic.Pointer[list.Element[*VersionPointer]]{}
@@ -192,7 +196,7 @@ func (e *Entry) Release() (freedBytes int64, finalized bool) {
 	}
 	for {
 		if old := atomic.LoadInt64(&e.refCount); atomic.CompareAndSwapInt64(&e.refCount, old, old-1) {
-			if old == preDoomedCount && atomic.LoadInt64(&e.isDoomed) == doomed {
+			if old <= preDoomedCount && atomic.LoadInt64(&e.isDoomed) == doomed {
 				if atomic.CompareAndSwapInt64(&e.refCount, zeroRefCount, doomedRefCount) {
 					return e.finalize(), true
 				}

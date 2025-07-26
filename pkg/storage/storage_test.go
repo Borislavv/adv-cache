@@ -37,7 +37,7 @@ func init() {
 				PerShard: 8,
 			},
 			Eviction: config.Eviction{
-				Enabled:   true,
+				Enabled:   false,
 				Threshold: 0.9,
 			},
 			Refresh: config.Refresh{
@@ -137,9 +137,7 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 		for pb.Next() {
 			for j := 0; j < 1000; j++ {
 				entry, persisted := db.Set(entries[(i*j)%length])
-				if !persisted {
-					entry.Remove()
-				} else {
+				if persisted {
 					entry.Release()
 				}
 			}

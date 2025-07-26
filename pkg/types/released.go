@@ -5,4 +5,5 @@ type Released interface {
 	Release() (freedBytes int64, finalized bool)
 	Remove() (freedBytes int64, finalized bool)
 	RefCount() int64
+	IsDoomed() int64
 }
