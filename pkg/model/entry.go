@@ -182,32 +182,30 @@ func (e *Entry) Acquire(expectedVersion uint64) bool {
 	}
 }
 
-func (e *Entry) Release() {
+func (e *Entry) Release() (freedBytes int64, finalized bool) {
 	if e == nil {
-		return
+		return 0, false
 	}
 	for {
 		if old := atomic.LoadInt64(&e.refCount); atomic.CompareAndSwapInt64(&e.refCount, old, old-1) {
 			if old == preDoomedCount && atomic.LoadInt64(&e.isDoomed) == doomed {
 				if atomic.CompareAndSwapInt64(&e.refCount, zeroRefCount, doomedRefCount) {
-					e.finalize()
-					return
+					return e.finalize(), true
 				}
 			}
-			return
+			return 0, false
 		}
 	}
 }
 
-func (e *Entry) Remove() {
+func (e *Entry) Remove() (freedBytes int64, finalized bool) {
 	if e == nil {
-		return
+		return 0, false
 	}
 	if atomic.CompareAndSwapInt64(&e.isDoomed, notDoomed, doomed) {
-		e.Release()
-		return
+		return e.Release()
 	}
-	return
+	return 0, false
 }
 
 var Finzalized = &atomic.Int64{}

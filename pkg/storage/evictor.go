@@ -129,22 +129,17 @@ func (e *Evict) evictUntilWithinLimit() (items int, mem int64) {
 				break // end of the LRU list, move to next
 			}
 
-			entry := el.Value()
-			if !entry.Acquire() {
-				EvictNotAcquired.Add(1)
-				continue // already marked as doomed but not removed yet, skip it
-			}
-
-			freedMem, isHit := e.db.Remove(entry)
+			entryForRemove := el.Value()
+			e.db.Remove(entryForRemove)                       // will not be removed right here due to base refCount = 1
+			freedBytes, finalized := entryForRemove.Release() // call real finalize if previous refCount was 1 (current is 0)
 			EvictTotalRemove.Add(1)
-			if isHit {
+			if finalized {
 				EvictRemoveHits.Add(1)
 				items++
 				evictions++
-				mem += freedMem
+				mem += freedBytes
 			}
 
-			entry.Release()
 			offset++
 		}
 	}
