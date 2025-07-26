@@ -1,7 +1,6 @@
 package list
 
 import (
-	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -51,7 +50,6 @@ func (l *List[T]) freeElement(e *Element[T]) {
 	var zero T
 	e.value = zero
 	l.pool.Put(e)
-	fmt.Println("free element")
 }
 
 // Len returns the length, safe for concurrent read.
@@ -113,8 +111,6 @@ func (l *List[T]) Finalize(e *Element[T]) {
 	if e == nil || e.list != l {
 		return
 	}
-
-	fmt.Println("Finalize")
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
