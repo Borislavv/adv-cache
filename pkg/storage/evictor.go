@@ -95,7 +95,7 @@ var (
 	EvictNextNotFound       = &atomic.Int64{}
 	EvictNotAcquired        = &atomic.Int64{}
 	EvictTotalRemove        = &atomic.Int64{}
-	EvictRemoveHits         = &atomic.Int64{}
+	RealEvictionFinalized   = &atomic.Int64{}
 )
 
 // evictUntilWithinLimit repeatedly removes entries from the most loaded Shard (tail of InMemoryStorage)
@@ -130,16 +130,10 @@ func (e *Evict) evictUntilWithinLimit() (items int, mem int64) {
 			}
 
 			entryForRemove := el.Value()
-			if !entryForRemove.Acquire() {
-				continue
-			}
-
-			e.db.Remove(entryForRemove)                       // will not be removed right here due to base refCount = 1
-			freedBytes, finalized := entryForRemove.Release() // call real finalize if previous refCount was 1 (current is 0)
-			freedBytes, finalized = entryForRemove.Release()  // call real finalize if previous refCount was 1 (current is 0)
+			freedBytes, finalized := e.db.Remove(entryForRemove)
 			EvictTotalRemove.Add(1)
 			if finalized {
-				EvictRemoveHits.Add(1)
+				RealEvictionFinalized.Add(1)
 				items++
 				evictions++
 				mem += freedBytes

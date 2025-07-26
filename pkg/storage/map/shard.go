@@ -94,23 +94,29 @@ func (shard *Shard[V]) GetRand() (val V, ok bool) {
 	return val, false
 }
 
+var EvictRemoveHits = &atomic.Int64{}
+
 // Remove removes a value from the shard, decrements counters, and may trigger full resource cleanup.
 // Returns (memory_freed, pointer_to_list_element, was_found).
-func (shard *Shard[V]) Remove(key uint64) (freed int64, ok bool) {
+func (shard *Shard[V]) Remove(key uint64) (freed int64, finalized bool) {
 	shard.Lock()
-	var item V
-	item, ok = shard.items[key]
-	if ok {
+	item, found := shard.items[key]
+	if found {
 		delete(shard.items, key)
 		shard.Unlock()
 		if item.Acquire() {
+			//fmt.Println(item.RefCount())
 			freed = item.Weight()
 			atomic.AddInt64(&shard.len, -1)
 			atomic.AddInt64(&shard.mem, -freed)
-			item.Remove()
+			item.Release()
+		}
+		freed, finalized = item.Remove()
+		if finalized {
+			EvictRemoveHits.Add(1)
 		}
 		return
 	}
 	shard.Unlock()
-	return
+	return 0, false
 }

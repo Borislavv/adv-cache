@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/Borislavv/advanced-cache/pkg/list"
 	"github.com/Borislavv/advanced-cache/pkg/model"
+	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
 	"testing"
 	"time"
 
@@ -135,7 +136,12 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 		i := 0
 		for pb.Next() {
 			for j := 0; j < 1000; j++ {
-				db.Set(entries[(i*j)%length])
+				entry, persisted := db.Set(entries[(i*j)%length])
+				if !persisted {
+					entry.Remove()
+				} else {
+					entry.Release()
+				}
 			}
 			i += 1000
 		}
@@ -152,8 +158,10 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 	fmt.Printf("acquired: %d, released: %d, finalized: %d, nilList: %d\n",
 		list.Acquired.Load(), list.Released.Load(), model.Finzalized.Load(), model.NilList.Load())
 
-	fmt.Printf("notFoundMostLoaded: %d, lruListIsEmpty: %d, nextIsNotFound: %d, notAcquired: %d, totalRemove: %d, removeHits: %d\n",
-		EvictNotFoundMostLoaded.Load(), EvictListIsZero.Load(), EvictNextNotFound.Load(), EvictNotAcquired.Load(), EvictTotalRemove.Load(), EvictRemoveHits.Load())
+	fmt.Printf("notFoundMostLoaded: %d, lruListIsEmpty: %d, nextIsNotFound: %d, notAcquired: %d, totalRemove: %d, realRemoveHits: %d, reamoveHits: %d\n",
+		EvictNotFoundMostLoaded.Load(), EvictListIsZero.Load(), EvictNextNotFound.Load(), EvictNotAcquired.Load(), EvictTotalRemove.Load(), sharded.EvictRemoveHits.Load(), RealEvictionFinalized.Load())
+
+	time.Sleep(time.Second)
 }
 
 func BenchmarkGetAllocs(b *testing.B) {

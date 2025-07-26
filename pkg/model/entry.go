@@ -49,6 +49,10 @@ type Entry struct {
 	// (when you already changed an object in storage but someone just now try to do Acquire on already finalized and reused object)
 }
 
+func (e *Entry) RefCount() int64 {
+	return atomic.LoadInt64(&e.refCount)
+}
+
 func (e *Entry) Init() *Entry {
 	e.payload = &atomic.Pointer[[]byte]{}
 	e.lruListElem = &atomic.Pointer[list.Element[*VersionPointer]]{}
