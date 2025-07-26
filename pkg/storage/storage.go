@@ -131,11 +131,16 @@ func (s *InMemoryStorage) Set(new *model.VersionPointer) (entry *model.VersionPo
 				s.update(old, new)
 			}
 
-			new.Remove()
+			if new.Entry != old.Entry {
+				new.Remove()
+			}
+
 			return old, true
 		} else {
 			// hash collision case (rewrite entry)
-			old.Remove()
+			if new.Entry != old.Entry {
+				old.Remove()
+			}
 		}
 	}
 

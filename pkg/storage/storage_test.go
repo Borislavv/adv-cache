@@ -126,16 +126,6 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 	}
 
 	entries := mock.GenerateEntryPointersConsecutive(cfg, backend, path, numEntries)
-	sets := make([]*model.VersionPointer, 0, 1024)
-	for _, resp := range entries {
-		if persistedEntry, wasPersisted := db.Set(resp); wasPersisted {
-			sets = append(sets, persistedEntry)
-			persistedEntry.Release()
-		} else {
-			persistedEntry.Remove()
-		}
-	}
-	entries = sets
 	length := len(entries)
 
 	b.ResetTimer()

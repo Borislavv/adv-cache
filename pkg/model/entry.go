@@ -226,7 +226,10 @@ func (e *Entry) finalize() (freedMem int64) {
 	freedMem = e.Weight()
 
 	lruElem := e.lruListElem.Swap(nil)
-	lruElem.List().Finalize(lruElem)
+	if lruElem != nil { // nil is possible due to we can remove (finalize) not set yet element (in case when tinyLFU does not admit it)
+		// here is the element has list, it's mean that the element was 'set' sometime and present in some LRU list
+		lruElem.List().Finalize(lruElem)
+	}
 
 	// return back to pool
 	entriesPool.Put(e)
