@@ -17,6 +17,7 @@ func (m *CacheMiddleware) runLoggerMetricsWriter() {
 			hitsNum          uint64
 			missesNum        uint64
 			errorsNum        uint64
+			proxiedNum       uint64
 			totalDurationNum int64
 		)
 
@@ -28,11 +29,12 @@ func (m *CacheMiddleware) runLoggerMetricsWriter() {
 			case <-m.ctx.Done():
 				return
 			case <-metricsTicker:
-				hitsNumLoc := hits.Load()
-				missesNumLoc := misses.Load()
-				errorsNumLoc := errors.Load()
-				totalNumLoc := hitsNumLoc + missesNumLoc
-				totalDurationNumLoc := totalDuration.Load()
+				totalNumLoc := total.Swap(0)
+				hitsNumLoc := hits.Swap(0)
+				missesNumLoc := misses.Swap(0)
+				errorsNumLoc := errors.Swap(0)
+				proxiedNumLoc := totalNumLoc - hitsNumLoc - missesNumLoc - errorsNumLoc
+				totalDurationNumLoc := totalDuration.Swap(0)
 
 				var avgDuration float64
 				if totalNumLoc > 0 {
@@ -45,24 +47,21 @@ func (m *CacheMiddleware) runLoggerMetricsWriter() {
 				m.metrics.SetHits(hitsNumLoc)
 				m.metrics.SetMisses(missesNumLoc)
 				m.metrics.SetErrors(errorsNumLoc)
-				m.metrics.SetRPS(totalNumLoc)
+				m.metrics.SetProxiedNum(proxiedNumLoc)
+				m.metrics.SetRPS(float64(totalNumLoc))
 				m.metrics.SetAvgResponseTime(avgDuration)
 
 				totalNum += totalNumLoc
 				hitsNum += hitsNumLoc
 				missesNum += missesNumLoc
 				errorsNum += errorsNumLoc
+				proxiedNum += proxiedNumLoc
 				totalDurationNum += totalDurationNumLoc
 
 				if i == logIntervalSecs {
 					elapsed := time.Since(prev)
 					duration := time.Duration(int(avgDuration))
-					rps := float64(totalNumLoc) / elapsed.Seconds()
-
-					hits.Store(0)
-					misses.Store(0)
-					errors.Store(0)
-					totalDuration.Store(0)
+					rps := float64(totalNum) / elapsed.Seconds()
 
 					logEvent := log.Info()
 
@@ -85,13 +84,13 @@ func (m *CacheMiddleware) runLoggerMetricsWriter() {
 
 					if enabled.Load() {
 						logEvent.Msgf(
-							"[%s][%s] served %d requests (rps: %.f, avg.dur.: %s hits: %d, misses: %d, errors: %d)",
-							target, elapsed.String(), totalNum, rps, duration.String(), hitsNum, missesNum, errorsNum,
+							"[%s][%s] served %d requests (rps: %.f, avg.dur.: %s hits: %d, misses: %d, proxied: %d, errors: %d)",
+							target, elapsed.String(), totalNum, rps, duration.String(), hitsNum, missesNum, proxiedNum, errorsNum,
 						)
 					} else {
 						logEvent.Msgf(
-							"[%s][%s] served %d requests (rps: %.f, avg.dur.: %s total: %d, errors: %d)",
-							target, elapsed.String(), totalNum, rps, duration.String(), totalNum, errorsNum,
+							"[%s][%s] served %d requests (rps: %.f, avg.dur.: %s total: %d, proxied: %d, errors: %d)",
+							target, elapsed.String(), totalNum, rps, duration.String(), totalNum, proxiedNum, errorsNum,
 						)
 					}
 
@@ -99,6 +98,7 @@ func (m *CacheMiddleware) runLoggerMetricsWriter() {
 					hitsNum = 0
 					missesNum = 0
 					errorsNum = 0
+					proxiedNum = 0
 					totalDurationNum = 0
 					prev = time.Now()
 					i = 0

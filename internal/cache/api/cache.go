@@ -121,7 +121,7 @@ func (c *CacheController) handleTroughProxy(r *fasthttp.RequestCtx) {
 		r.Response.Header.AddBytesKV(kv[0], kv[1])
 	}
 
-	// Set up Last-Modified header
+	// Push up Last-Modified header
 	header.SetLastModifiedValueFastHttp(r, time.Now().UnixNano())
 
 	// Write payloadBody
@@ -149,7 +149,7 @@ func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) {
 		payloadLastModified int64
 	)
 
-	foundEntry, found := c.cache.Get(newEntry)
+	cacheEntry, found := c.cache.Get(newEntry)
 	if !found {
 		misses.Add(1)
 
@@ -180,29 +180,34 @@ func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) {
 			newEntry.SetRevalidator(c.backend.RevalidatorMaker())
 
 			// build and store new VersionPointer in cache
-			foundEntry = c.cache.Set(model.NewVersionPointer(newEntry))
-			defer foundEntry.Release() // an Entry stored in the cache must be released after use
+			var wasPersisted bool
+			cacheEntry, wasPersisted = c.cache.Set(model.NewVersionPointer(newEntry))
+			if wasPersisted {
+				defer cacheEntry.Release() // an Entry stored in the cache must be released after use
+			} else {
+				defer cacheEntry.Remove() // an Entry was not persisted, must be removed after use
+			}
 
-			payloadLastModified = foundEntry.UpdateAt()
+			payloadLastModified = cacheEntry.UpdateAt()
 		}
 	} else {
 		hits.Add(1)
 
 		// deferred release and remove
 		newEntry.Remove()          // new Entry which was used as request for query cache does not need anymore
-		defer foundEntry.Release() // an Entry retrieved from the cache must be released after use
-
-		payloadLastModified = foundEntry.UpdateAt()
+		defer cacheEntry.Release() // an Entry retrieved from the cache must be released after use
 
 		// unpack found Entry data
 		var queryHeaders *[][2][]byte
 		var payloadReleaser func(q *[][2][]byte, h *[][2][]byte)
-		_, _, queryHeaders, payloadHeaders, payloadBody, payloadStatus, payloadReleaser, err = foundEntry.Payload()
+		_, _, queryHeaders, payloadHeaders, payloadBody, payloadStatus, payloadReleaser, err = cacheEntry.Payload()
 		defer payloadReleaser(queryHeaders, payloadHeaders)
 		if err != nil {
 			c.respondThatServiceIsTemporaryUnavailable(err, r)
 			return
 		}
+
+		payloadLastModified = cacheEntry.UpdateAt()
 	}
 
 	// Write payloadStatus, payloadHeaders, and payloadBody from the cached (or fetched) response.
@@ -211,7 +216,7 @@ func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) {
 		r.Response.Header.AddBytesKV(kv[0], kv[1])
 	}
 
-	// Set up Last-Modified header
+	// Push up Last-Modified header
 	header.SetLastModifiedValueFastHttp(r, payloadLastModified)
 
 	// Write payloadBody

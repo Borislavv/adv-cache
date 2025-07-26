@@ -21,7 +21,7 @@ type Refresher interface {
 
 // Refresh is responsible for background refreshing of cache entries.
 // It periodically samples random shards and randomly selects "cold" entries
-// (from the end of each shard's Storage list) to refreshItem if necessary.
+// (from the end of each shard's InMemoryStorage list) to refreshItem if necessary.
 // Communication: provider->consumer (MPSC).
 type Refresh struct {
 	ctx                 context.Context

@@ -5,14 +5,13 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/list"
 	"github.com/Borislavv/advanced-cache/pkg/model"
 	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
-	"math/rand/v2"
 	"unsafe"
 )
 
-// ShardNode represents a single Shard's Storage and accounting info.
-// Each Shard has its own Storage list and a pointer to its element in the balancer's memList.
+// ShardNode represents a single Shard's LRUStorage and accounting info.
+// Each Shard has its own LRUStorage list and a pointer to its element in the balancer's memList.
 type ShardNode struct {
-	lruList     *list.List[*model.VersionPointer]     // Per-Shard Storage list; less used responses at the back
+	lruList     *list.List[*model.VersionPointer]     // Per-Shard LRUStorage list; less used responses at the back
 	memListElem *list.Element[*ShardNode]             // Pointer to this node's position in Balance.memList
 	Shard       *sharded.Shard[*model.VersionPointer] // Reference to the actual Shard (map + sync)
 }
@@ -33,18 +32,15 @@ func (s *ShardNode) LruList() *list.List[*model.VersionPointer] {
 type Balancer interface {
 	Rebalance()
 	Mem() int64
-	Shards() [sharded.NumOfShards]*ShardNode
-	RandNode() *ShardNode
 	Register(shard *sharded.Shard[*model.VersionPointer])
-	Set(entry *model.VersionPointer)
+	Push(entry *model.VersionPointer)
 	Update(existing *model.VersionPointer)
-	Move(shardKey uint64, el *list.Element[*model.VersionPointer])
 	Remove(shardKey uint64, el *list.Element[*model.VersionPointer])
-	MostLoadedSampled(offset int) (*ShardNode, bool)
+	MostLoaded(offset int) (*ShardNode, bool)
 	FindVictim(shardKey uint64) (*model.VersionPointer, bool)
 }
 
-// Balance maintains per-Shard Storage lists and provides efficient selection of loaded shards for eviction.
+// Balance maintains per-Shard LRUStorage lists and provides efficient selection of loaded shards for eviction.
 // - memList orders shardNodes by usage (most loaded in front).
 // - shards is a flat array for O(1) access by Shard index.
 // - shardedMap is the underlying data storage (map of all entries).
@@ -79,20 +75,7 @@ func (b *Balance) Rebalance() {
 	b.memList.Sort(list.DESC)
 }
 
-func (b *Balance) Shards() [sharded.NumOfShards]*ShardNode {
-	return b.shards
-}
-
-// RandNode returns a random ShardNode for sampling (e.g., for background refreshers).
-func (b *Balance) RandNode() *ShardNode {
-	if n := b.shards[rand.Uint64N(sharded.NumOfShards)]; n.Shard.ID() == 0 {
-		return b.shards[rand.Uint64N(sharded.ActiveShards)]
-	} else {
-		return n
-	}
-}
-
-// Register inserts a new ShardNode for a given Shard, creates its Storage, and adds it to memList and shards array.
+// Register inserts a new ShardNode for a given Shard, creates its LRUStorage, and adds it to memList and shards array.
 func (b *Balance) Register(shard *sharded.Shard[*model.VersionPointer]) {
 	n := &ShardNode{
 		Shard:   shard,
@@ -102,29 +85,30 @@ func (b *Balance) Register(shard *sharded.Shard[*model.VersionPointer]) {
 	b.shards[shard.ID()] = n
 }
 
-// Set inserts a response into the appropriate Shard's Storage list and updates counters.
+// Push inserts a response into the appropriate Shard's LRUStorage list and updates counters.
 // Returns the affected ShardNode for further operations.
-func (b *Balance) Set(entry *model.VersionPointer) {
+func (b *Balance) Push(entry *model.VersionPointer) {
 	entry.SetLruListElement(b.shards[entry.ShardKey()].lruList.PushFront(entry))
 }
 
 func (b *Balance) Update(existing *model.VersionPointer) {
+	if b.shards[existing.ShardKey()].lruList == nil {
+		panic("b.shards[existing.ShardKey()].lruList is nil")
+	} else if existing.LruListElement() == nil {
+		panic("existing.LruListElement() is nil")
+	} else if existing.ShardKey() == 0 {
+		panic("existing.ShardKey() is zero")
+	}
 	b.shards[existing.ShardKey()].lruList.MoveToFront(existing.LruListElement())
-}
-
-// Move moves an element to the front of the per-Shard Storage list.
-// Used for touch/Set operations to mark entries as most recently used.
-func (b *Balance) Move(shardKey uint64, el *list.Element[*model.VersionPointer]) {
-	b.shards[shardKey].lruList.MoveToFront(el)
 }
 
 func (b *Balance) Remove(shardKey uint64, el *list.Element[*model.VersionPointer]) {
 	b.shards[shardKey].lruList.Remove(el)
 }
 
-// MostLoadedSampled returns the first non-empty Shard node from the front of memList,
+// MostLoaded returns the first non-empty Shard node from the front of memList,
 // optionally skipping a number of nodes by offset (for concurrent eviction fairness).
-func (b *Balance) MostLoadedSampled(offset int) (*ShardNode, bool) {
+func (b *Balance) MostLoaded(offset int) (*ShardNode, bool) {
 	el, ok := b.memList.Next(offset)
 	if !ok {
 		return nil, false

@@ -2,8 +2,7 @@ package storage
 
 import (
 	"context"
-	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
-	"runtime"
+	"github.com/Borislavv/advanced-cache/pkg/model"
 	"testing"
 	"time"
 
@@ -34,7 +33,7 @@ func init() {
 				PerShard: 8,
 			},
 			Eviction: config.Eviction{
-				Policy:    "lru",
+				Enabled:   true,
 				Threshold: 0.9,
 			},
 			Refresh: config.Refresh{
@@ -50,9 +49,6 @@ func init() {
 			Rules: map[string]*config.Rule{
 				"/api/v2/pagedata": {
 					PathBytes: []byte("/api/v2/pagedata"),
-					TTL:       time.Hour,
-					ErrorTTL:  time.Minute * 15,
-					Beta:      0.4,
 					MinStale:  time.Duration(float64(time.Hour) * 0.4),
 					CacheKey: config.Key{
 						Query:      []string{"project[id]", "domain", "language", "choice"},
@@ -78,19 +74,12 @@ func init() {
 	zerolog.SetGlobalLevel(zerolog.ErrorLevel)
 }
 
-func reportMemAndAdvancedCache(b *testing.B, usageMem int64) {
-	var mem runtime.MemStats
-	runtime.ReadMemStats(&mem)
-	b.ReportMetric(float64(mem.Alloc)/1024/1024, "allocsMB")
-	b.ReportMetric(float64(usageMem)/1024/1024, "advancedCacheMB")
-}
-
 func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	backend := repository.NewBackend(ctx, cfg)
-	db := lru.NewStorage(ctx, cfg, backend)
+	db := NewStorage(ctx, cfg, backend)
 
 	numEntries := b.N + 1
 	if numEntries > maxEntriesNum {
@@ -98,9 +87,16 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 	}
 
 	entries := mock.GenerateEntryPointersConsecutive(cfg, backend, path, numEntries)
+	sets := make([]*model.VersionPointer, 0, 1024)
 	for _, resp := range entries {
-		db.Set(resp)
+		if persistedEntry, wasPersisted := db.Set(resp); wasPersisted {
+			sets = append(sets, persistedEntry)
+			persistedEntry.Release()
+		} else {
+			persistedEntry.Remove()
+		}
 	}
+	entries = sets
 	length := len(entries)
 
 	b.ResetTimer()
@@ -121,7 +117,7 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 	defer cancel()
 
 	backend := repository.NewBackend(ctx, cfg)
-	db := lru.NewStorage(ctx, cfg, backend)
+	db := NewStorage(ctx, cfg, backend)
 
 	numEntries := b.N + 1
 	if numEntries > maxEntriesNum {
@@ -129,6 +125,16 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 	}
 
 	entries := mock.GenerateEntryPointersConsecutive(cfg, backend, path, numEntries)
+	sets := make([]*model.VersionPointer, 0, 1024)
+	for _, resp := range entries {
+		if persistedEntry, wasPersisted := db.Set(resp); wasPersisted {
+			sets = append(sets, persistedEntry)
+			persistedEntry.Release()
+		} else {
+			persistedEntry.Remove()
+		}
+	}
+	entries = sets
 	length := len(entries)
 
 	b.ResetTimer()
@@ -149,7 +155,7 @@ func BenchmarkGetAllocs(b *testing.B) {
 	defer cancel()
 
 	backend := repository.NewBackend(ctx, cfg)
-	db := lru.NewStorage(ctx, cfg, backend)
+	db := NewStorage(ctx, cfg, backend)
 
 	entry := mock.GenerateEntryPointersConsecutive(cfg, backend, path, 1)[0]
 	db.Set(entry)
@@ -165,7 +171,7 @@ func BenchmarkSetAllocs(b *testing.B) {
 	defer cancel()
 
 	backend := repository.NewBackend(ctx, cfg)
-	db := lru.NewStorage(ctx, cfg, backend)
+	db := NewStorage(ctx, cfg, backend)
 
 	entry := mock.GenerateEntryPointersConsecutive(cfg, backend, path, 1)[0]
 

@@ -193,8 +193,14 @@ func (d *Dump) Load(ctx context.Context) error {
 					atomic.AddInt32(&errorNum, 1)
 					continue
 				}
-				d.storage.Set(model.NewVersionPointer(entry)).Release()
-				atomic.AddInt32(&successNum, 1)
+				if persistedEntry, wasPersisted := d.storage.Set(model.NewVersionPointer(entry)); wasPersisted {
+					atomic.AddInt32(&successNum, 1)
+					persistedEntry.Release()
+				} else {
+					atomic.AddInt32(&errorNum, 1)
+					log.Error().Msg("[dump] failed to persist entry, not enough memory")
+					persistedEntry.Remove()
+				}
 
 				select {
 				case <-ctx.Done():

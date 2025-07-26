@@ -218,7 +218,8 @@ func (e *Entry) finalize() (freedMem int64) {
 	e.updatedAt = 0
 	e.isCompressed = 0
 	e.revalidator = nil
-	e.lruListElem.Store(nil)
+	lruElem := e.lruListElem.Swap(nil)
+	lruElem.List().FreeElement(lruElem)
 	e.payload.Store(nil)
 	freedMem = e.Weight()
 
@@ -296,13 +297,16 @@ func (e *Entry) IsSameFingerprint(another [16]byte) bool {
 	return subtle.ConstantTimeCompare(e.fingerprint[:], another[:]) == 1
 }
 
-func (e *Entry) IsSameEntry(another *Entry) bool {
-	return subtle.ConstantTimeCompare(e.fingerprint[:], another.fingerprint[:]) == 1 &&
-		e.isPayloadsAreEquals(e.PayloadBytes(), another.PayloadBytes())
+func (e *Entry) IsSamePayload(another *Entry) bool {
+	return e.isPayloadsAreEquals(e.PayloadBytes(), another.PayloadBytes())
 }
 
 func (e *Entry) SetRevalidator(revalidator Revalidator) {
 	e.revalidator = revalidator
+}
+
+func (e *Entry) TouchUpdatedAt() {
+	atomic.StoreInt64(&e.updatedAt, time.Now().Unix())
 }
 
 func (e *Entry) isPayloadsAreEquals(a, b []byte) bool {
@@ -316,6 +320,10 @@ func (e *Entry) isPayloadsAreEquals(a, b []byte) bool {
 	ha := xxh3.Hash(a[:8]) ^ xxh3.Hash(a[len(a)/2:len(a)/2+8]) ^ xxh3.Hash(a[len(a)-8:])
 	hb := xxh3.Hash(b[:8]) ^ xxh3.Hash(b[len(b)/2:len(b)/2+8]) ^ xxh3.Hash(b[len(b)-8:])
 	return ha == hb
+}
+
+func (e *Entry) SwapPayloads(another *Entry) {
+	another.payload.Store(e.payload.Swap(another.payload.Load()))
 }
 
 // SetPayload packs and gzip-compresses the entire payload: Path, Query, QueryHeaders, StatusCode, ResponseHeaders, Body.

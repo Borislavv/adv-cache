@@ -67,7 +67,7 @@ func init() {
 				PerShard: 8,
 			},
 			Eviction: config.Eviction{
-				Policy:    "lru",
+				Enabled:   true,
 				Threshold: 0.9,
 			},
 			Refresh: config.Refresh{

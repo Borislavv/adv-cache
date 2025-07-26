@@ -1,9 +1,9 @@
-package lru
+package storage
 
 import (
 	"context"
 	"github.com/Borislavv/advanced-cache/pkg/config"
-	"github.com/Borislavv/advanced-cache/pkg/storage"
+	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
 	"github.com/rs/zerolog/log"
 	"runtime"
 	"strconv"
@@ -33,12 +33,12 @@ type Evictor interface {
 type Evict struct {
 	ctx             context.Context
 	cfg             *config.Cache
-	db              storage.Storage
-	balancer        Balancer
+	db              Storage
+	balancer        lru.Balancer
 	memoryThreshold int64
 }
 
-func NewEvictor(ctx context.Context, cfg *config.Cache, db storage.Storage, balancer Balancer) *Evict {
+func NewEvictor(ctx context.Context, cfg *config.Cache, db Storage, balancer lru.Balancer) *Evict {
 	return &Evict{
 		ctx:             ctx,
 		cfg:             cfg,
@@ -51,25 +51,30 @@ func NewEvictor(ctx context.Context, cfg *config.Cache, db storage.Storage, bala
 // Run is the main background eviction loop for one worker.
 // Each worker tries to bring Weight usage under the threshold by evicting from most loaded shards.
 func (e *Evict) Run() *Evict {
-	e.runLogger()
-	go func() {
-		t := utils.NewTicker(e.ctx, time.Millisecond*500)
-		for {
-			select {
-			case <-e.ctx.Done():
-				return
-			case <-t:
-				items, freedMem := e.evictUntilWithinLimit()
-				if items > 0 || freedMem > 0 {
-					select {
-					case <-e.ctx.Done():
-						return
-					case evictionStatCh <- EvictionStat{items: items, freedMem: freedMem}:
+	if e.cfg.Cache.Eviction.Enabled {
+		e.runLogger()
+
+		// run evictor itself
+		go func() {
+			t := utils.NewTicker(e.ctx, time.Millisecond*500)
+			for {
+				select {
+				case <-e.ctx.Done():
+					return
+				case <-t:
+					items, freedMem := e.evictUntilWithinLimit()
+					if items > 0 || freedMem > 0 {
+						select {
+						case <-e.ctx.Done():
+							return
+						case evictionStatCh <- EvictionStat{items: items, freedMem: freedMem}:
+						}
 					}
 				}
 			}
-		}
-	}()
+		}()
+	}
+
 	return e
 }
 
@@ -83,7 +88,7 @@ func (e *Evict) shouldEvictRightNow() bool {
 	return e.db.RealMem() >= e.memoryThreshold
 }
 
-// evictUntilWithinLimit repeatedly removes entries from the most loaded Shard (tail of Storage)
+// evictUntilWithinLimit repeatedly removes entries from the most loaded Shard (tail of InMemoryStorage)
 // until Weight drops below threshold or no more can be evicted.
 func (e *Evict) evictUntilWithinLimit() (items int, mem int64) {
 	shardOffset := 0
@@ -94,7 +99,7 @@ func (e *Evict) evictUntilWithinLimit() (items int, mem int64) {
 			shardOffset = 0
 		}
 
-		shard, found := e.balancer.MostLoadedSampled(shardOffset)
+		shard, found := e.balancer.MostLoaded(shardOffset)
 		if !found {
 			continue
 		}

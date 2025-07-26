@@ -76,7 +76,7 @@ func (shard *Shard[V]) Get(key uint64) (val V, ok bool) {
 	shard.RUnlock()
 
 	if ok && item.Acquire() {
-		return item, ok
+		return item, true
 	}
 
 	// not found or hash collision or already removed

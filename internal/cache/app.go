@@ -9,7 +9,6 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/repository"
 	"github.com/Borislavv/advanced-cache/pkg/shutdown"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
-	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
 	"github.com/rs/zerolog/log"
 	"time"
 )
@@ -37,7 +36,7 @@ func NewApp(ctx context.Context, cfg *config.Cache, probe liveness.Prober) (*Cac
 
 	meter := metrics.New()
 	backend := repository.NewBackend(ctx, cfg)
-	db := lru.NewStorage(ctx, cfg, backend)
+	db := storage.NewStorage(ctx, cfg, backend)
 	dumper := storage.NewDumper(cfg, db, backend)
 
 	cacheObj := &Cache{

@@ -110,7 +110,7 @@ type Preallocation struct {
 }
 
 type Eviction struct {
-	Policy    string  `yaml:"policy"`    // at now, it's only "lru" + TinyLFU
+	Enabled   bool    `yaml:"enabled"`
 	Threshold float64 `yaml:"threshold"` // 0.9 means 90%
 }
 

@@ -72,6 +72,7 @@ func GenerateEntryPointersConsecutive(cfg *config.Cache, backend repository.Back
 			panic(err)
 		}
 		entry.SetPayload(path, query, &queryHeaders, &responseHeaders, copiedBodyBytes(i), 200)
+		entry.TouchUpdatedAt()
 
 		res = append(res, model.NewVersionPointer(entry))
 

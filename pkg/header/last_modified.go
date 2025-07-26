@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sync"
 	"time"
+	"unsafe"
 )
 
 var (
@@ -27,14 +28,22 @@ var (
 	}
 )
 
-func SetLastModifiedNetHttp(w http.ResponseWriter, entry *model.VersionPointer) {
-	buf := bufPool.Get().(*[]byte)
+var LastModifiedBufferReleaser = func(buf *[]byte) {
 	*buf = (*buf)[:0]
-
-	*buf = appendLastModifiedHeader(buf, entry.UpdateAt())
-	w.Header().Set(lastModifiedStrKey, string(*buf))
-
 	bufPool.Put(buf)
+}
+
+func SetLastModifiedValueNetHttp(w http.ResponseWriter, v int64) (buf *[]byte, releaseFn func(*[]byte)) {
+	buf = bufPool.Get().(*[]byte)
+
+	*buf = appendLastModifiedHeader(buf, v)
+	w.Header().Set(lastModifiedStrKey, unsafe.String(unsafe.SliceData(*buf), len(*buf)))
+
+	return buf, LastModifiedBufferReleaser
+}
+
+func SetLastModifiedNetHttp(w http.ResponseWriter, entry *model.VersionPointer) {
+	SetLastModifiedValueNetHttp(w, entry.UpdateAt())
 }
 
 func SetLastModifiedFastHttp(r *fasthttp.RequestCtx, entry *model.VersionPointer) {

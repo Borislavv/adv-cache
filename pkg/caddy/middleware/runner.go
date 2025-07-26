@@ -15,17 +15,7 @@ func (m *CacheMiddleware) run(ctx context.Context) error {
 		return err
 	}
 
-	enabled.Store(m.cfg.Cache.Enabled)
-
 	m.setUpCache()
-
-	if err := m.loadDump(); err != nil {
-		log.Error().Err(err).Msg("[dump] failed to load")
-	}
-
-	m.storage.Run()
-	m.evictor.run()
-	m.refresher.run()
 	m.runLoggerMetricsWriter()
 	gc.Run(ctx, m.cfg)
 
