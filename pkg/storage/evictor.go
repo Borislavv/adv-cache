@@ -130,8 +130,13 @@ func (e *Evict) evictUntilWithinLimit() (items int, mem int64) {
 			}
 
 			entryForRemove := el.Value()
+			if !entryForRemove.Acquire() {
+				continue
+			}
+
 			e.db.Remove(entryForRemove)                       // will not be removed right here due to base refCount = 1
 			freedBytes, finalized := entryForRemove.Release() // call real finalize if previous refCount was 1 (current is 0)
+			freedBytes, finalized = entryForRemove.Release()  // call real finalize if previous refCount was 1 (current is 0)
 			EvictTotalRemove.Add(1)
 			if finalized {
 				EvictRemoveHits.Add(1)

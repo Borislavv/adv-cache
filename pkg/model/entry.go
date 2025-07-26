@@ -202,10 +202,10 @@ func (e *Entry) Remove() (freedBytes int64, finalized bool) {
 	if e == nil {
 		return 0, false
 	}
-	if atomic.CompareAndSwapInt64(&e.isDoomed, notDoomed, doomed) {
-		return e.Release()
-	}
-	return 0, false
+
+	atomic.CompareAndSwapInt64(&e.isDoomed, notDoomed, doomed)
+
+	return e.Release()
 }
 
 var Finzalized = &atomic.Int64{}
