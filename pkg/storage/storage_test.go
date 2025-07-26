@@ -2,6 +2,8 @@ package storage
 
 import (
 	"context"
+	"fmt"
+	"github.com/Borislavv/advanced-cache/pkg/list"
 	"github.com/Borislavv/advanced-cache/pkg/model"
 	"testing"
 	"time"
@@ -139,6 +141,8 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 		}
 	})
 	b.StopTimer()
+
+	fmt.Printf("acquired: %d, released: %d\n", list.Acquired.Load(), list.Released.Load())
 }
 
 func BenchmarkGetAllocs(b *testing.B) {
