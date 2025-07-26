@@ -210,11 +210,15 @@ func (e *Entry) Remove() {
 	return
 }
 
+var Finzalized = &atomic.Int64{}
+var NilList = &atomic.Int64{}
+
 // finalize - after this action you cannot use this Entry!
 // if you will, you will receive errors which are extremely hard-debug like "nil pointer dereference" and "non-consistent data into entry"
 // due to the Entry which was returned into pool will be used again in other threads.
 func (e *Entry) finalize() (freedMem int64) {
 	atomic.AddUint64(&e.version, 1)
+	Finzalized.Add(1)
 
 	e.key = 0
 	e.shard = 0
@@ -229,6 +233,8 @@ func (e *Entry) finalize() (freedMem int64) {
 	if lruElem != nil { // nil is possible due to we can remove (finalize) not set yet element (in case when tinyLFU does not admit it)
 		// here is the element has list, it's mean that the element was 'set' sometime and present in some LRU list
 		lruElem.List().Finalize(lruElem)
+	} else {
+		NilList.Add(1)
 	}
 
 	// return back to pool

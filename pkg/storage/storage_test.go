@@ -142,7 +142,18 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 	})
 	b.StopTimer()
 
-	fmt.Printf("acquired: %d, released: %d\n", list.Acquired.Load(), list.Released.Load())
+	//EvictNotFoundMostLoaded = &atomic.Int64{}
+	//EvictListIsZero         = &atomic.Int64{}
+	//EvictNextNotFound       = &atomic.Int64{}
+	//EvictNotAcquired        = &atomic.Int64{}
+	//EvictTotalRemove        = &atomic.Int64{}
+	//EvictRemoveHits         = &atomic.Int64{}
+
+	fmt.Printf("acquired: %d, released: %d, finalized: %d, nilList: %d\n",
+		list.Acquired.Load(), list.Released.Load(), model.Finzalized.Load(), model.NilList.Load())
+
+	fmt.Printf("notFoundMostLoaded: %d, lruListIsEmpty: %d, nextIsNotFound: %d, notAcquired: %d, totalRemove: %d, removeHits: %d\n",
+		EvictNotFoundMostLoaded.Load(), EvictListIsZero.Load(), EvictNextNotFound.Load(), EvictNotAcquired.Load(), EvictTotalRemove.Load(), EvictRemoveHits.Load())
 }
 
 func BenchmarkGetAllocs(b *testing.B) {

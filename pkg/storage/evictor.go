@@ -7,6 +7,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"runtime"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
@@ -88,6 +89,15 @@ func (e *Evict) shouldEvictRightNow() bool {
 	return e.db.RealMem() >= e.memoryThreshold
 }
 
+var (
+	EvictNotFoundMostLoaded = &atomic.Int64{}
+	EvictListIsZero         = &atomic.Int64{}
+	EvictNextNotFound       = &atomic.Int64{}
+	EvictNotAcquired        = &atomic.Int64{}
+	EvictTotalRemove        = &atomic.Int64{}
+	EvictRemoveHits         = &atomic.Int64{}
+)
+
 // evictUntilWithinLimit repeatedly removes entries from the most loaded Shard (tail of InMemoryStorage)
 // until Weight drops below threshold or no more can be evicted.
 func (e *Evict) evictUntilWithinLimit() (items int, mem int64) {
@@ -101,10 +111,12 @@ func (e *Evict) evictUntilWithinLimit() (items int, mem int64) {
 
 		shard, found := e.balancer.MostLoaded(shardOffset)
 		if !found {
+			EvictNotFoundMostLoaded.Add(1)
 			continue
 		}
 
 		if shard.LruList().Len() == 0 {
+			EvictListIsZero.Add(1)
 			continue
 		}
 
@@ -113,16 +125,20 @@ func (e *Evict) evictUntilWithinLimit() (items int, mem int64) {
 		for e.shouldEvictRightNow() {
 			el, ok := shard.LruList().Next(offset)
 			if !ok {
+				EvictNextNotFound.Add(1)
 				break // end of the LRU list, move to next
 			}
 
 			entry := el.Value()
 			if !entry.Acquire() {
+				EvictNotAcquired.Add(1)
 				continue // already marked as doomed but not removed yet, skip it
 			}
 
 			freedMem, isHit := e.db.Remove(entry)
+			EvictTotalRemove.Add(1)
 			if isHit {
+				EvictRemoveHits.Add(1)
 				items++
 				evictions++
 				mem += freedMem

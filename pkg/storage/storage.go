@@ -146,13 +146,18 @@ func (s *InMemoryStorage) Set(new *model.VersionPointer) (entry *model.VersionPo
 	}
 
 	// check whether we are still into memory limit
-	if s.ShouldEvict() { // if so then check admission by tinyLFU
-		if victim, admit := s.balancer.FindVictim(new.ShardKey()); !admit || !s.tinyLFU.Admit(new, victim) {
-			new.Remove() // new entry was not admitted, remove it.
-			// it was not persisted, tell it as is
-			return new, false
-		}
-	}
+	//if s.ShouldEvict() { // if so then check admission by tinyLFU
+	//	fmt.Println("not admit")
+	//	if victim, admit := s.balancer.FindVictim(new.ShardKey()); !admit || !s.tinyLFU.Admit(new, victim) {
+	//		new.Remove() // new entry was not admitted, remove it.
+	//		// it was not persisted, tell it as is
+	//		return new, false
+	//	}
+	//}
+
+	//if s.ShouldEvict() {
+	//	fmt.Printf("cur: %v, threshold: %v\n", utils.FmtMem(s.Mem()), utils.FmtMem(s.memoryThreshold))
+	//}
 
 	// insert a new one Entry into map
 	s.shardedMap.Set(key, new)
