@@ -51,21 +51,21 @@ func (shard *Shard[V]) Len() int64 {
 
 // Set inserts or updates a value by key, resets refCount, and updates counters.
 // Returns a releaser for the inserted value.
-func (shard *Shard[V]) Set(key uint64, new V) (ok bool) {
+func (shard *Shard[V]) Set(key uint64, new V) {
 	shard.Lock()
-	old := shard.items[key]
+	old, found := shard.items[key]
 	shard.items[key] = new
 	shard.Unlock()
 
-	if old.Acquire() {
+	if found {
 		atomic.AddInt64(&shard.mem, new.Weight()-old.Weight())
-		old.Remove()
+		if old.Acquire() {
+			old.Remove()
+		}
 	} else {
 		atomic.AddInt64(&shard.len, 1)
 		atomic.AddInt64(&shard.mem, new.Weight())
 	}
-
-	return true
 }
 
 // Get retrieves a value and returns a releaser for it, incrementing its refCount.

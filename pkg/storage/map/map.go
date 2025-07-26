@@ -51,8 +51,8 @@ func MapShardKey(key uint64) uint64 {
 }
 
 // Set inserts or updates a value in the correct shard. Returns a releaser for ref counting.
-func (smap *Map[V]) Set(key uint64, value V) (ok bool) {
-	return smap.Shard(key).Set(key, value)
+func (smap *Map[V]) Set(key uint64, value V) {
+	smap.Shard(key).Set(key, value)
 }
 
 // Get fetches a value and its releaser from the correct shard.

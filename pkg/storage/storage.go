@@ -116,45 +116,49 @@ func (s *InMemoryStorage) Rand() (entry *model.VersionPointer, ok bool) {
 
 // Set inserts or updates a response in the cache, updating Weight usage and InMemoryStorage position.
 // On 'wasPersisted=true' must be called Entry.Finalize, otherwise Entry.Finalize.
-func (s *InMemoryStorage) Set(new *model.VersionPointer) (entry *model.VersionPointer, wasPersisted bool) {
-	// Track access frequency
+func (s *InMemoryStorage) Set(new *model.VersionPointer) (entry *model.VersionPointer, persisted bool) {
+	// increase access counter of tinyLFU
 	s.tinyLFU.Increment(new.MapKey())
 
-	// Attempt to find entry in cache, if found then touch and return it
-	if old, found := s.shardedMap.Get(new.MapKey()); found {
+	key := new.MapKey() // try to find existing entry
+	if old, found := s.shardedMap.Get(key); found {
 		if old.IsSameFingerprint(new.Fingerprint()) {
-			// keys matched totally (collision are excluded)
-
+			// entry was found, no hash collisions, fingerprint check has passed, next check payload
 			if old.IsSamePayload(new.Entry) {
+				// nothing change, an existing entry has the same payload, just up the element in LRU list
 				s.touch(old)
 			} else {
+				// payload has changes, updated it and up the element in LRU list of course
 				s.update(old, new)
 			}
 
+			// remove new due to it does not use anymore (it was swapped with existing one)
 			if new.Entry != old.Entry {
 				new.Remove()
 			}
 
+			// return old and say that it's already persisted
 			return old, true
-		} else {
-			// hash collision case (rewrite entry)
-			if new.Entry != old.Entry {
-				old.Remove()
-			}
 		}
+
+		// hash collision found, remove collision element and try to set new one
+		s.shardedMap.Remove(key)
 	}
 
-	// Admission control: if memory is over threshold, evaluate before inserting
-	if s.ShouldEvict() {
-		if victim, found := s.balancer.FindVictim(new.ShardKey()); !found || !s.tinyLFU.Admit(new, victim) {
-			// Cases that answer the question: why are we here?
-			// 1. Victim not found (cannot write more than the given memory limit)
-			// 2. New element is rarer than victim, skip insertion
+	// check whether we are still into memory limit
+	if s.ShouldEvict() { // if so then check admission by tinyLFU
+		if victim, admit := s.balancer.FindVictim(new.ShardKey()); !admit || !s.tinyLFU.Admit(new, victim) {
+			new.Remove() // new entry was not admitted, remove it.
+			// it was not persisted, tell it as is
 			return new, false
 		}
 	}
 
-	s.set(new)
+	// insert a new one Entry into map
+	s.shardedMap.Set(key, new)
+	// insert a new one Entry LRU element into LRU list
+	s.balancer.Push(new)
+
 	return new, true
 }
 
@@ -197,14 +201,6 @@ func (s *InMemoryStorage) update(existing, new *model.VersionPointer) {
 	existing.SwapPayloads(new.Entry)
 	existing.TouchUpdatedAt()
 	s.balancer.Update(existing)
-}
-
-// set inserts a new response, updates Weight usage and registers in balancer.
-func (s *InMemoryStorage) set(new *model.VersionPointer) (ok bool) {
-	if ok = s.shardedMap.Set(new.MapKey(), new); ok {
-		s.balancer.Push(new)
-	}
-	return ok
 }
 
 // runLogger emits detailed stats about evictions, Weight, and GC activity every 5 seconds if debugging is enabled.
