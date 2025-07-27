@@ -70,9 +70,9 @@ func (s *InMemoryStorage) Rand() (entry *model.VersionPointer, ok bool) {
 
 // Get retrieves a response by request and bumps its InMemoryStorage position.
 // Returns: (response, releaser, found).
-func (s *InMemoryStorage) Get(req *model.Entry) (entry *model.VersionPointer, ok bool) {
-	entry, ok = s.shardedMap.Get(req.MapKey())
-	if !ok || !entry.Acquire() {
+func (s *InMemoryStorage) Get(req *model.Entry) (entry *model.VersionPointer, found bool) {
+	entry, found = s.shardedMap.Get(req.MapKey())
+	if !found || !entry.Acquire() {
 		return nil, false
 	}
 	if !entry.IsSameFingerprint(req.Fingerprint()) {
@@ -89,7 +89,6 @@ func (s *InMemoryStorage) Set(new *model.VersionPointer) (entry *model.VersionPo
 	if !new.Acquire() {
 		return nil, false
 	}
-	defer new.Release()
 
 	key := new.MapKey()
 
@@ -97,34 +96,37 @@ func (s *InMemoryStorage) Set(new *model.VersionPointer) (entry *model.VersionPo
 	s.tinyLFU.Increment(key)
 
 	// try to find existing entry
-	if old, found := s.shardedMap.Get(key); found && old.Acquire() {
+	if old, found := s.shardedMap.Get(key); found {
 		if new.Entry == old.Entry {
-			return old, true
+			return new, true
 		}
 
-		if old.IsSameFingerprint(new.Fingerprint()) {
-			// entry was found, no hash collisions, fingerprint check has passed, next check payload
-			if old.IsSamePayload(new.Entry) {
-				// nothing change, an existing entry has the same payload, just up the element in LRU list
-				s.touch(old)
-			} else {
-				// payload has changes, updated it and up the element in LRU list of course
-				s.update(old, new)
+		if old.Acquire() {
+			if old.IsSameFingerprint(new.Fingerprint()) {
+				// entry was found, no hash collisions, fingerprint check has passed, next check payload
+				if old.IsSamePayload(new.Entry) {
+					// nothing change, an existing entry has the same payload, just up the element in LRU list
+					s.touch(old)
+				} else {
+					// payload has changes, updated it and up the element in LRU list of course
+					s.update(old, new)
+				}
+
+				new.Release()
+				// return old and say that it's already persisted
+				return old, true
 			}
 
-			// return old and say that it's already persisted
-			return old, true
+			// hash collision found, remove collision element and try to set new one
+			s.Remove(old)
 		}
-
-		// hash collision found, remove collision element and try to set new one
-		s.Remove(old)
 	}
 
 	// check whether we are still into memory limit
 	//if s.ShouldEvict() { // if so then check admission by tinyLFU
 	//	fmt.Println("not admit")
 	//	if victim, admit := s.balancer.FindVictim(new.ShardKey()); !admit || !s.tinyLFU.Admit(new, victim) {
-	//		new.Remove() // new entry was not admitted, remove it.
+	//		new.Release() // new entry was not admitted, remove it.
 	//		// it was not persisted, tell it as is
 	//		return new, false
 	//	}
@@ -142,8 +144,8 @@ func (s *InMemoryStorage) Set(new *model.VersionPointer) (entry *model.VersionPo
 	return new, true
 }
 
-func (s *InMemoryStorage) Remove(entry *model.VersionPointer) (freedBytes int64, isHit bool) {
-	return s.shardedMap.Remove(entry.MapKey())
+func (s *InMemoryStorage) Remove(entry *model.VersionPointer) {
+	s.shardedMap.Remove(entry.MapKey())
 }
 
 func (s *InMemoryStorage) Len() int64 {

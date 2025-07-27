@@ -57,8 +57,16 @@ func (e *Entry) Init() *Entry {
 
 func drainEntryPool() *Entry {
 	e := entriesPool.Get().(*Entry)
+
 	atomic.StoreInt64(&e.isDoomed, 0)
 	atomic.StoreInt64(&e.refCount, 1)
+
+	if !e.Acquire(e.Version()) {
+		panic("drainEntryPool: cannot acquire entry from pool " + fmt.Sprintf(
+			"(version: %d, refCount: %d, isDoomed: %v, acq: %d, rel: %d, fin: %d)",
+			e.Version(), e.RefCount(), e.IsDoomed(), Acquired.Load(), Released.Load(), Finalized.Load(),
+		))
+	}
 	return e
 }
 
@@ -161,6 +169,13 @@ const (
 	doomed    = 1
 )
 
+var (
+	Acquired  = &atomic.Int64{}
+	Released  = &atomic.Int64{}
+	Removed   = &atomic.Int64{}
+	Finalized = &atomic.Int64{}
+)
+
 func (e *Entry) Acquire(expectedVersion uint64) bool {
 	if e == nil {
 		return false
@@ -171,30 +186,35 @@ func (e *Entry) Acquire(expectedVersion uint64) bool {
 			return false
 		}
 		ref := atomic.LoadInt64(&e.refCount)
-		if ref < 0 {
+		if ref <= doomedRefCount {
 			return false
 		}
 		if atomic.CompareAndSwapInt64(&e.refCount, ref, ref+1) {
 			// double-check Version to catch finalize()
-			if atomic.LoadUint64(&e.version) != expectedVersion {
-				e.Release()
+			curVersion = atomic.LoadUint64(&e.version)
+			if curVersion != expectedVersion {
+				panic("version does not match after CAS of refCount")
 				return false
 			}
+			Acquired.Add(1)
 			return true
 		}
 	}
 }
 
-func (e *Entry) Release() {
+func (e *Entry) Release() (freedBytes int64, finalized bool) {
 	if e == nil {
 		return
 	}
+	Released.Add(1)
 	for {
-		if old := atomic.LoadInt64(&e.refCount); atomic.CompareAndSwapInt64(&e.refCount, old, old-1) {
-			if old == preDoomedCount && atomic.LoadInt64(&e.isDoomed) == doomed {
-				if atomic.CompareAndSwapInt64(&e.refCount, zeroRefCount, doomedRefCount) {
-					e.finalize()
-					return
+		if old := atomic.LoadInt64(&e.refCount); old != doomedRefCount {
+			if atomic.CompareAndSwapInt64(&e.refCount, old, old-1) {
+				if old == preDoomedCount && atomic.LoadInt64(&e.isDoomed) == doomed {
+					if atomic.CompareAndSwapInt64(&e.refCount, zeroRefCount, doomedRefCount) {
+						Finalized.Add(1)
+						return e.finalize(), true
+					}
 				}
 			}
 			return
@@ -202,15 +222,13 @@ func (e *Entry) Release() {
 	}
 }
 
-func (e *Entry) Remove() {
+func (e *Entry) Remove() (freedBytes int64, finalized bool) {
 	if e == nil {
 		return
 	}
-	if atomic.CompareAndSwapInt64(&e.isDoomed, notDoomed, doomed) {
-		e.Release()
-		return
-	}
-	return
+	Removed.Add(1)
+	atomic.CompareAndSwapInt64(&e.isDoomed, notDoomed, doomed)
+	return e.Release()
 }
 
 // finalize - after this action you cannot use this Entry!
@@ -722,9 +740,9 @@ func (e *Entry) getFilteredAndSortedKeyHeadersFastHttp(r *fasthttp.RequestCtx) (
 	allowed := e.rule.CacheKey.HeadersMap
 
 	n := 0
-	r.Request.Header.VisitAll(func(k, v []byte) {
+	r.Request.Header.All()(func(k, v []byte) bool {
 		if _, ok := allowed[unsafe.String(unsafe.SliceData(k), len(k))]; !ok {
-			return
+			return true
 		}
 
 		if n < cap(*out) {
@@ -740,6 +758,8 @@ func (e *Entry) getFilteredAndSortedKeyHeadersFastHttp(r *fasthttp.RequestCtx) (
 			*out = append(*out, [2][]byte{k, v})
 		}
 		n++
+
+		return true
 	})
 
 	*out = (*out)[:n]

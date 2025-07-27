@@ -93,6 +93,11 @@ func (d *Dump) Dump(ctx context.Context) error {
 
 			bw := bufio.NewWriterSize(f, 512*1024)
 			shard.Walk(ctx, func(key uint64, entry *model.VersionPointer) bool {
+				if !entry.Acquire() {
+					return true
+				}
+				defer entry.Release()
+
 				data, releaser := entry.ToBytes()
 				defer releaser()
 
@@ -193,7 +198,11 @@ func (d *Dump) Load(ctx context.Context) error {
 					atomic.AddInt32(&errorNum, 1)
 					continue
 				}
-				d.storage.Set(model.NewVersionPointer(entry)).Release()
+				if inserted, persisted := d.storage.Set(model.NewVersionPointer(entry)); persisted {
+					inserted.Release()
+				} else {
+					inserted.Remove()
+				}
 				atomic.AddInt32(&successNum, 1)
 
 				select {

@@ -2,8 +2,9 @@ package storage
 
 import (
 	"context"
+	"fmt"
+	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
-	"runtime"
 	"testing"
 	"time"
 
@@ -13,7 +14,13 @@ import (
 	"github.com/rs/zerolog"
 )
 
-const maxEntriesNum = 1_000_000
+const (
+	maxEntriesNum = 1_000_000
+)
+
+var (
+	path = []byte("/api/v2/pagedata")
+)
 
 var cfg *config.Cache
 
@@ -78,55 +85,67 @@ func init() {
 	zerolog.SetGlobalLevel(zerolog.ErrorLevel)
 }
 
-func reportMemAndAdvancedCache(b *testing.B, usageMem int64) {
-	var mem runtime.MemStats
-	runtime.ReadMemStats(&mem)
-	b.ReportMetric(float64(mem.Alloc)/1024/1024, "allocsMB")
-	b.ReportMetric(float64(usageMem)/1024/1024, "advancedCacheMB")
-}
-
-func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	backend := repository.NewBackend(ctx, cfg)
-	db := lru.NewStorage(ctx, cfg, backend)
-
-	numEntries := b.N + 1
-	if numEntries > maxEntriesNum {
-		numEntries = maxEntriesNum
-	}
-
-	entries := mock.GenerateEntryPointersConsecutive(cfg, backend, path, numEntries)
-	sets := entries[:0]
-	for _, resp := range entries {
-		if entry, ok := db.Set(resp); ok {
-			sets = append(sets, entry)
-		} else {
-			resp.Remove()
-		}
-	}
-	entries = sets
-	length := len(entries)
-
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		i := 0
-		for pb.Next() {
-			for j := 0; j < 1000; j++ {
-				if entry, found := db.Get(entries[(i*j)%length].Entry); found {
-					entry.Release()
-				}
-			}
-			i += 1000
-		}
-	})
-	b.StopTimer()
-
-	for _, entry := range entries {
-		entry.Remove()
-	}
-}
+//func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
+//	ctx, cancel := context.WithCancel(context.Background())
+//	defer cancel()
+//
+//	backend := repository.NewBackend(ctx, cfg)
+//	db := lru.NewStorage(ctx, cfg, backend)
+//
+//	numEntries := b.N + 1
+//	if numEntries > maxEntriesNum {
+//		numEntries = maxEntriesNum
+//	}
+//
+//	entries := mock.GenerateEntryPointersConsecutive(cfg, backend, path, numEntries)
+//	sets := entries[:0]
+//	for _, resp := range entries {
+//		if entry, ok := db.Set(resp); ok {
+//			sets = append(sets, entry)
+//			entry.Release()
+//		} else {
+//			resp.Remove()
+//		}
+//	}
+//	entries = sets
+//	length := len(entries)
+//
+//	b.ResetTimer()
+//	b.RunParallel(func(pb *testing.PB) {
+//		i := 0
+//		for pb.Next() {
+//			for j := 0; j < 1000; j++ {
+//				if entry, found := db.Get(entries[(i*j)%length].Entry); found {
+//					entry.Release()
+//				}
+//			}
+//			i += 1000
+//		}
+//	})
+//	b.StopTimer()
+//
+//	//Acquired  = &atomic.Int64{}
+//	//Released  = &atomic.Int64{}
+//	//Finalized = &atomic.Int64{}
+//
+//	i := 0
+//	for _, entry := range entries {
+//		if i > 25 {
+//			break
+//		}
+//		entry.Remove()
+//		fmt.Printf(
+//			"BenchmarkReadFromStorage1000TimesPerIter[%d]: version: %d, refCount: %d, isDoomed: %v\n",
+//			b.N, entry.Version(), entry.RefCount(), entry.IsDoomed(),
+//		)
+//		i++
+//	}
+//
+//	fmt.Printf(
+//		"BenchmarkReadFromStorage1000TimesPerIter[%d]: acq: %d, rel: %d, fin: %d\n",
+//		b.N, model.Acquired.Load(), model.Released.Load(), model.Finalized.Load(),
+//	)
+//}
 
 func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -148,41 +167,98 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 		i := 0
 		for pb.Next() {
 			for j := 0; j < 1000; j++ {
-				db.Set(entries[(i*j)%length])
+				if inserted, persisted := db.Set(entries[(i*j)%length]); persisted {
+					inserted.Release()
+				}
 			}
 			i += 1000
 		}
 	})
 	b.StopTimer()
+
+	fmt.Printf(
+		"before-remove-BenchmarkWriteIntoStorage1000TimesPerIter[%d]: acq: %d, rel: %d, rem: %d, fin: %d\n",
+		b.N, model.Acquired.Load(), model.Released.Load(), model.Removed.Load(), model.Finalized.Load(),
+	)
+
+	i := 0
+	for _, entry := range entries {
+		entry.Remove()
+		if i > 5 {
+			continue
+		}
+		fmt.Printf(
+			"BenchmarkWriteIntoStorage1000TimesPerIter[%d]: version: %d, refCount: %d, isDoomed: %v\n",
+			b.N, entry.Version(), entry.RefCount(), entry.IsDoomed(),
+		)
+		i++
+	}
+
+	fmt.Printf(
+		"after-remove-BenchmarkWriteIntoStorage1000TimesPerIter[%d]: acq: %d, rel: %d, rem: %d, fin: %d\n",
+		b.N, model.Acquired.Load(), model.Released.Load(), model.Removed.Load(), model.Finalized.Load(),
+	)
 }
 
-func BenchmarkGetAllocs(b *testing.B) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	backend := repository.NewBackend(ctx, cfg)
-	db := lru.NewStorage(ctx, cfg, backend)
-
-	entry := mock.GenerateEntryPointersConsecutive(cfg, backend, path, 1)[0]
-	db.Set(entry)
-
-	allocs := testing.AllocsPerRun(100_000, func() {
-		db.Get(entry.Entry)
-	})
-	b.ReportMetric(allocs, "allocs/op")
-}
-
-func BenchmarkSetAllocs(b *testing.B) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	backend := repository.NewBackend(ctx, cfg)
-	db := lru.NewStorage(ctx, cfg, backend)
-
-	entry := mock.GenerateEntryPointersConsecutive(cfg, backend, path, 1)[0]
-
-	allocs := testing.AllocsPerRun(100_000, func() {
-		db.Set(entry)
-	})
-	b.ReportMetric(allocs, "allocs/op")
-}
+//func BenchmarkGetAllocs(b *testing.B) {
+//	ctx, cancel := context.WithCancel(context.Background())
+//	defer cancel()
+//
+//	backend := repository.NewBackend(ctx, cfg)
+//	db := lru.NewStorage(ctx, cfg, backend)
+//
+//	entry := mock.GenerateEntryPointersConsecutive(cfg, backend, path, 1)[0]
+//	if _, persisted := db.Set(entry); !persisted {
+//		panic("failed to persist entry")
+//	} else {
+//		entry.Release()
+//	}
+//
+//	b.StartTimer()
+//	allocs := testing.AllocsPerRun(100_000, func() {
+//		if cachedValue, found := db.Get(entry.Entry); found {
+//			cachedValue.Release()
+//		}
+//	})
+//	b.StopTimer()
+//	b.ReportMetric(allocs, "allocs/op")
+//
+//	entry.Remove()
+//
+//	time.Sleep(time.Second)
+//
+//	fmt.Printf(
+//		"BenchmarkGetAllocs[%d]: version: %d, refCount: %d, isDoomed: %v, acq: %d, rel: %d, fin: %d\n",
+//		b.N, entry.Version(), entry.RefCount(), entry.IsDoomed(), model.Acquired.Load(), model.Released.Load(), model.Finalized.Load(),
+//	)
+//}
+//
+//func BenchmarkSetAllocs(b *testing.B) {
+//	ctx, cancel := context.WithCancel(context.Background())
+//	defer cancel()
+//
+//	backend := repository.NewBackend(ctx, cfg)
+//	db := lru.NewStorage(ctx, cfg, backend)
+//
+//	entry := mock.GenerateEntryPointersConsecutive(cfg, backend, path, 1)[0]
+//
+//	b.StartTimer()
+//	allocs := testing.AllocsPerRun(100_000, func() {
+//		if inserted, persisted := db.Set(entry); !persisted {
+//			panic("failed to persist entry")
+//		} else {
+//			inserted.Release()
+//		}
+//	})
+//	b.StopTimer()
+//	b.ReportMetric(allocs, "allocs/op")
+//
+//	entry.Remove()
+//
+//	time.Sleep(time.Second)
+//
+//	fmt.Printf(
+//		"BenchmarkSetAllocs[%d]: version: %d, refCount: %d, isDoomed: %v, acq: %d, rel: %d, fin: %d\n",
+//		b.N, entry.Version(), entry.RefCount(), entry.IsDoomed(), model.Acquired.Load(), model.Released.Load(), model.Finalized.Load(),
+//	)
+//}

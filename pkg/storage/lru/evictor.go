@@ -92,7 +92,7 @@ func (e *Evict) evictUntilWithinLimit() (items int, mem int64) {
 			shardOffset = 0
 		}
 
-		shard, found := e.balancer.MostLoadedSampled(shardOffset)
+		shard, found := e.balancer.MostLoaded(shardOffset)
 		if !found {
 			continue
 		}
@@ -114,7 +114,9 @@ func (e *Evict) evictUntilWithinLimit() (items int, mem int64) {
 				continue // already marked as doomed but not removed yet, skip it
 			}
 
-			freedMem, isHit := e.db.Remove(entry)
+			e.db.Remove(entry)
+
+			freedMem, isHit := entry.Remove()
 			if isHit {
 				items++
 				evictions++
@@ -123,7 +125,6 @@ func (e *Evict) evictUntilWithinLimit() (items int, mem int64) {
 				fmt.Printf("-----> remove: refCount=%d, isDoomed=%v\n", entry.RefCount(), entry.IsDoomed())
 			}
 
-			entry.Release()
 			offset++
 		}
 	}

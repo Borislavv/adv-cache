@@ -14,7 +14,11 @@ func LoadMocks(ctx context.Context, config *config.Cache, backend repository.Bac
 		defer log.Info().Msg("[dump] mocked data finished loading")
 		path := []byte("/api/v2/pagedata")
 		for entry := range mock.StreamEntryPointersConsecutive(ctx, config, backend, path, num) {
-			storage.Set(entry)
+			if inserted, persisted := storage.Set(entry); persisted {
+				inserted.Release()
+			} else {
+				inserted.Remove()
+			}
 		}
 	}()
 }
