@@ -163,47 +163,52 @@ func (e *Entry) ShardKey() uint64 { return e.shard }
 // Similarly, refCount is limited to 2^31‑1 concurrent holders. Such a high number of concurrent users is
 // unrealistic. These limits should be documented and assumed safe for typical cache usage.
 const (
-	refCountBits = 31
-	doomedBitPos = refCountBits
-	doomedMask   = 1 << doomedBitPos
-	refCountMask = doomedMask - 1
-	versionShift = doomedBitPos + 1
+	maxRefCount    = (1 << 31) - 2 // 0x7FFFFFFE — максимум допустимый
+	doomedRefCount = (1 << 31) - 1 // 0x7FFFFFFF — зарезервированное значение
+	maskRefCount   = (1 << 31) - 1 // 0x7FFFFFFF
+	maskIsDoomed   = 1 << 31
+	maskVersion    = ^uint64(0) << 32
 )
 
 // packState combines version, doomed flag, and refCount into a single uint64
-func packState(version uint32, doomed bool, refCount uint32) uint64 {
-	if refCount > refCountMask {
-		panic("refCount overflow: too many concurrent holders")
+func packState(version uint32, isDoomed bool, refCount uint32) uint64 {
+	if refCount >= doomedRefCount {
+		version++
+		refCount = 0
+		isDoomed = false
 	}
-	state := uint64(version)<<versionShift | uint64(refCount)
-	if doomed {
-		state |= doomedMask
+	state := (uint64(version) << 32) | uint64(refCount)
+	if isDoomed {
+		state |= maskIsDoomed
 	}
 	return state
 }
 
 // unpackState extracts version, doomed flag, and refCount from packed state
-func unpackState(s uint64) (version uint32, doomed bool, refCount uint32) {
-	refCount = uint32(s & refCountMask)
-	doomed = (s & doomedMask) != 0
-	version = uint32(s >> versionShift)
+func unpackState(state uint64) (version uint32, isDoomed bool, refCount uint32) {
+	version = uint32(state >> 32)
+	isDoomed = (state & maskIsDoomed) != 0
+	refCount = uint32(state & maskRefCount)
 	return
 }
 
-// Entry.state must be initialized to packState(1, false, 1)
-
 // Acquire attempts to increment refCount if version matches and not doomed.
-// After successful Acquire, refCount always increases by 1. If refCount would exceed its 31-bit limit,
+// After successful Acquire, refCount always increases by 1. If refCount will be exceeded its 31-bit limit,
 // packState will panic("refCount overflow: too many concurrent holders"), indicating a design error
 // (too many simultaneous holders).
 func (e *Entry) Acquire(expectedVersion uint32) bool {
 	for {
 		old := atomic.LoadUint64(&e.state)
 		ver, doomed, ref := unpackState(old)
-		if ver != expectedVersion || doomed {
+
+		if ver != expectedVersion || doomed || ref == doomedRefCount {
 			return false
 		}
 		newRef := ref + 1
+		if newRef >= doomedRefCount {
+			log.Warn().Msgf("too many '%d' concurrent readers acquired, failed to acquire a new one", newRef)
+			return false
+		}
 		newState := packState(ver, false, newRef)
 		if atomic.CompareAndSwapUint64(&e.state, old, newState) {
 			return true
