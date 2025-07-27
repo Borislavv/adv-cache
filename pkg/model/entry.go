@@ -41,29 +41,16 @@ type Entry struct {
 	payload      *atomic.Pointer[[]byte]
 	lruListElem  *atomic.Pointer[list.Element[*VersionPointer]]
 	revalidator  Revalidator
-	state        uint64
 	updatedAt    int64 // atomic: unix nano (last update was at)
 	isCompressed int64 // atomic: bool as int64
-	// (when you already changed an object in storage but someone just now try to do Acquire on already Finalized and reused object)
-}
-
-var statePool = &sync.Pool{New: func() any { return new(State) }}
-
-type State struct {
-	version  uint64
-	refCount int64
-	isDoomed bool
+	state        uint64
+	// (when you already changed an object in storage but someone just now try to do Acquire on already finalized and reused object)
 }
 
 func (e *Entry) Init() *Entry {
 	e.payload = &atomic.Pointer[[]byte]{}
 	e.lruListElem = &atomic.Pointer[list.Element[*VersionPointer]]{}
-	e.state = packState(0, false, 0)
 	return e
-}
-
-func drainEntryPool() *Entry {
-	return entriesPool.Get().(*Entry)
 }
 
 // NewEntryNetHttp accepts path, query and request headers as bytes slices.
@@ -109,10 +96,6 @@ func IsRouteWasNotFound(err error) bool {
 	return errors.Is(err, ruleNotFoundError)
 }
 
-func NewEmptyEntry() *Entry {
-	return drainEntryPool()
-}
-
 func NewEntryManual(cfg *config.Cache, path, query []byte, headers *[][2][]byte, revalidator Revalidator) (*Entry, error) {
 	rule := MatchRule(cfg, path)
 	if rule == nil {
@@ -156,158 +139,91 @@ func NewEntryFromField(
 func (e *Entry) MapKey() uint64   { return e.key }
 func (e *Entry) ShardKey() uint64 { return e.shard }
 
-// Atomic packed state layout:
-// [ version (32 bits) | isDoomed flag (1 bit) | refCount (31 bits) ]
-// NOTE: version is a 32‑bit counter and may overflow if an Entry is reused more than 2^32 times,
-// which is extremely unlikely in production. If overflow occurs, logic may break (ABA protection may fail).
-// Similarly, refCount is limited to 2^31‑1 concurrent holders. Such a high number of concurrent users is
-// unrealistic. These limits should be documented and assumed safe for typical cache usage.
+func drainEntryPool() *Entry {
+	e := entriesPool.Get().(*Entry)
+
+	_, version, _, _ := e.Unpack()
+	atomic.StoreUint64(&e.state, e.Pack(version, false, 1))
+
+	return e
+}
+
 const (
-	maxRefCount    = (1 << 31) - 2 // 0x7FFFFFFE — максимум допустимый
-	doomedRefCount = (1 << 31) - 1 // 0x7FFFFFFF — зарезервированное значение
-	maskRefCount   = (1 << 31) - 1 // 0x7FFFFFFF
-	maskIsDoomed   = 1 << 31
-	maskVersion    = ^uint64(0) << 32
+	// refCount values
+	preDoomedRefCount = 1
+	doomedTrueValue   = 1
 )
 
-// packState combines version, doomed flag, and refCount into a single uint64
-func packState(version uint32, isDoomed bool, refCount uint32) uint64 {
-	if refCount >= doomedRefCount {
-		version++
-		refCount = 0
-		isDoomed = false
+func (e *Entry) Acquire(expectedVersion uint32) bool {
+	if e != nil {
+		for {
+			if oldState, mayBeAcquired := e.IsAcquirable(expectedVersion); mayBeAcquired {
+				if newState, wasIncremented := e.IncRefCount(oldState); wasIncremented {
+					if atomic.CompareAndSwapUint64(&e.state, oldState, newState) {
+						return true
+					}
+				}
+				continue
+			}
+			return false
+		}
 	}
-	state := (uint64(version) << 32) | uint64(refCount)
-	if isDoomed {
-		state |= maskIsDoomed
-	}
-	return state
+	return false
 }
 
-// unpackState extracts version, doomed flag, and refCount from packed state
-func unpackState(state uint64) (version uint32, isDoomed bool, refCount uint32) {
-	version = uint32(state >> 32)
-	isDoomed = (state & maskIsDoomed) != 0
-	refCount = uint32(state & maskRefCount)
+func (e *Entry) Release(remove bool) (freedBytes int64, finalized bool) {
+	if e != nil {
+		if remove {
+			if e.IsFinalizing(refCount) {
+				return
+			}
+			atomic.StoreInt64(&e.isDoomed, doomedTrueValue)
+		}
+		for {
+			oldState, _, isDoomed, refCount := e.Unpack()
+			if e.IsFinalizing(refCount) {
+				return
+			}
+
+			if e.NeedFinalize(isDoomed, refCount) {
+				newState := e.MarkAsFinalizable(oldState)
+				if atomic.CompareAndSwapUint64(&e.state, oldState, newState) {
+					return e.finalize(), true
+				}
+				continue
+			}
+
+			if newState, wasDecremented := e.DecRefCount(oldState); wasDecremented {
+				if atomic.CompareAndSwapUint64(&e.state, oldState, newState) {
+					return
+				}
+				continue
+			}
+
+			return
+		}
+	}
 	return
 }
-
-// Acquire attempts to increment refCount if version matches and not doomed.
-// After successful Acquire, refCount always increases by 1. If refCount will be exceeded its 31-bit limit,
-// packState will panic("refCount overflow: too many concurrent holders"), indicating a design error
-// (too many simultaneous holders).
-func (e *Entry) Acquire(expectedVersion uint32) bool {
-	for {
-		old := atomic.LoadUint64(&e.state)
-		ver, doomed, ref := unpackState(old)
-
-		if ver != expectedVersion || doomed || ref == doomedRefCount {
-			return false
-		}
-		newRef := ref + 1
-		if newRef >= doomedRefCount {
-			log.Warn().Msgf("too many '%d' concurrent readers acquired, failed to acquire a new one", newRef)
-			return false
-		}
-		newState := packState(ver, false, newRef)
-		if atomic.CompareAndSwapUint64(&e.state, old, newState) {
-			return true
-		}
-	}
-}
-
-// Release decrements refCount and finalizes if this was last holder and doomed flag set
-func (e *Entry) Release() (freedBytes int64, finalized bool) {
-	for {
-		old := atomic.LoadUint64(&e.state)
-		ver, doomed, ref := unpackState(old)
-		// if no active holders, nothing to do
-		if ref == 0 {
-			return 0, false
-		}
-		newRef := ref - 1
-		needFinalize := newRef == 0 && doomed
-		newState := packState(ver, doomed, newRef)
-		if atomic.CompareAndSwapUint64(&e.state, old, newState) {
-			if needFinalize {
-				return e.finalize(), true
-			}
-			return 0, false
-		}
-	}
-}
-
-// Remove marks entry as doomed, then triggers Release path
-func (e *Entry) Remove() (freedBytes int64, finalized bool) {
-	for {
-		old := atomic.LoadUint64(&e.state)
-		ver, doomed, ref := unpackState(old)
-		if doomed && ref == 0 {
-			return 0, false
-		}
-		newState := packState(ver, true, ref)
-		if atomic.CompareAndSwapUint64(&e.state, old, newState) {
-			return e.Release()
-		}
-	}
-}
-
-// finalize cleans up the entry and bumps version, resetting flags and refCount
-func (e *Entry) finalize() int64 {
-	// bump version safely; refCount and doomed reset
-	for {
-		old := atomic.LoadUint64(&e.state)
-		ver, _, _ := unpackState(old)
-		newState := packState(ver+1, false, 0)
-		// Note: version overflow wraps around; extremely unlikely
-		if atomic.CompareAndSwapUint64(&e.state, old, newState) {
-			return e.cleanup()
-		}
-	}
-}
-
-var Finzalized = &atomic.Int64{}
-var NilList = &atomic.Int64{}
 
 // finalize - after this action you cannot use this Entry!
 // if you will, you will receive errors which are extremely hard-debug like "nil pointer dereference" and "non-consistent data into entry"
 // due to the Entry which was returned into pool will be used again in other threads.
-func (e *Entry) cleanup() (freedMem int64) {
-	Finzalized.Add(1)
-
+func (e *Entry) finalize() (freedMem int64) {
 	e.key = 0
 	e.shard = 0
 	e.rule = nil
 	e.updatedAt = 0
 	e.isCompressed = 0
 	e.revalidator = nil
+	e.lruListElem.Store(nil)
 	e.payload.Store(nil)
 	freedMem = e.Weight()
-
-	lruElem := e.lruListElem.Swap(nil)
-	if lruElem != nil { // nil is possible due to we can remove (finalize) not set yet element (in case when tinyLFU does not admit it)
-		// here is the element has list, it's mean that the element was 'set' sometime and present in some LRU list
-		lruElem.List().Finalize(lruElem)
-	} else {
-		NilList.Add(1)
-	}
 
 	// return back to pool
 	entriesPool.Put(e)
 
-	Finalized.Add(1)
-
 	return
-}
-
-var (
-	Finalized = &atomic.Int64{}
-	Removed   = &atomic.Int64{}
-)
-
-func (e *Entry) Version() uint32 {
-	ver, _, _ := unpackState(e.state)
-	return ver
 }
 
 var keyBufPool = sync.Pool{
@@ -374,16 +290,13 @@ func (e *Entry) IsSameFingerprint(another [16]byte) bool {
 	return subtle.ConstantTimeCompare(e.fingerprint[:], another[:]) == 1
 }
 
-func (e *Entry) IsSamePayload(another *Entry) bool {
-	return e.isPayloadsAreEquals(e.PayloadBytes(), another.PayloadBytes())
+func (e *Entry) IsSameEntry(another *Entry) bool {
+	return subtle.ConstantTimeCompare(e.fingerprint[:], another.fingerprint[:]) == 1 &&
+		e.isPayloadsAreEquals(e.PayloadBytes(), another.PayloadBytes())
 }
 
 func (e *Entry) SetRevalidator(revalidator Revalidator) {
 	e.revalidator = revalidator
-}
-
-func (e *Entry) TouchUpdatedAt() {
-	atomic.StoreInt64(&e.updatedAt, time.Now().Unix())
 }
 
 func (e *Entry) isPayloadsAreEquals(a, b []byte) bool {
@@ -397,10 +310,6 @@ func (e *Entry) isPayloadsAreEquals(a, b []byte) bool {
 	ha := xxh3.Hash(a[:8]) ^ xxh3.Hash(a[len(a)/2:len(a)/2+8]) ^ xxh3.Hash(a[len(a)-8:])
 	hb := xxh3.Hash(b[:8]) ^ xxh3.Hash(b[len(b)/2:len(b)/2+8]) ^ xxh3.Hash(b[len(b)-8:])
 	return ha == hb
-}
-
-func (e *Entry) SwapPayloads(another *Entry) {
-	another.payload.Store(e.payload.Swap(another.payload.Load()))
 }
 
 // SetPayload packs and gzip-compresses the entire payload: Path, Query, QueryHeaders, StatusCode, ResponseHeaders, Body.
@@ -501,19 +410,11 @@ func (e *Entry) SetPayload(
 }
 
 var payloadReleaser = func(queryHeaders *[][2][]byte, responseHeaders *[][2][]byte) {
-	if queryHeaders == nil {
-		panic("queryHeaders == nil")
-	}
 	*queryHeaders = (*queryHeaders)[:0]
 	pools.KeyValueSlicePool.Put(queryHeaders)
-	if responseHeaders == nil {
-		panic("responseHeaders == nil")
-	}
 	*responseHeaders = (*responseHeaders)[:0]
 	pools.KeyValueSlicePool.Put(responseHeaders)
 }
-
-var payloadIsEmptyError = fmt.Errorf("payload is empty")
 
 // Payload decompresses the entire payload and unpacks it into fields.
 func (e *Entry) Payload() (
@@ -523,12 +424,12 @@ func (e *Entry) Payload() (
 	responseHeaders *[][2][]byte,
 	body []byte,
 	status int,
-	releaseFn Releaser,
+	releaseFn func(q, h *[][2][]byte),
 	err error,
 ) {
 	payload := e.PayloadBytes()
 	if len(payload) == 0 {
-		return nil, nil, nil, nil, nil, 0, emptyReleaser, payloadIsEmptyError
+		return nil, nil, nil, nil, nil, 0, emptyReleaser, fmt.Errorf("payload is empty")
 	}
 
 	offset := 0
