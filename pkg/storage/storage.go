@@ -177,7 +177,10 @@ func (s *InMemoryStorage) Set(new *model.VersionPointer) (entry *model.VersionPo
 }
 
 func (s *InMemoryStorage) Remove(entry *model.VersionPointer) {
+	s.balancer.Remove(entry.ShardKey(), entry.LruListElement())
 	s.shardedMap.Remove(entry.MapKey())
+	entry.Release(true)
+	return
 }
 
 func (s *InMemoryStorage) Len() int64 {
