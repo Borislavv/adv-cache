@@ -319,6 +319,14 @@ func (e *Entry) IsSameEntry(another *Entry) bool {
 		e.isPayloadsAreEquals(e.PayloadBytes(), another.PayloadBytes())
 }
 
+func (e *Entry) SwapPayloads(another *Entry) {
+	another.payload.Store(e.payload.Swap(another.payload.Load()))
+}
+
+func (e *Entry) TouchUpdatedAt() {
+	atomic.StoreInt64(&e.updatedAt, time.Now().Unix())
+}
+
 func (e *Entry) SetRevalidator(revalidator Revalidator) {
 	e.revalidator = revalidator
 }
