@@ -1,7 +1,6 @@
 package sharded
 
 import (
-	"fmt"
 	"sync"
 	"sync/atomic"
 )
@@ -60,9 +59,6 @@ func (shard *Shard[V]) Set(key uint64, new V) {
 
 	if found {
 		atomic.AddInt64(&shard.mem, new.Weight()-old.Weight())
-		if old.Acquire() {
-			old.Remove()
-		}
 	} else {
 		atomic.AddInt64(&shard.len, 1)
 		atomic.AddInt64(&shard.mem, new.Weight())
@@ -73,24 +69,16 @@ func (shard *Shard[V]) Set(key uint64, new V) {
 // Returns (value, releaser, true) if found; otherwise (zero, nil, false).
 func (shard *Shard[V]) Get(key uint64) (val V, ok bool) {
 	shard.RLock()
-	item, ok := shard.items[key]
+	val, ok = shard.items[key]
 	shard.RUnlock()
-
-	if ok && item.Acquire() {
-		return item, true
-	}
-
-	// not found or hash collision or already removed
-	return val, false
+	return
 }
 
 func (shard *Shard[V]) GetRand() (val V, ok bool) {
 	shard.RLock()
 	defer shard.RUnlock()
 	for _, item := range shard.items {
-		if item.Acquire() {
-			return item, true
-		}
+		return item, true
 	}
 	return val, false
 }
@@ -99,26 +87,18 @@ var EvictRemoveHits = &atomic.Int64{}
 
 // Remove removes a value from the shard, decrements counters, and may trigger full resource cleanup.
 // Returns (memory_freed, pointer_to_list_element, was_found).
-func (shard *Shard[V]) Remove(key uint64) (freed int64, finalized bool) {
+func (shard *Shard[V]) Remove(key uint64) {
 	shard.Lock()
-	item, found := shard.items[key]
+	entry, found := shard.items[key]
 	if found {
+		freed := entry.Weight()
 		delete(shard.items, key)
 		shard.Unlock()
 
 		atomic.AddInt64(&shard.len, -1)
 		atomic.AddInt64(&shard.mem, -freed)
 
-		freed, finalized = item.Remove()
-		if finalized {
-			EvictRemoveHits.Add(1)
-			fmt.Println("finalized", item.RefCount(), item.IsDoomed())
-		} else {
-			fmt.Println("unfinalized", item.RefCount(), item.IsDoomed())
-		}
-
 		return
 	}
 	shard.Unlock()
-	return 0, false
 }

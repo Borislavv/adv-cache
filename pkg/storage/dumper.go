@@ -93,6 +93,11 @@ func (d *Dump) Dump(ctx context.Context) error {
 
 			bw := bufio.NewWriterSize(f, 512*1024)
 			shard.Walk(ctx, func(key uint64, entry *model.VersionPointer) bool {
+				if !entry.Acquire() {
+					return true
+				}
+				defer entry.Release()
+
 				data, releaser := entry.ToBytes()
 				defer releaser()
 

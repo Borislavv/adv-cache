@@ -37,7 +37,7 @@ func init() {
 				PerShard: 8,
 			},
 			Eviction: config.Eviction{
-				Enabled:   false,
+				Enabled:   true,
 				Threshold: 0.9,
 			},
 			Refresh: config.Refresh{
@@ -48,7 +48,7 @@ func init() {
 			},
 			Storage: config.Storage{
 				Type: "malloc",
-				Size: 1024 * 1024 * 5, // 5 MB
+				Size: 1024 * 500, // 5 MB
 			},
 			Rules: map[string]*config.Rule{
 				"/api/v2/pagedata": {

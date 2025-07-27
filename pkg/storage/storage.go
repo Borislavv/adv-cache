@@ -28,7 +28,7 @@ type Storage interface {
 	Set(new *model.VersionPointer) (entry *model.VersionPointer, wasPersisted bool)
 
 	// Remove is removes one element.
-	Remove(*model.VersionPointer) (freedBytes int64, isHit bool)
+	Remove(*model.VersionPointer)
 
 	// Clear is removes all cache entries from the storage.
 	Clear()
@@ -99,29 +99,42 @@ func (s *InMemoryStorage) Clear() {
 	})
 }
 
-// Get retrieves a response by request and bumps its InMemoryStorage position.
-// Returns: (response, releaser, found).
-func (s *InMemoryStorage) Get(req *model.Entry) (entry *model.VersionPointer, ok bool) {
-	if entry, ok = s.shardedMap.Get(req.MapKey()); ok && entry.IsSameFingerprint(req.Fingerprint()) {
-		s.touch(entry)
-		return entry, true
-	}
-	return nil, false
-}
-
 // Rand returns a random item from storage.
 func (s *InMemoryStorage) Rand() (entry *model.VersionPointer, ok bool) {
 	return s.shardedMap.Rnd()
 }
 
+// Get retrieves a response by request and bumps its InMemoryStorage position.
+// Returns: (response, releaser, found).
+func (s *InMemoryStorage) Get(req *model.Entry) (entry *model.VersionPointer, ok bool) {
+	entry, ok = s.shardedMap.Get(req.MapKey())
+	if !entry.Acquire() {
+		return nil, false
+	}
+	if !entry.IsSameFingerprint(req.Fingerprint()) {
+		entry.Release()
+		return nil, false
+	}
+	s.touch(entry)
+	return
+}
+
 // Set inserts or updates a response in the cache, updating Weight usage and InMemoryStorage position.
 // On 'wasPersisted=true' must be called Entry.Finalize, otherwise Entry.Finalize.
 func (s *InMemoryStorage) Set(new *model.VersionPointer) (entry *model.VersionPointer, persisted bool) {
+	if !new.Acquire() {
+		return new, false
+	}
+
 	// increase access counter of tinyLFU
 	s.tinyLFU.Increment(new.MapKey())
 
 	key := new.MapKey() // try to find existing entry
 	if old, found := s.shardedMap.Get(key); found {
+		if !old.Acquire() {
+
+		}
+
 		if old.IsSameFingerprint(new.Fingerprint()) {
 			// entry was found, no hash collisions, fingerprint check has passed, next check payload
 			if old.IsSamePayload(new.Entry) {
@@ -168,8 +181,8 @@ func (s *InMemoryStorage) Set(new *model.VersionPointer) (entry *model.VersionPo
 	return new, true
 }
 
-func (s *InMemoryStorage) Remove(entry *model.VersionPointer) (freedBytes int64, isHit bool) {
-	return s.shardedMap.Remove(entry.MapKey())
+func (s *InMemoryStorage) Remove(entry *model.VersionPointer) {
+	s.shardedMap.Remove(entry.MapKey())
 }
 
 func (s *InMemoryStorage) Len() int64 {

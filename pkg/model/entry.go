@@ -40,33 +40,37 @@ type Entry struct {
 	rule         *config.Rule
 	payload      *atomic.Pointer[[]byte]
 	lruListElem  *atomic.Pointer[list.Element[*VersionPointer]]
+	state        *atomic.Pointer[State]
 	revalidator  Revalidator
-	updatedAt    int64  // atomic: unix nano (last update was at)
-	isCompressed int64  // atomic: bool as int64
-	isDoomed     int64  // atomic: bool as int64
-	refCount     int64  // atomic: simple counter
-	version      uint64 // atomic: solves ABA problem (pattern: version pointers)
+	updatedAt    int64 // atomic: unix nano (last update was at)
+	isCompressed int64 // atomic: bool as int64
 	// (when you already changed an object in storage but someone just now try to do Acquire on already finalized and reused object)
 }
 
-func (e *Entry) RefCount() int64 {
-	return atomic.LoadInt64(&e.refCount)
-}
+var statePool = &sync.Pool{New: func() any { return new(State) }}
 
-func (e *Entry) IsDoomed() int64 {
-	return atomic.LoadInt64(&e.isDoomed)
+type State struct {
+	version  uint64
+	refCount int64
+	isDoomed bool
 }
 
 func (e *Entry) Init() *Entry {
 	e.payload = &atomic.Pointer[[]byte]{}
 	e.lruListElem = &atomic.Pointer[list.Element[*VersionPointer]]{}
+	e.state = &atomic.Pointer[State]{}
 	return e
 }
 
 func drainEntryPool() *Entry {
 	e := entriesPool.Get().(*Entry)
-	atomic.StoreInt64(&e.isDoomed, 0)
-	atomic.StoreInt64(&e.refCount, 1)
+	state := statePool.Get().(*State)
+	*state = State{
+		version:  1,
+		refCount: 1,
+		isDoomed: false,
+	}
+	e.state.Store(state)
 	return e
 }
 
@@ -166,40 +170,64 @@ const (
 	doomed    = 1
 )
 
-func (e *Entry) Acquire(expectedVersion uint64) bool {
-	if e == nil {
-		return false
-	}
+func (e *Entry) Acquire(expectedVersion uint64) (ok bool) {
+	newPtr := statePool.Get().(*State)
+
 	for {
-		curVersion := atomic.LoadUint64(&e.version)
-		if curVersion != expectedVersion {
+		oldPtr := e.state.Load()
+		if oldPtr.refCount == doomedRefCount {
+			statePool.Put(newPtr)
 			return false
 		}
-		ref := atomic.LoadInt64(&e.refCount)
-		if ref < 0 {
+
+		if oldPtr.version != expectedVersion || oldPtr.isDoomed {
+			statePool.Put(newPtr)
 			return false
 		}
-		if atomic.CompareAndSwapInt64(&e.refCount, ref, ref+1) {
-			// double-check Version to catch finalize()
-			if atomic.LoadUint64(&e.version) != expectedVersion {
-				e.Release()
-				return false
-			}
+
+		*newPtr = State{
+			version:  oldPtr.version,
+			refCount: oldPtr.refCount + 1,
+			isDoomed: false,
+		}
+
+		if e.state.CompareAndSwap(oldPtr, newPtr) {
+			statePool.Put(oldPtr)
 			return true
 		}
 	}
 }
 
 func (e *Entry) Release() (freedBytes int64, finalized bool) {
-	if e == nil {
-		return 0, false
-	}
+	newPtr := statePool.Get().(*State)
+
 	for {
-		if old := atomic.LoadInt64(&e.refCount); atomic.CompareAndSwapInt64(&e.refCount, old, old-1) {
-			if old <= preDoomedCount && atomic.LoadInt64(&e.isDoomed) == doomed {
-				if atomic.CompareAndSwapInt64(&e.refCount, zeroRefCount, doomedRefCount) {
-					return e.finalize(), true
-				}
+		oldPtr := e.state.Load()
+		if oldPtr.refCount == doomedRefCount {
+			statePool.Put(newPtr)
+			return 0, false
+		}
+
+		newRef := oldPtr.refCount - 1
+		isDoomed := oldPtr.isDoomed
+
+		//fmt.Printf("release - oldRefCount: %d, newRefCount: %d, isDoomed: %v\n", oldPtr.version, newPtr.version, isDoomed)
+
+		needFinalizeRightNow := newRef == 0 && isDoomed
+		if needFinalizeRightNow {
+			newRef = -1
+		}
+
+		*newPtr = State{
+			version:  oldPtr.version,
+			refCount: newRef,
+			isDoomed: isDoomed,
+		}
+
+		if e.state.CompareAndSwap(oldPtr, newPtr) {
+			statePool.Put(oldPtr)
+			if needFinalizeRightNow {
+				return e.finalize(), true
 			}
 			return 0, false
 		}
@@ -207,13 +235,28 @@ func (e *Entry) Release() (freedBytes int64, finalized bool) {
 }
 
 func (e *Entry) Remove() (freedBytes int64, finalized bool) {
-	if e == nil {
-		return 0, false
+	newPtr := statePool.Get().(*State)
+
+	for {
+		oldPtr := e.state.Load()
+		if oldPtr.refCount == doomedRefCount {
+			statePool.Put(newPtr)
+			return 0, false
+		}
+
+		fmt.Printf("remove - oldRefCount: %d, newRefCount: %d, isDoomed: %v\n", oldPtr.version, newPtr.version, oldPtr.isDoomed)
+
+		*newPtr = State{
+			version:  oldPtr.version,
+			refCount: oldPtr.refCount,
+			isDoomed: true,
+		}
+
+		if e.state.CompareAndSwap(oldPtr, newPtr) {
+			statePool.Put(oldPtr)
+			return e.Release()
+		}
 	}
-
-	atomic.CompareAndSwapInt64(&e.isDoomed, notDoomed, doomed)
-
-	return e.Release()
 }
 
 var Finzalized = &atomic.Int64{}
@@ -223,7 +266,6 @@ var NilList = &atomic.Int64{}
 // if you will, you will receive errors which are extremely hard-debug like "nil pointer dereference" and "non-consistent data into entry"
 // due to the Entry which was returned into pool will be used again in other threads.
 func (e *Entry) finalize() (freedMem int64) {
-	atomic.AddUint64(&e.version, 1)
 	Finzalized.Add(1)
 
 	e.key = 0
@@ -243,6 +285,10 @@ func (e *Entry) finalize() (freedMem int64) {
 		NilList.Add(1)
 	}
 
+	oldPtr := e.state.Load()
+	e.state.Swap(nil)
+	statePool.Put(oldPtr)
+
 	// return back to pool
 	entriesPool.Put(e)
 
@@ -250,7 +296,7 @@ func (e *Entry) finalize() (freedMem int64) {
 }
 
 func (e *Entry) Version() uint64 {
-	return atomic.LoadUint64(&e.version)
+	return e.state.Load().version
 }
 
 var keyBufPool = sync.Pool{

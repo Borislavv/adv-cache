@@ -2,7 +2,6 @@ package model
 
 import (
 	"github.com/Borislavv/advanced-cache/pkg/config"
-	"sync/atomic"
 )
 
 type VersionPointer struct {
@@ -12,7 +11,7 @@ type VersionPointer struct {
 
 func NewVersionPointer(entry *Entry) *VersionPointer {
 	return &VersionPointer{
-		version: atomic.LoadUint64(&entry.version),
+		version: entry.state.Load().version,
 		Entry:   entry,
 	}
 }

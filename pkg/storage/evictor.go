@@ -129,9 +129,12 @@ func (e *Evict) evictUntilWithinLimit() (items int, mem int64) {
 				break // end of the LRU list, move to next
 			}
 
-			entryForRemove := el.Value()
-			freedBytes, finalized := e.db.Remove(entryForRemove)
 			EvictTotalRemove.Add(1)
+
+			entryForRemove := el.Value()
+			e.db.Remove(entryForRemove)
+
+			freedBytes, finalized := entryForRemove.Remove()
 			if finalized {
 				RealEvictionFinalized.Add(1)
 				items++
