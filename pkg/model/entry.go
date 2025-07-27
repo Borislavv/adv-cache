@@ -306,6 +306,10 @@ func (e *Entry) Fingerprint() [16]byte {
 	return e.fingerprint
 }
 
+func (e *Entry) IsSamePayload(another *Entry) bool {
+	return e.isPayloadsAreEquals(e.PayloadBytes(), another.PayloadBytes())
+}
+
 func (e *Entry) IsSameFingerprint(another [16]byte) bool {
 	return subtle.ConstantTimeCompare(e.fingerprint[:], another[:]) == 1
 }

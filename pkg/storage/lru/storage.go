@@ -63,56 +63,83 @@ func (s *InMemoryStorage) Clear() {
 	})
 }
 
-// Get retrieves a response by request and bumps its InMemoryStorage position.
-// Returns: (response, releaser, found).
-func (s *InMemoryStorage) Get(req *model.Entry) (entry *model.VersionPointer, ok bool) {
-	if entry, ok = s.shardedMap.Get(req.MapKey()); ok && entry.IsSameFingerprint(req.Fingerprint()) {
-		s.touch(entry)
-		return entry, true
-	}
-	return nil, false
-}
-
 // Rand returns a random item from storage.
 func (s *InMemoryStorage) Rand() (entry *model.VersionPointer, ok bool) {
 	return s.shardedMap.Rnd()
 }
 
+// Get retrieves a response by request and bumps its InMemoryStorage position.
+// Returns: (response, releaser, found).
+func (s *InMemoryStorage) Get(req *model.Entry) (entry *model.VersionPointer, ok bool) {
+	entry, ok = s.shardedMap.Get(req.MapKey())
+	if !entry.Acquire() {
+		return nil, false
+	}
+	if !entry.IsSameFingerprint(req.Fingerprint()) {
+		entry.Release(false)
+		return nil, false
+	}
+	s.touch(entry)
+	return
+}
+
 // Set inserts or updates a response in the cache, updating Weight usage and InMemoryStorage position.
-func (s *InMemoryStorage) Set(new *model.VersionPointer) (entry *model.VersionPointer) {
+// On 'wasPersisted=true' must be called Entry.Finalize, otherwise Entry.Finalize.
+func (s *InMemoryStorage) Set(new *model.VersionPointer) (entry *model.VersionPointer, persisted bool) {
+	if !new.Acquire() {
+		return nil, false
+	}
+	defer new.Release(false)
+
 	key := new.MapKey()
 
-	// Track access frequency
+	// increase access counter of tinyLFU
 	s.tinyLFU.Increment(key)
 
-	// Attempt to find entry in cache, if found then touch and return it
-	if old, found := s.shardedMap.Get(key); found {
+	// try to find existing entry
+	if old, found := s.shardedMap.Get(key); found && old.Acquire() {
 		if new.Entry == old.Entry {
-			return old
+			return old, true
 		}
 
-		if !old.Acquire() {
-			return
+		if old.IsSameFingerprint(new.Fingerprint()) {
+			// entry was found, no hash collisions, fingerprint check has passed, next check payload
+			if old.IsSamePayload(new.Entry) {
+				// nothing change, an existing entry has the same payload, just up the element in LRU list
+				s.touch(old)
+			} else {
+				// payload has changes, updated it and up the element in LRU list of course
+				s.update(old, new)
+			}
+
+			// return old and say that it's already persisted
+			return old, true
 		}
 
-		s.update(old)
-		new.Remove()
-
-		return old
+		// hash collision found, remove collision element and try to set new one
+		s.Remove(old)
 	}
 
-	// Admission control: if memory is over threshold, evaluate before inserting
-	//if s.ShouldEvict() {
-	//	if victim, found := s.balancer.FindVictim(new.ShardKey()); !found || !s.tinyLFU.Admit(new, victim) {
-	//		// Cases that answer the question: why are we here?
-	//		// 1. Victim not found (cannot write more than the given memory limit)
-	//		// 2. New element is rarer than victim, skip insertion
-	//		return new
+	// check whether we are still into memory limit
+	//if s.ShouldEvict() { // if so then check admission by tinyLFU
+	//	fmt.Println("not admit")
+	//	if victim, admit := s.balancer.FindVictim(new.ShardKey()); !admit || !s.tinyLFU.Admit(new, victim) {
+	//		new.Remove() // new entry was not admitted, remove it.
+	//		// it was not persisted, tell it as is
+	//		return new, false
 	//	}
 	//}
 
-	s.set(new)
-	return new
+	//if s.ShouldEvict() {
+	//	fmt.Printf("cur: %v, threshold: %v\n", utils.FmtMem(s.Mem()), utils.FmtMem(s.memoryThreshold))
+	//}
+
+	// insert a new one Entry into map
+	s.shardedMap.Set(key, new)
+	// insert a new one Entry LRU element into LRU list
+	s.balancer.Push(new)
+
+	return new, true
 }
 
 func (s *InMemoryStorage) Remove(entry *model.VersionPointer) (freedBytes int64, isHit bool) {
