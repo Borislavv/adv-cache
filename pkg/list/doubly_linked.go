@@ -45,7 +45,7 @@ func (l *List[T]) newElement() *Element[T] {
 	return l.pool.Get().(*Element[T])
 }
 
-func (l *List[T]) freeElement(e *Element[T]) {
+func (l *List[T]) FreeElement(e *Element[T]) {
 	e.next, e.prev, e.list = nil, nil, nil
 	var zero T
 	e.value = zero
@@ -119,7 +119,6 @@ func (l *List[T]) Remove(e *Element[T]) {
 	e.next.prev = e.prev
 
 	atomic.AddInt64(&l.len, -1)
-	l.freeElement(e)
 }
 
 // MoveToFront moves e to the front.

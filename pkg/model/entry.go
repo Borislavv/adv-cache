@@ -148,6 +148,9 @@ func NewEntryFromField(
 func (e *Entry) MapKey() uint64   { return e.key }
 func (e *Entry) ShardKey() uint64 { return e.shard }
 
+func (e *Entry) RefCount() int64 { return e.refCount }
+func (e *Entry) IsDoomed() bool  { return e.isDoomed == 1 }
+
 const (
 	// refCount values
 	preDoomedCount = 1
@@ -222,12 +225,19 @@ func (e *Entry) finalize() (freedMem int64) {
 	e.updatedAt = 0
 	e.isCompressed = 0
 	e.revalidator = nil
-	e.lruListElem.Store(nil)
 	e.payload.Store(nil)
 	freedMem = e.Weight()
 
+	lruElem := e.lruListElem.Swap(nil)
+	lruList := lruElem.List()
+	if lruList != nil {
+		lruList.FreeElement(lruElem)
+	}
+
 	// return back to pool
 	entriesPool.Put(e)
+
+	fmt.Println("finalizing -----------------_____-------_____-----______>>>>>>>>>>")
 
 	return
 }

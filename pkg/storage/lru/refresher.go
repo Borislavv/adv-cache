@@ -1,4 +1,4 @@
-package storage
+package lru
 
 import (
 	"context"
@@ -21,12 +21,12 @@ type Refresher interface {
 
 // Refresh is responsible for background refreshing of cache entries.
 // It periodically samples random shards and randomly selects "cold" entries
-// (from the end of each shard's Storage list) to refreshItem if necessary.
+// (from the end of each shard's InMemoryStorage list) to refreshItem if necessary.
 // Communication: provider->consumer (MPSC).
 type Refresh struct {
 	ctx                 context.Context
 	cfg                 *config.Cache
-	storage             Storage
+	storage             *InMemoryStorage
 	rateLogCh           chan int
 	refreshSuccessNumCh chan struct{}
 	refreshErroredNumCh chan struct{}
@@ -34,7 +34,7 @@ type Refresh struct {
 }
 
 // NewRefresher constructs a Refresh.
-func NewRefresher(ctx context.Context, cfg *config.Cache, storage Storage) *Refresh {
+func NewRefresher(ctx context.Context, cfg *config.Cache, storage *InMemoryStorage) *Refresh {
 	scanRate := cfg.Cache.Refresh.Rate * 10
 	if scanRate < 1 {
 		scanRate = 1

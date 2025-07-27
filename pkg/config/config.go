@@ -106,6 +106,7 @@ type Persistence struct {
 }
 
 type Preallocation struct {
+	Shards   int `yaml:"num_shards"`
 	PerShard int `yaml:"per_shard"`
 }
 

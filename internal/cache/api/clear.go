@@ -5,24 +5,24 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"github.com/Borislavv/advanced-cache/pkg/config"
+	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
 	"sync"
 	"time"
 
-	"github.com/Borislavv/advanced-cache/pkg/storage"
 	"github.com/fasthttp/router"
 	"github.com/rs/zerolog/log"
 	"github.com/valyala/fasthttp"
 )
 
 type ClearController struct {
-	db      storage.Storage
+	db      lru.Storage
 	cfg     *config.Cache
 	mu      sync.Mutex
 	token   string
 	expires time.Time
 }
 
-func NewClearController(cfg *config.Cache, db storage.Storage) *ClearController {
+func NewClearController(cfg *config.Cache, db lru.Storage) *ClearController {
 	return &ClearController{cfg: cfg, db: db}
 }
 

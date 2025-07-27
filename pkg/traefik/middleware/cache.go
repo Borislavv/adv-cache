@@ -37,9 +37,9 @@ type TraefikCacheMiddleware struct {
 	next      http.Handler
 	name      string
 	cfg       *config.Cache
-	storage   storage.Storage
+	storage   lru.Storage
 	backend   repository.Backender
-	refresher storage.Refresher
+	refresher lru.Refresher
 	evictor   lru.Evictor
 	dumper    storage.Dumper
 	metrics   metrics.Meter

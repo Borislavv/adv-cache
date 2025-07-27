@@ -9,10 +9,10 @@ import (
 	"unsafe"
 )
 
-// ShardNode represents a single Shard's Storage and accounting info.
-// Each Shard has its own Storage list and a pointer to its element in the balancer's memList.
+// ShardNode represents a single Shard's InMemoryStorage and accounting info.
+// Each Shard has its own InMemoryStorage list and a pointer to its element in the balancer's memList.
 type ShardNode struct {
-	lruList     *list.List[*model.VersionPointer]     // Per-Shard Storage list; less used responses at the back
+	lruList     *list.List[*model.VersionPointer]     // Per-Shard InMemoryStorage list; less used responses at the back
 	memListElem *list.Element[*ShardNode]             // Pointer to this node's position in Balance.memList
 	Shard       *sharded.Shard[*model.VersionPointer] // Reference to the actual Shard (map + sync)
 }
@@ -44,7 +44,7 @@ type Balancer interface {
 	FindVictim(shardKey uint64) (*model.VersionPointer, bool)
 }
 
-// Balance maintains per-Shard Storage lists and provides efficient selection of loaded shards for eviction.
+// Balance maintains per-Shard InMemoryStorage lists and provides efficient selection of loaded shards for eviction.
 // - memList orders shardNodes by usage (most loaded in front).
 // - shards is a flat array for O(1) access by Shard index.
 // - shardedMap is the underlying data storage (map of all entries).
@@ -92,7 +92,7 @@ func (b *Balance) RandNode() *ShardNode {
 	}
 }
 
-// Register inserts a new ShardNode for a given Shard, creates its Storage, and adds it to memList and shards array.
+// Register inserts a new ShardNode for a given Shard, creates its InMemoryStorage, and adds it to memList and shards array.
 func (b *Balance) Register(shard *sharded.Shard[*model.VersionPointer]) {
 	n := &ShardNode{
 		Shard:   shard,
@@ -102,7 +102,7 @@ func (b *Balance) Register(shard *sharded.Shard[*model.VersionPointer]) {
 	b.shards[shard.ID()] = n
 }
 
-// Set inserts a response into the appropriate Shard's Storage list and updates counters.
+// Set inserts a response into the appropriate Shard's InMemoryStorage list and updates counters.
 // Returns the affected ShardNode for further operations.
 func (b *Balance) Set(entry *model.VersionPointer) {
 	entry.SetLruListElement(b.shards[entry.ShardKey()].lruList.PushFront(entry))
@@ -112,7 +112,7 @@ func (b *Balance) Update(existing *model.VersionPointer) {
 	b.shards[existing.ShardKey()].lruList.MoveToFront(existing.LruListElement())
 }
 
-// Move moves an element to the front of the per-Shard Storage list.
+// Move moves an element to the front of the per-Shard InMemoryStorage list.
 // Used for touch/Set operations to mark entries as most recently used.
 func (b *Balance) Move(shardKey uint64, el *list.Element[*model.VersionPointer]) {
 	b.shards[shardKey].lruList.MoveToFront(el)

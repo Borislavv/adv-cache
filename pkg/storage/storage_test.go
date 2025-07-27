@@ -45,7 +45,7 @@ func init() {
 			},
 			Storage: config.Storage{
 				Type: "malloc",
-				Size: 1024 * 1024 * 5, // 5 MB
+				Size: 1024 * 500, // 5 MB
 			},
 			Rules: map[string]*config.Rule{
 				"/api/v2/pagedata": {
@@ -98,8 +98,9 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 	}
 
 	entries := mock.GenerateEntryPointersConsecutive(cfg, backend, path, numEntries)
+	sets := entries[:0]
 	for _, resp := range entries {
-		db.Set(resp)
+		sets db.Set(resp)
 	}
 	length := len(entries)
 

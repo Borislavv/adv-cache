@@ -11,7 +11,7 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
 	serverutils "github.com/Borislavv/advanced-cache/pkg/server/utils"
-	"github.com/Borislavv/advanced-cache/pkg/storage"
+	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
 	"github.com/Borislavv/advanced-cache/pkg/utils"
 	"github.com/fasthttp/router"
 	"github.com/rs/zerolog/log"
@@ -51,7 +51,7 @@ var (
 type CacheController struct {
 	cfg     *config.Cache
 	ctx     context.Context
-	cache   storage.Storage
+	cache   lru.Storage
 	metrics metrics.Meter
 	backend repository.Backender
 }
@@ -61,7 +61,7 @@ type CacheController struct {
 func NewCacheController(
 	ctx context.Context,
 	cfg *config.Cache,
-	cache storage.Storage,
+	cache lru.Storage,
 	metrics metrics.Meter,
 	backend repository.Backender,
 ) *CacheController {

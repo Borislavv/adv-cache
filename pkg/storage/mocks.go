@@ -17,5 +17,4 @@ func LoadMocks(ctx context.Context, config *config.Cache, backend repository.Bac
 			storage.Set(entry)
 		}
 	}()
-
 }
