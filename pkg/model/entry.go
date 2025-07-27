@@ -174,11 +174,23 @@ func (e *Entry) Acquire(expectedVersion uint32) bool {
 func (e *Entry) Release(remove bool) (freedBytes int64, finalized bool) {
 	if e != nil {
 		if remove {
-			if e.IsFinalizing(refCount) {
-				return
+			for {
+				oldState, _, isDoomed, refCount := e.Unpack()
+				if e.IsFinalizing(refCount) {
+					return
+				}
+
+				if isDoomed {
+					break
+				}
+
+				newState := e.MarkAsDoomed(oldState)
+				if atomic.CompareAndSwapUint64(&e.state, oldState, newState) {
+					break
+				}
 			}
-			atomic.StoreInt64(&e.isDoomed, doomedTrueValue)
 		}
+
 		for {
 			oldState, _, isDoomed, refCount := e.Unpack()
 			if e.IsFinalizing(refCount) {
