@@ -167,9 +167,8 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 		i := 0
 		for pb.Next() {
 			for j := 0; j < 1000; j++ {
-				if inserted, persisted := db.Set(entries[(i*j)%length]); persisted {
-					inserted.Release()
-				}
+				inserted, _ := db.Set(entries[(i*j)%length])
+				inserted.Release()
 			}
 			i += 1000
 		}

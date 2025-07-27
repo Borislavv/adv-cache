@@ -59,7 +59,7 @@ func drainEntryPool() *Entry {
 	e := entriesPool.Get().(*Entry)
 
 	atomic.StoreInt64(&e.isDoomed, 0)
-	atomic.StoreInt64(&e.refCount, 1)
+	atomic.StoreInt64(&e.refCount, 0)
 
 	if !e.Acquire(e.Version()) {
 		panic("drainEntryPool: cannot acquire entry from pool " + fmt.Sprintf(
@@ -247,17 +247,17 @@ func (e *Entry) finalize() (freedMem int64) {
 	freedMem = e.Weight()
 
 	lruElem := e.lruListElem.Swap(nil)
-	lruList := lruElem.List()
-	if lruList != nil {
-		lruList.Remove(lruElem)
-		lruList.FreeElement(lruElem)
+	if lruElem != nil {
+		lruList := lruElem.List()
+		if lruList != nil {
+			lruList.Remove(lruElem)
+			lruList.FreeElement(lruElem)
+		}
 	}
 
 	// return back to pool
 	entriesPool.Put(e)
-
-	fmt.Println("finalizing -----------------_____-------_____-----______>>>>>>>>>>")
-
+	
 	return
 }
 
