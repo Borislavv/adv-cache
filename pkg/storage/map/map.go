@@ -18,8 +18,6 @@ const ActiveShards uint64 = 2047 // 2047 active shards
 type Value interface {
 	types.Keyed
 	types.Sized
-	types.Released
-	types.Versioned
 }
 
 // Map is a sharded concurrent map for high-performance caches.
@@ -66,7 +64,7 @@ func (smap *Map[V]) Rnd() (value V, ok bool) {
 }
 
 // Remove deletes a value by key, returning how much memory was freed and a pointer to its LRU/list element.
-func (smap *Map[V]) Remove(key uint64) (freed int64, ok bool) {
+func (smap *Map[V]) Remove(key uint64) (ok bool) {
 	return smap.Shard(key).Remove(key)
 }
 

@@ -110,9 +110,11 @@ func (s *Storage) Set(new *model.VersionPointer) (entry *model.VersionPointer) {
 	return new
 }
 
-func (s *Storage) Remove(entry *model.VersionPointer) (freedBytes int64, isHit bool) {
+func (s *Storage) Remove(entry *model.VersionPointer) (isHit bool) {
 	s.balancer.Remove(entry.ShardKey(), entry.LruListElement())
-	return s.shardedMap.Remove(entry.MapKey())
+	isHit = s.shardedMap.Remove(entry.MapKey())
+	entry.Release(true)
+	return
 }
 
 func (s *Storage) Len() int64 {

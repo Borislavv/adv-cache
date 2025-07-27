@@ -46,19 +46,13 @@ type Entry struct {
 	isDoomed     int64  // atomic: bool as int64
 	refCount     int64  // atomic: simple counter
 	version      uint64 // atomic: solves ABA problem (pattern: version pointers)
+	state        uint64
 	// (when you already changed an object in storage but someone just now try to do Acquire on already finalized and reused object)
 }
 
 func (e *Entry) Init() *Entry {
 	e.payload = &atomic.Pointer[[]byte]{}
 	e.lruListElem = &atomic.Pointer[list.Element[*VersionPointer]]{}
-	return e
-}
-
-func drainEntryPool() *Entry {
-	e := entriesPool.Get().(*Entry)
-	atomic.StoreInt64(&e.isDoomed, 0)
-	atomic.StoreInt64(&e.refCount, 1)
 	return e
 }
 
@@ -148,64 +142,66 @@ func NewEntryFromField(
 func (e *Entry) MapKey() uint64   { return e.key }
 func (e *Entry) ShardKey() uint64 { return e.shard }
 
+func drainEntryPool() *Entry {
+	e := entriesPool.Get().(*Entry)
+
+	_, version, _, _ := e.Unpack()
+	atomic.StoreUint64(&e.state, e.Pack(version, false, 1))
+
+	return e
+}
+
 const (
 	// refCount values
-	preDoomedCount = 1
-	zeroRefCount   = 0
-	doomedRefCount = -1
-	// isDoomed values
-	notDoomed = 0
-	doomed    = 1
+	preDoomedRefCount = 1
+	doomedTrueValue   = 1
 )
 
-func (e *Entry) Acquire(expectedVersion uint64) bool {
-	if e == nil {
-		return false
-	}
-	for {
-		curVersion := atomic.LoadUint64(&e.version)
-		if curVersion != expectedVersion {
-			return false
-		}
-		ref := atomic.LoadInt64(&e.refCount)
-		if ref < 0 {
-			return false
-		}
-		if atomic.CompareAndSwapInt64(&e.refCount, ref, ref+1) {
-			// double-check Version to catch finalize()
-			if atomic.LoadUint64(&e.version) != expectedVersion {
-				e.Release()
-				return false
+func (e *Entry) Acquire(expectedVersion uint32) bool {
+	if e != nil {
+		for {
+			if oldState, mayBeAcquired := e.IsAcquirable(expectedVersion); mayBeAcquired {
+				if newState, wasIncremented := e.IncRefCount(oldState); wasIncremented {
+					if atomic.CompareAndSwapUint64(&e.state, oldState, newState) {
+						return true
+					}
+				}
+				continue
 			}
-			return true
+			return false
 		}
 	}
+	return false
 }
 
-func (e *Entry) Release() {
-	if e == nil {
-		return
-	}
-	for {
-		if old := atomic.LoadInt64(&e.refCount); atomic.CompareAndSwapInt64(&e.refCount, old, old-1) {
-			if old == preDoomedCount && atomic.LoadInt64(&e.isDoomed) == doomed {
-				if atomic.CompareAndSwapInt64(&e.refCount, zeroRefCount, doomedRefCount) {
-					e.finalize()
+func (e *Entry) Release(remove bool) (freedBytes int64, finalized bool) {
+	if e != nil {
+		if remove {
+			atomic.StoreInt64(&e.isDoomed, doomedTrueValue)
+		}
+		for {
+			oldState, _, isDoomed, refCount := e.Unpack()
+			if e.IsFinalizing(refCount) {
+				return
+			}
+
+			if e.NeedFinalize(isDoomed, refCount) {
+				newState := e.MarkAsFinalizable(oldState)
+				if atomic.CompareAndSwapUint64(&e.state, oldState, newState) {
+					return e.finalize(), true
+				}
+				continue
+			}
+
+			if newState, wasDecremented := e.DecRefCount(oldState); wasDecremented {
+				if atomic.CompareAndSwapUint64(&e.state, oldState, newState) {
 					return
 				}
+				continue
 			}
+
 			return
 		}
-	}
-}
-
-func (e *Entry) Remove() {
-	if e == nil {
-		return
-	}
-	if atomic.CompareAndSwapInt64(&e.isDoomed, notDoomed, doomed) {
-		e.Release()
-		return
 	}
 	return
 }
@@ -214,8 +210,6 @@ func (e *Entry) Remove() {
 // if you will, you will receive errors which are extremely hard-debug like "nil pointer dereference" and "non-consistent data into entry"
 // due to the Entry which was returned into pool will be used again in other threads.
 func (e *Entry) finalize() (freedMem int64) {
-	atomic.AddUint64(&e.version, 1)
-
 	e.key = 0
 	e.shard = 0
 	e.rule = nil
@@ -230,10 +224,6 @@ func (e *Entry) finalize() (freedMem int64) {
 	entriesPool.Put(e)
 
 	return
-}
-
-func (e *Entry) Version() uint64 {
-	return atomic.LoadUint64(&e.version)
 }
 
 var keyBufPool = sync.Pool{
