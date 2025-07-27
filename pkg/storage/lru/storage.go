@@ -178,7 +178,9 @@ func (s *InMemoryStorage) touch(existing *model.VersionPointer) {
 }
 
 // update refreshes Weight accounting and InMemoryStorage position for an updated entry.
-func (s *InMemoryStorage) update(existing *model.VersionPointer) {
+func (s *InMemoryStorage) update(existing, new *model.VersionPointer) {
+	existing.SwapPayloads(new.Entry)
+	existing.TouchUpdatedAt()
 	s.balancer.Update(existing)
 }
 
