@@ -106,8 +106,10 @@ func (r *Refresh) runProducer(scanRate, scanBurst int) {
 				r.runProducer(actualRate*10, actualBurst*10)
 				return
 			case <-scansRateLimiter.Chan():
-				if item, ok := r.storage.Rand(); ok && item.ShouldBeRefreshed(r.cfg) {
-					r.refreshItemsCh <- item
+				if item, ok := r.storage.Rand(); ok {
+					if item.Acquire() && item.ShouldBeRefreshed(r.cfg) {
+						r.refreshItemsCh <- item
+					}
 				}
 			}
 		}

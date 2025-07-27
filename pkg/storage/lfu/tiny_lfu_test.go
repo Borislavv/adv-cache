@@ -30,13 +30,15 @@ func TestTinyLFUConcurrentUsage(t *testing.T) {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			newEntry := model.NewVersionPointer(&model.Entry{})
-			evictEntry := model.NewVersionPointer(&model.Entry{})
+			newEntry := model.NewVersionPointer(model.NewEmptyEntry())
+			evictEntry := model.NewVersionPointer(model.NewEmptyEntry())
 			for j := 0; j < 1_000_000; j++ {
 				newEntry.SetMapKey(uint64(rand.Int63()))
 				evictEntry.SetMapKey(uint64(rand.Int63()))
 				tlfu.Admit(newEntry, evictEntry)
 			}
+			newEntry.Remove()
+			evictEntry.Remove()
 		}(i)
 	}
 

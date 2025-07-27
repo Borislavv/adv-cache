@@ -147,7 +147,6 @@ func (s *InMemoryStorage) Set(new *model.VersionPointer) (entry *model.VersionPo
 
 			// remove new due to it does not use anymore (it was swapped with existing one)
 			if new.Entry != old.Entry {
-				panic("InMemoryStorage: new.Remove()")
 				new.Remove()
 			}
 

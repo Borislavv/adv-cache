@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/header"
 	"github.com/Borislavv/advanced-cache/pkg/model"
@@ -190,10 +191,10 @@ func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) {
 
 		// unpack found Entry data
 		var queryHeaders *[][2][]byte
-		var payloadReleaser func(q *[][2][]byte, h *[][2][]byte)
+		var payloadReleaser func(q, h *[][2][]byte)
 		_, _, queryHeaders, payloadHeaders, payloadBody, payloadStatus, payloadReleaser, err = cacheEntry.Payload()
-		defer payloadReleaser(queryHeaders, payloadHeaders)
 		if err != nil {
+			defer payloadReleaser(queryHeaders, payloadHeaders)
 			c.respondThatServiceIsTemporaryUnavailable(err, r)
 			return
 		}
@@ -334,6 +335,7 @@ func (c *CacheController) runLoggerMetricsWriter() {
 							"[%s][%s] served %d requests (rps: %.f, avg.dur.: %s hits: %d, misses: %d, proxied: %d, errors: %d)",
 							target, elapsed.String(), totalNum, rps, duration.String(), hitsNum, missesNum, proxiedNum, errorsNum,
 						)
+						fmt.Printf("finalized: %d, removed: %d\n", model.Finalized.Swap(0), model.Removed.Swap(0))
 					} else {
 						logEvent.Msgf(
 							"[%s][%s] served %d requests (rps: %.f, avg.dur.: %s total: %d, proxied: %d, errors: %d)",
