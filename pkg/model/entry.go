@@ -231,6 +231,7 @@ func (e *Entry) finalize() (freedMem int64) {
 	lruElem := e.lruListElem.Swap(nil)
 	lruList := lruElem.List()
 	if lruList != nil {
+		lruList.Remove(lruElem)
 		lruList.FreeElement(lruElem)
 	}
 

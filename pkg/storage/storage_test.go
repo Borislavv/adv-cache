@@ -100,8 +100,13 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 	entries := mock.GenerateEntryPointersConsecutive(cfg, backend, path, numEntries)
 	sets := entries[:0]
 	for _, resp := range entries {
-		sets db.Set(resp)
+		if entry, ok := db.Set(resp); ok {
+			sets = append(sets, entry)
+		} else {
+			resp.Remove()
+		}
 	}
+	entries = sets
 	length := len(entries)
 
 	b.ResetTimer()
@@ -109,12 +114,18 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 		i := 0
 		for pb.Next() {
 			for j := 0; j < 1000; j++ {
-				db.Get(entries[(i*j)%length].Entry)
+				if entry, found := db.Get(entries[(i*j)%length].Entry); found {
+					entry.Release()
+				}
 			}
 			i += 1000
 		}
 	})
 	b.StopTimer()
+
+	for _, entry := range entries {
+		entry.Remove()
+	}
 }
 
 func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {

@@ -72,11 +72,11 @@ func (s *InMemoryStorage) Rand() (entry *model.VersionPointer, ok bool) {
 // Returns: (response, releaser, found).
 func (s *InMemoryStorage) Get(req *model.Entry) (entry *model.VersionPointer, ok bool) {
 	entry, ok = s.shardedMap.Get(req.MapKey())
-	if !entry.Acquire() {
+	if !ok || !entry.Acquire() {
 		return nil, false
 	}
 	if !entry.IsSameFingerprint(req.Fingerprint()) {
-		entry.Release(false)
+		entry.Release()
 		return nil, false
 	}
 	s.touch(entry)
@@ -89,7 +89,7 @@ func (s *InMemoryStorage) Set(new *model.VersionPointer) (entry *model.VersionPo
 	if !new.Acquire() {
 		return nil, false
 	}
-	defer new.Release(false)
+	defer new.Release()
 
 	key := new.MapKey()
 
@@ -143,7 +143,6 @@ func (s *InMemoryStorage) Set(new *model.VersionPointer) (entry *model.VersionPo
 }
 
 func (s *InMemoryStorage) Remove(entry *model.VersionPointer) (freedBytes int64, isHit bool) {
-	s.balancer.Remove(entry.ShardKey(), entry.LruListElement())
 	return s.shardedMap.Remove(entry.MapKey())
 }
 
@@ -182,13 +181,6 @@ func (s *InMemoryStorage) update(existing, new *model.VersionPointer) {
 	existing.SwapPayloads(new.Entry)
 	existing.TouchUpdatedAt()
 	s.balancer.Update(existing)
-}
-
-// set inserts a new response, updates Weight usage and registers in balancer.
-func (s *InMemoryStorage) set(new *model.VersionPointer) (ok bool) {
-	ok = s.shardedMap.Set(new.MapKey(), new)
-	s.balancer.Set(new)
-	return
 }
 
 // runLogger emits detailed stats about evictions, Weight, and GC activity every 5 seconds if debugging is enabled.
