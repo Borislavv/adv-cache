@@ -43,6 +43,7 @@ func New[T types.Sized]() *List[T] {
 
 var Acquired = &atomic.Int64{}
 var Released = &atomic.Int64{}
+var Finalized = &atomic.Int64{}
 
 func (l *List[T]) newElement() *Element[T] {
 	Acquired.Add(1)
@@ -54,7 +55,7 @@ func (l *List[T]) freeElement(e *Element[T]) {
 	var zero T
 	e.value = zero
 	l.pool.Put(e)
-	Released.Add(1)
+	Finalized.Add(1)
 }
 
 // Len returns the length, safe for concurrent read.

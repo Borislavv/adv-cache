@@ -127,7 +127,7 @@ func (m *AdvancedCacheMiddleware) handleThroughCache(w http.ResponseWriter, r *h
 
 		if responseStatus != http.StatusOK {
 			// non-positive responseStatus code received, skip saving
-			defer newEntry.Remove()
+			defer newEntry.Release(true)
 
 			responseLastModified = time.Now().Unix()
 		} else {
@@ -138,9 +138,9 @@ func (m *AdvancedCacheMiddleware) handleThroughCache(w http.ResponseWriter, r *h
 			// build and store new Entry in cache
 			var wasPersisted bool
 			if cacheEntry, wasPersisted = m.storage.Set(model.NewVersionPointer(newEntry)); wasPersisted {
-				defer cacheEntry.Release() // an Entry stored in the cache, must be released after use
+				defer cacheEntry.Release(false) // an Entry stored in the cache, must be released after use
 			} else {
-				defer cacheEntry.Remove() // an Entry was not persisted, must be removed after use
+				defer cacheEntry.Release(true) // an Entry was not persisted, must be removed after use
 			}
 
 			responseLastModified = cacheEntry.UpdateAt()
@@ -149,8 +149,8 @@ func (m *AdvancedCacheMiddleware) handleThroughCache(w http.ResponseWriter, r *h
 		hits.Add(1)
 
 		// deferred release and remove
-		newEntry.Remove()          // new Entry which was used as request for query cache does not need anymore
-		defer cacheEntry.Release() // an Entry retrieved from the cache must be released after use
+		newEntry.Release(true)          // new Entry which was used as request for query cache does not need anymore
+		defer cacheEntry.Release(false) // an Entry retrieved from the cache must be released after use
 
 		// Always read from cached cacheEntry
 		var queryHeaders *[][2][]byte

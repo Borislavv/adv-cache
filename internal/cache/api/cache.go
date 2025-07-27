@@ -175,9 +175,9 @@ func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) {
 			var wasPersisted bool
 			cacheEntry, wasPersisted = c.cache.Set(model.NewVersionPointer(newEntry))
 			if wasPersisted {
-				defer cacheEntry.Release() // an Entry stored in the cache must be released after use
+				defer cacheEntry.Release(false) // an Entry stored in the cache must be released after use
 			} else {
-				defer cacheEntry.Remove() // an Entry was not persisted, must be removed after use
+				defer cacheEntry.Release(true) // an Entry was not persisted, must be removed after use
 			}
 
 			payloadLastModified = cacheEntry.UpdateAt()
@@ -186,8 +186,8 @@ func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) {
 		hits.Add(1)
 
 		// deferred release and remove
-		newEntry.Remove()          // new Entry which was used as request for query cache does not need anymore
-		defer cacheEntry.Release() // an Entry retrieved from the cache must be released after use
+		newEntry.Release(true)          // new Entry which was used as request for query cache does not need anymore
+		defer cacheEntry.Release(false) // an Entry retrieved from the cache must be released after use
 
 		// unpack found Entry data
 		var queryHeaders *[][2][]byte

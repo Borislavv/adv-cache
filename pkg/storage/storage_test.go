@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"github.com/Borislavv/advanced-cache/pkg/list"
 	"github.com/Borislavv/advanced-cache/pkg/model"
-	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
 	"testing"
 	"time"
 
@@ -95,9 +94,9 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 	for _, resp := range entries {
 		if persistedEntry, wasPersisted := db.Set(resp); wasPersisted {
 			sets = append(sets, persistedEntry)
-			persistedEntry.Release()
+			persistedEntry.Release(false)
 		} else {
-			persistedEntry.Remove()
+			persistedEntry.Release(true)
 		}
 	}
 	entries = sets
@@ -136,30 +135,37 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 		i := 0
 		for pb.Next() {
 			for j := 0; j < 1000; j++ {
-				entry, persisted := db.Set(entries[(i*j)%length])
-				if persisted {
-					entry.Release()
+				reqEntry := entries[(i*j)%length]
+				reqEntry = model.NewVersionPointer(reqEntry.Entry)
+
+				if !reqEntry.Acquire() { // 2
+					_, version, isDoomed, refCount := reqEntry.Unpack()
+					panic(fmt.Sprintf("cannot acquire request entry (version: %d, isDoomed: %v, refCount: %d)\n", version, isDoomed, refCount))
 				}
+
+				if entry, persisted := db.Set(reqEntry); persisted {
+					entry.Release(false)
+				}
+
+				reqEntry.Release(false)
 			}
 			i += 1000
 		}
 	})
 	b.StopTimer()
 
-	//EvictNotFoundMostLoaded = &atomic.Int64{}
-	//EvictListIsZero         = &atomic.Int64{}
-	//EvictNextNotFound       = &atomic.Int64{}
-	//EvictNotAcquired        = &atomic.Int64{}
-	//EvictTotalRemove        = &atomic.Int64{}
-	//EvictRemoveHits         = &atomic.Int64{}
+	for _, entry := range entries {
+		entry.Release(true)
+		//fmt.Println(entry.Unpack())
+	}
 
-	fmt.Printf("acquired: %d, released: %d, finalized: %d, nilList: %d\n",
-		list.Acquired.Load(), list.Released.Load(), model.Finzalized.Load(), model.NilList.Load())
+	fmt.Printf("acquired: %d,finalized: %d\n",
+		list.Acquired.Load(), list.Finalized.Load())
 
-	fmt.Printf("notFoundMostLoaded: %d, lruListIsEmpty: %d, nextIsNotFound: %d, notAcquired: %d, totalRemove: %d, realRemoveHits: %d, reamoveHits: %d\n",
-		EvictNotFoundMostLoaded.Load(), EvictListIsZero.Load(), EvictNextNotFound.Load(), EvictNotAcquired.Load(), EvictTotalRemove.Load(), sharded.EvictRemoveHits.Load(), RealEvictionFinalized.Load())
+	fmt.Printf("notFoundMostLoaded: %d, lruListIsEmpty: %d, nextIsNotFound: %d, notAcquired: %d, totalRemove: %d, realRemoveHits: %d, reamoveHitsInEvictor: %d\n",
+		EvictNotFoundMostLoaded.Load(), EvictListIsZero.Load(), EvictNextNotFound.Load(), EvictNotAcquired.Load(), EvictTotalRemove.Load(), model.EvictRemoveHits.Load(), RealEvictionFinalized.Load())
 
-	time.Sleep(time.Second)
+	time.Sleep(time.Second * 8)
 }
 
 func BenchmarkGetAllocs(b *testing.B) {

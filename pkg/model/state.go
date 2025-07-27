@@ -124,11 +124,11 @@ func (e *Entry) ResetState(state uint64) uint64 {
 func (e *Entry) IsAcquirable(expectedVersion uint32) (oldState uint64, isAcquirable bool) {
 	state := atomic.LoadUint64(&e.state)
 	version, isDoomed, refCount := e.unpack(state)
-	return state, version != expectedVersion || isDoomed || refCount <= FinalizingRightNowRefCountValue
+	return state, version == expectedVersion && !isDoomed && refCount < FinalizingRightNowRefCountValue
 }
 
 func (e *Entry) IsFinalizing(refCount uint32) (isFinalizingInProgress bool) {
-	return refCount <= FinalizingRightNowRefCountValue
+	return refCount == FinalizingRightNowRefCountValue
 }
 
 func (e *Entry) NeedFinalize(isDoomed bool, refCount uint32) bool {

@@ -83,8 +83,6 @@ func (shard *Shard[V]) GetRand() (val V, ok bool) {
 	return val, false
 }
 
-var EvictRemoveHits = &atomic.Int64{}
-
 // Remove removes a value from the shard, decrements counters, and may trigger full resource cleanup.
 // Returns (memory_freed, pointer_to_list_element, was_found).
 func (shard *Shard[V]) Remove(key uint64) {

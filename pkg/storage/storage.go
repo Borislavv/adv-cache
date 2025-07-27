@@ -127,11 +127,13 @@ func (s *InMemoryStorage) Set(new *model.VersionPointer) (entry *model.VersionPo
 	}
 	defer new.Release(false)
 
+	key := new.MapKey()
+
 	// increase access counter of tinyLFU
-	s.tinyLFU.Increment(new.MapKey())
+	s.tinyLFU.Increment(key)
 
 	// try to find existing entry
-	if old, found := s.shardedMap.Get(new.MapKey()); found && old.Acquire() {
+	if old, found := s.shardedMap.Get(key); found && old.Acquire() {
 		if new.Entry == old.Entry {
 			return old, true
 		}
@@ -177,10 +179,7 @@ func (s *InMemoryStorage) Set(new *model.VersionPointer) (entry *model.VersionPo
 }
 
 func (s *InMemoryStorage) Remove(entry *model.VersionPointer) {
-	s.balancer.Remove(entry.ShardKey(), entry.LruListElement())
 	s.shardedMap.Remove(entry.MapKey())
-	entry.Release(true)
-	return
 }
 
 func (s *InMemoryStorage) Len() int64 {

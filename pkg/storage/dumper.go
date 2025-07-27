@@ -96,7 +96,7 @@ func (d *Dump) Dump(ctx context.Context) error {
 				if !entry.Acquire() {
 					return true
 				}
-				defer entry.Release()
+				defer entry.Release(false)
 
 				data, releaser := entry.ToBytes()
 				defer releaser()
@@ -200,11 +200,11 @@ func (d *Dump) Load(ctx context.Context) error {
 				}
 				if persistedEntry, wasPersisted := d.storage.Set(model.NewVersionPointer(entry)); wasPersisted {
 					atomic.AddInt32(&successNum, 1)
-					persistedEntry.Release()
+					persistedEntry.Release(false)
 				} else {
 					atomic.AddInt32(&errorNum, 1)
 					log.Error().Msg("[dump] failed to persist entry, not enough memory")
-					persistedEntry.Remove()
+					persistedEntry.Release(true)
 				}
 
 				select {

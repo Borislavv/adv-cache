@@ -131,10 +131,16 @@ func (e *Evict) evictUntilWithinLimit() (items int, mem int64) {
 
 			EvictTotalRemove.Add(1)
 
-			entryForRemove := el.Value()
-			e.db.Remove(entryForRemove)
+			evictedEntry := el.Value()
+			if !evictedEntry.Acquire() {
+				continue
+			}
 
-			freedBytes, finalized := entryForRemove.Remove()
+			// remove from storage
+			e.db.Remove(evictedEntry)
+
+			// here is actually will be executed finalizer
+			freedBytes, finalized := evictedEntry.Release(false)
 			if finalized {
 				RealEvictionFinalized.Add(1)
 				items++

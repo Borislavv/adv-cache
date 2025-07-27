@@ -46,7 +46,7 @@ func TestRefCountingNew(t *testing.T) {
 						if payload == nil {
 							panic("payload is nil")
 						}
-						te.Release()
+						te.Release(false)
 					} else {
 						mu.Unlock()
 					}
@@ -68,7 +68,7 @@ func TestRefCountingNew(t *testing.T) {
 					old := db[idx]
 					delete(db, idx)
 					if old.Acquire() {
-						old.Remove()
+						old.Release(true)
 					}
 					e := NewEntryFromField(0, 0, [16]byte{}, []byte(""), nil, nil, 0, 0)
 					db[idx] = NewVersionPointer(e)

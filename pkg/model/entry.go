@@ -177,6 +177,7 @@ func (e *Entry) Release(remove bool) (freedBytes int64, finalized bool) {
 			for {
 				oldState, _, isDoomed, refCount := e.Unpack()
 				if e.IsFinalizing(refCount) {
+					fmt.Printf("[refCount=%d] another finalizing this entry, exit <<<\n", refCount)
 					return
 				}
 
@@ -194,12 +195,14 @@ func (e *Entry) Release(remove bool) (freedBytes int64, finalized bool) {
 		for {
 			oldState, _, isDoomed, refCount := e.Unpack()
 			if e.IsFinalizing(refCount) {
+				fmt.Printf("[refCount=%d] another finalizing this entry, exit <<<\n", refCount)
 				return
 			}
 
 			if e.NeedFinalize(isDoomed, refCount) {
 				newState := e.MarkAsFinalizable(oldState)
 				if atomic.CompareAndSwapUint64(&e.state, oldState, newState) {
+					fmt.Println("------------------------------->>> DO FINALIZING!")
 					return e.finalize(), true
 				}
 				continue
@@ -207,6 +210,7 @@ func (e *Entry) Release(remove bool) (freedBytes int64, finalized bool) {
 
 			if newState, wasDecremented := e.DecRefCount(oldState); wasDecremented {
 				if atomic.CompareAndSwapUint64(&e.state, oldState, newState) {
+					fmt.Println("do decrement")
 					return
 				}
 				continue
@@ -228,15 +232,26 @@ func (e *Entry) finalize() (freedMem int64) {
 	e.updatedAt = 0
 	e.isCompressed = 0
 	e.revalidator = nil
-	e.lruListElem.Store(nil)
+
+	lruElem := e.lruListElem.Swap(nil)
+	lruList := lruElem.List()
+	if lruList != nil {
+		// finalization of persisted item (has LRU list)
+		lruList.Finalize(lruElem)
+	}
+
 	e.payload.Store(nil)
 	freedMem = e.Weight()
 
 	// return back to pool
 	entriesPool.Put(e)
 
+	EvictRemoveHits.Add(1)
+
 	return
 }
+
+var EvictRemoveHits = &atomic.Int64{}
 
 var keyBufPool = sync.Pool{
 	New: func() interface{} {

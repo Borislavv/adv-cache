@@ -15,10 +15,10 @@ func LoadMocks(ctx context.Context, config *config.Cache, backend repository.Bac
 		path := []byte("/api/v2/pagedata")
 		for entry := range mock.StreamEntryPointersConsecutive(ctx, config, backend, path, num) {
 			if persistedEntry, wasPersisted := storage.Set(entry); wasPersisted {
-				persistedEntry.Release()
+				persistedEntry.Release(false)
 			} else {
 				log.Error().Msg("[dump] failed to persist entry, not enough memory")
-				persistedEntry.Remove()
+				persistedEntry.Release(true)
 			}
 
 		}

@@ -157,7 +157,7 @@ func (r *Refresh) runConsumer(reqRate, reqBurst int) {
 				return
 			case <-requestsRateLimiter.Chan():
 				go func() {
-					defer entry.Release()
+					defer entry.Release(false)
 					if err := entry.Revalidate(); err != nil {
 						r.refreshErroredNumCh <- struct{}{}
 						return
