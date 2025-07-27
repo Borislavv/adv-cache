@@ -112,7 +112,7 @@ func (s *InMemoryStorage) Get(req *model.Entry) (entry *model.VersionPointer, ok
 		return nil, false
 	}
 	if !entry.IsSameFingerprint(req.Fingerprint()) {
-		entry.Release()
+		entry.Release(false)
 		return nil, false
 	}
 	s.touch(entry)
@@ -123,16 +123,17 @@ func (s *InMemoryStorage) Get(req *model.Entry) (entry *model.VersionPointer, ok
 // On 'wasPersisted=true' must be called Entry.Finalize, otherwise Entry.Finalize.
 func (s *InMemoryStorage) Set(new *model.VersionPointer) (entry *model.VersionPointer, persisted bool) {
 	if !new.Acquire() {
-		return new, false
+		return nil, false
 	}
+	defer new.Release(false)
 
 	// increase access counter of tinyLFU
 	s.tinyLFU.Increment(new.MapKey())
 
-	key := new.MapKey() // try to find existing entry
-	if old, found := s.shardedMap.Get(key); found {
-		if !old.Acquire() {
-
+	// try to find existing entry
+	if old, found := s.shardedMap.Get(new.MapKey()); found && old.Acquire() {
+		if new.Entry == old.Entry {
+			return old, true
 		}
 
 		if old.IsSameFingerprint(new.Fingerprint()) {
@@ -145,17 +146,12 @@ func (s *InMemoryStorage) Set(new *model.VersionPointer) (entry *model.VersionPo
 				s.update(old, new)
 			}
 
-			// remove new due to it does not use anymore (it was swapped with existing one)
-			if new.Entry != old.Entry {
-				new.Remove()
-			}
-
 			// return old and say that it's already persisted
 			return old, true
 		}
 
 		// hash collision found, remove collision element and try to set new one
-		s.shardedMap.Remove(key)
+		s.Remove(old)
 	}
 
 	// check whether we are still into memory limit

@@ -302,13 +302,20 @@ func (e *Entry) IsSameFingerprint(another [16]byte) bool {
 	return subtle.ConstantTimeCompare(e.fingerprint[:], another[:]) == 1
 }
 
-func (e *Entry) IsSameEntry(another *Entry) bool {
-	return subtle.ConstantTimeCompare(e.fingerprint[:], another.fingerprint[:]) == 1 &&
-		e.isPayloadsAreEquals(e.PayloadBytes(), another.PayloadBytes())
+func (e *Entry) SwapPayloads(another *Entry) {
+	another.payload.Store(e.payload.Swap(another.payload.Load()))
 }
 
 func (e *Entry) SetRevalidator(revalidator Revalidator) {
 	e.revalidator = revalidator
+}
+
+func (e *Entry) IsSamePayload(another *Entry) bool {
+	return e.isPayloadsAreEquals(e.PayloadBytes(), another.PayloadBytes())
+}
+
+func (e *Entry) TouchUpdatedAt() {
+	atomic.StoreInt64(&e.updatedAt, time.Now().Unix())
 }
 
 func (e *Entry) isPayloadsAreEquals(a, b []byte) bool {
@@ -428,6 +435,8 @@ var payloadReleaser = func(queryHeaders *[][2][]byte, responseHeaders *[][2][]by
 	pools.KeyValueSlicePool.Put(responseHeaders)
 }
 
+var payloadIsEmptyError = fmt.Errorf("payload is empty")
+
 // Payload decompresses the entire payload and unpacks it into fields.
 func (e *Entry) Payload() (
 	path []byte,
@@ -436,12 +445,12 @@ func (e *Entry) Payload() (
 	responseHeaders *[][2][]byte,
 	body []byte,
 	status int,
-	releaseFn func(q, h *[][2][]byte),
+	releaseFn Releaser,
 	err error,
 ) {
 	payload := e.PayloadBytes()
 	if len(payload) == 0 {
-		return nil, nil, nil, nil, nil, 0, emptyReleaser, fmt.Errorf("payload is empty")
+		return nil, nil, nil, nil, nil, 0, emptyReleaser, payloadIsEmptyError
 	}
 
 	offset := 0
