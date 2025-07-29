@@ -12,7 +12,6 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/repository"
 	serverutils "github.com/Borislavv/advanced-cache/pkg/server/utils"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
-	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
 	"github.com/Borislavv/advanced-cache/pkg/utils"
 	"github.com/fasthttp/router"
 	"github.com/rs/zerolog/log"
@@ -44,6 +43,7 @@ var (
 	total         = &atomic.Int64{}
 	hits          = &atomic.Int64{}
 	misses        = &atomic.Int64{}
+	proxies       = &atomic.Int64{}
 	errors        = &atomic.Int64{}
 	totalDuration = &atomic.Int64{} // UnixNano
 )
@@ -92,6 +92,8 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 }
 
 func (c *CacheController) handleTroughProxy(r *fasthttp.RequestCtx) {
+	proxies.Add(1)
+
 	// extract request data
 	path := r.Path()
 	queryString := r.QueryArgs().QueryString()
@@ -141,7 +143,7 @@ func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) {
 		payloadLastModified int64
 	)
 
-	foundEntry, found := c.cache.Get(newEntry) // newEntry - terminates right here on found case
+	foundEntry, found := c.cache.Get(newEntry)
 	if !found {
 		misses.Add(1)
 
@@ -164,16 +166,14 @@ func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) {
 
 		if payloadStatus != http.StatusOK {
 			// bad status code received, process request and don't store in cache, removed after use of course
-			newEntry.Remove()
 			payloadLastModified = time.Now().UnixNano()
 		} else {
 			newEntry.SetPayload(path, queryString, queryHeaders, payloadHeaders, payloadBody, payloadStatus)
 			newEntry.SetRevalidator(c.backend.RevalidatorMaker())
 
-			// build and store new VersionPointer in cache
-			newEntryPointer := c.cache.Set(model.NewVersionPointer(newEntry))
-			payloadLastModified = newEntryPointer.UpdateAt()
-			newEntryPointer.Release()
+			c.cache.Set(newEntry)
+
+			payloadLastModified = newEntry.UpdateAt()
 		}
 	} else {
 		hits.Add(1)
@@ -186,12 +186,9 @@ func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) {
 		_, _, queryHeaders, payloadHeaders, payloadBody, payloadStatus, payloadReleaser, err = foundEntry.Payload()
 		defer payloadReleaser(queryHeaders, payloadHeaders)
 		if err != nil {
-			foundEntry.Release()
 			c.respondThatServiceIsTemporaryUnavailable(err, r)
 			return
 		}
-
-		foundEntry.Release()
 	}
 
 	// Write payloadStatus, payloadHeaders, and payloadBody from the cached (or fetched) response.
@@ -272,8 +269,8 @@ func (c *CacheController) runLoggerMetricsWriter() {
 				totalNumLoc := total.Swap(0)
 				hitsNumLoc := hits.Swap(0)
 				missesNumLoc := misses.Swap(0)
+				proxiedNumLoc := proxies.Swap(0)
 				errorsNumLoc := errors.Swap(0)
-				proxiedNumLoc := totalNumLoc - hitsNumLoc - missesNumLoc - errorsNumLoc
 				totalDurationNumLoc := totalDuration.Swap(0)
 
 				var avgDuration float64
@@ -298,41 +295,7 @@ func (c *CacheController) runLoggerMetricsWriter() {
 				proxiedNum += proxiedNumLoc
 				totalDurationNum += totalDurationNumLoc
 
-				acquired := model.Acquired.Load()
-				released := model.Released.Load()
-				removed := model.Removed.Load()
-				finalized := model.Finalized.Load()
-				doomedMarked := model.DoomedMarked.Load()
-
-				setTheSamePointer := lru.SetTheSamePointer.Load()
-				setFoundAndUpdated := lru.SetFoundAndUpdated.Load()
-				setFoundAndTouched := lru.SetFoundAndTouched.Load()
-				setInserted := lru.SetInsertedNewOne.Load()
-				setNotAdmitted := lru.SetNotAdmitted.Load()
-
-				getFound := lru.GetFound.Load()
-				getNotFound := lru.GetNotFound.Load()
-				getNotAcquired := lru.GetNotAcquired.Load()
-				getHashCollision := lru.GetNotTheSameFingerprint.Load()
-				getRequestsAcquired := lru.GetRequestsAcquired.Load()
-
-				notReleasedYet := acquired - (released + removed)
-				notFinalizedYet := (removed + doomedMarked) - finalized
-				set := setTheSamePointer + setFoundAndUpdated + setInserted + setNotAdmitted
-				get := getFound + getNotFound + getNotAcquired + getHashCollision
-
 				if i == logIntervalSecs {
-					log.Info().Msgf(
-						"[refCounting] notReleasedYet: %d (acquired: %d - (released: %d + removed: %d)), "+
-							"notFinalizedYet: %d (finalized: %d - (removed: %d + markedAsDoomed: %d)), "+
-							"get: %d (found: %d, notFound: %d, notAcquired: %d, hashCollision: %d, reqAcquired: %d), "+
-							"set: %d (setTheSamePointer: %d, setFoundAndTouched: %d, setFoundAndUpdated: %d, setInserted: %d, setNotAdmitted: %d)",
-						notReleasedYet, acquired, released, removed,
-						notFinalizedYet, finalized, removed, doomedMarked,
-						get, getFound, getNotFound, getNotAcquired, getHashCollision, getRequestsAcquired,
-						set, setTheSamePointer, setFoundAndTouched, setFoundAndUpdated, setInserted, setNotAdmitted,
-					)
-
 					elapsed := time.Since(prev)
 					duration := time.Duration(int(avgDuration))
 					rps := float64(totalNum) / elapsed.Seconds()
@@ -358,8 +321,8 @@ func (c *CacheController) runLoggerMetricsWriter() {
 
 					if enabled.Load() {
 						logEvent.Msgf(
-							"[%s][%s] served %d requests (rps: %.f, avg.dur.: %s hits: %d, misses: %d, proxied: %d, errors: %d)",
-							target, elapsed.String(), totalNum, rps, duration.String(), hitsNum, missesNum, proxiedNum, errorsNum,
+							"[%s][%s] served %d requests (rps: %.f, avg.dur.: %s hits: %d, misses: %d, errors: %d)",
+							target, elapsed.String(), totalNum, rps, duration.String(), hitsNum, missesNum, errorsNum,
 						)
 					} else {
 						logEvent.Msgf(

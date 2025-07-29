@@ -85,7 +85,7 @@ func (shard *Shard[V]) GetRand() (val V, ok bool) {
 
 // Remove removes a value from the shard, decrements counters, and may trigger full resource cleanup.
 // Returns (memory_freed, pointer_to_list_element, was_found).
-func (shard *Shard[V]) Remove(key uint64) {
+func (shard *Shard[V]) Remove(key uint64) (freedBytes int64, hit bool) {
 	shard.Lock()
 	entry, found := shard.items[key]
 	if found {
@@ -96,7 +96,8 @@ func (shard *Shard[V]) Remove(key uint64) {
 		atomic.AddInt64(&shard.len, -1)
 		atomic.AddInt64(&shard.mem, -freed)
 
-		return
+		return freed, true
 	}
 	shard.Unlock()
+	return 0, false
 }

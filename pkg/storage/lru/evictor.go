@@ -48,7 +48,6 @@ func NewEvictor(ctx context.Context, cfg *config.Cache, db *InMemoryStorage, bal
 // Run is the main background eviction loop for one worker.
 // Each worker tries to bring Weight usage under the threshold by evicting from most loaded shards.
 func (e *Evict) Run() *Evict {
-	return e
 	e.runLogger()
 	go func() {
 		t := utils.NewTicker(e.ctx, time.Millisecond*500)
@@ -109,13 +108,8 @@ func (e *Evict) evictUntilWithinLimit() (items int, mem int64) {
 				break // end of the LRU list, move to next
 			}
 
-			entry := el.Value()
-			if !entry.Acquire() {
-				continue // already marked as doomed but not removed yet, skip it
-			}
-
-			freedMem, isHit := e.db.Remove(entry)
-			if isHit {
+			freedMem, hit := e.db.Remove(el.Value())
+			if hit {
 				items++
 				evictions++
 				mem += freedMem

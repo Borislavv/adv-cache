@@ -18,13 +18,13 @@ cache:
 
   persistence:
     dump:
-      enabled: false
+      enabled: true
       dump_dir: "public/dump"     # dump dir.
       dump_name: "cache.dump.gz"  # dump name
       max_versions: 3
     mock:
-      enabled: false
-      length: 10000000
+      enabled: true
+      length: 100000
 
   logs:
     level: "info" # Any zerolog.Level.
@@ -47,7 +47,7 @@ cache:
     threshold: 0.95    # Trigger eviction when cache memory usage exceeds 90% of its configured limit.
 
   storage:
-    size: 40000000 # 32GB of maximum allowed memory for the in-memory cache (in bytes).
+    size: 40000000000 # 32GB of maximum allowed memory for the in-memory cache (in bytes).
 
   refresh:
     enabled: true

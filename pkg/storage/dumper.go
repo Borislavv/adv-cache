@@ -74,7 +74,7 @@ func (d *Dump) Dump(ctx context.Context) error {
 	var successNum, errorNum int32
 
 	// Parallel dump shards
-	d.storage.WalkShards(func(shardKey uint64, shard *sharded.Shard[*model.VersionPointer]) {
+	d.storage.WalkShards(func(shardKey uint64, shard *sharded.Shard[*model.Entry]) {
 		wg.Add(1)
 		go func(sh uint64) {
 			defer wg.Done()
@@ -92,12 +92,7 @@ func (d *Dump) Dump(ctx context.Context) error {
 			defer f.Close()
 
 			bw := bufio.NewWriterSize(f, 512*1024)
-			shard.Walk(ctx, func(key uint64, entry *model.VersionPointer) bool {
-				if !entry.Acquire() {
-					return true
-				}
-				defer entry.Release()
-
+			shard.Walk(ctx, func(key uint64, entry *model.Entry) bool {
 				data, releaser := entry.ToBytes()
 				defer releaser()
 
@@ -198,7 +193,7 @@ func (d *Dump) Load(ctx context.Context) error {
 					atomic.AddInt32(&errorNum, 1)
 					continue
 				}
-				d.storage.Set(model.NewVersionPointer(entry)).Release()
+				d.storage.Set(entry)
 				atomic.AddInt32(&successNum, 1)
 
 				select {

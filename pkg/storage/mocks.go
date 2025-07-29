@@ -19,10 +19,7 @@ func LoadMocks(ctx context.Context, config *config.Cache, backend repository.Bac
 
 		path := []byte("/api/v2/pagedata")
 		for entry := range mock.StreamEntryPointersConsecutive(ctx, config, backend, path, num) {
-			if _, removed := storage.Set(entry).Release(); removed { // remove after set means that memory limit exceeded
-				cancel()
-				break
-			}
+			storage.Set(entry)
 		}
 	}()
 }

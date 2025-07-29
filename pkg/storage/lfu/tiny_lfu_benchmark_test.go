@@ -31,8 +31,8 @@ func BenchmarkTinyLFUAdmit(b *testing.B) {
 	}
 	time.Sleep(time.Second) // wait for run()
 
-	newEntry := model.NewVersionPointer((&model.Entry{}).SetMapKey(rand.Uint64()))
-	oldEntry := model.NewVersionPointer((&model.Entry{}).SetMapKey(rand.Uint64()))
+	newEntry := (&model.Entry{}).SetMapKey(rand.Uint64())
+	oldEntry := (&model.Entry{}).SetMapKey(rand.Uint64())
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

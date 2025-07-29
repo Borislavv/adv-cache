@@ -41,7 +41,7 @@ func (t *TinyLFU) Increment(key uint64) {
 	t.door.Allow(key)
 }
 
-func (t *TinyLFU) Admit(new, old *model.VersionPointer) bool {
+func (t *TinyLFU) Admit(new, old *model.Entry) bool {
 	newKey := new.MapKey()
 	oldKey := old.MapKey()
 

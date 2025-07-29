@@ -64,8 +64,8 @@ func (smap *Map[V]) Rnd() (value V, ok bool) {
 }
 
 // Remove deletes a value by key, returning how much memory was freed and a pointer to its LRU/list element.
-func (smap *Map[V]) Remove(key uint64) {
-	smap.Shard(key).Remove(key)
+func (smap *Map[V]) Remove(key uint64) (freedBytes int64, hit bool) {
+	return smap.Shard(key).Remove(key)
 }
 
 // Walk applies fn to all key/value pairs in the shard, optionally locking for writing.

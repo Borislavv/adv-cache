@@ -5,7 +5,6 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/storage/lfu"
 	"runtime"
 	"strconv"
-	"sync/atomic"
 	"time"
 
 	"github.com/Borislavv/advanced-cache/pkg/config"
@@ -18,19 +17,19 @@ import (
 
 // InMemoryStorage is a Weight-aware, sharded InMemoryStorage cache with background eviction and refreshItem support.
 type InMemoryStorage struct {
-	ctx             context.Context                     // Main context for lifecycle control
-	cfg             *config.Cache                       // CacheBox configuration
-	shardedMap      *sharded.Map[*model.VersionPointer] // Sharded storage for cache entries
-	tinyLFU         *lfu.TinyLFU                        // Helps hold more frequency used items in cache while eviction
-	backend         repository.Backender                // Remote backend server.
-	balancer        Balancer                            // Helps pick shards to evict from
-	mem             int64                               // Current Weight usage (bytes)
-	memoryThreshold int64                               // Threshold for triggering eviction (bytes)
+	ctx             context.Context            // Main context for lifecycle control
+	cfg             *config.Cache              // CacheBox configuration
+	shardedMap      *sharded.Map[*model.Entry] // Sharded storage for cache entries
+	tinyLFU         *lfu.TinyLFU               // Helps hold more frequency used items in cache while eviction
+	backend         repository.Backender       // Remote backend server.
+	balancer        Balancer                   // Helps pick shards to evict from
+	mem             int64                      // Current Weight usage (bytes)
+	memoryThreshold int64                      // Threshold for triggering eviction (bytes)
 }
 
 // NewStorage constructs a new InMemoryStorage cache instance and launches eviction and refreshItem routines.
 func NewStorage(ctx context.Context, cfg *config.Cache, backend repository.Backender) *InMemoryStorage {
-	shardedMap := sharded.NewMap[*model.VersionPointer](ctx, cfg.Cache.Preallocate.PerShard)
+	shardedMap := sharded.NewMap[*model.Entry](ctx, cfg.Cache.Preallocate.PerShard)
 	balancer := NewBalancer(ctx, shardedMap)
 
 	db := (&InMemoryStorage{
@@ -51,7 +50,7 @@ func NewStorage(ctx context.Context, cfg *config.Cache, backend repository.Backe
 
 func (s *InMemoryStorage) init() *InMemoryStorage {
 	// Register all existing shards with the balancer.
-	s.shardedMap.WalkShards(func(shardKey uint64, shard *sharded.Shard[*model.VersionPointer]) {
+	s.shardedMap.WalkShards(func(shardKey uint64, shard *sharded.Shard[*model.Entry]) {
 		s.balancer.Register(shard)
 	})
 
@@ -59,61 +58,31 @@ func (s *InMemoryStorage) init() *InMemoryStorage {
 }
 
 func (s *InMemoryStorage) Clear() {
-	s.shardedMap.WalkShards(func(key uint64, shard *sharded.Shard[*model.VersionPointer]) {
+	s.shardedMap.WalkShards(func(key uint64, shard *sharded.Shard[*model.Entry]) {
 		shard.Clear()
 	})
 }
 
 // Rand returns a random item from storage.
-func (s *InMemoryStorage) Rand() (entry *model.VersionPointer, ok bool) {
+func (s *InMemoryStorage) Rand() (entry *model.Entry, ok bool) {
 	return s.shardedMap.Rnd()
 }
 
-var (
-	GetFound                 = &atomic.Int64{}
-	GetNotFound              = &atomic.Int64{}
-	GetNotAcquired           = &atomic.Int64{}
-	GetNotTheSameFingerprint = &atomic.Int64{}
-	GetRequestsAcquired      = &atomic.Int64{}
-)
-
 // Get retrieves a response by request and bumps its InMemoryStorage position.
 // Returns: (response, releaser, found).
-func (s *InMemoryStorage) Get(req *model.Entry) (ptr *model.VersionPointer, found bool) {
+func (s *InMemoryStorage) Get(req *model.Entry) (ptr *model.Entry, found bool) {
 	ptr, found = s.shardedMap.Get(req.MapKey())
-	if !found {
-		GetNotFound.Add(1)
+	if !found || !ptr.IsSameFingerprint(req.Fingerprint()) {
 		return nil, false
+	} else {
+		s.touch(ptr)
+		return ptr, true
 	}
-	if !ptr.Acquire() {
-		GetNotAcquired.Add(1)
-		return nil, false
-	}
-	if !ptr.IsSameFingerprint(req.Fingerprint()) {
-		ptr.Release()
-		GetNotTheSameFingerprint.Add(1)
-		return nil, false
-	}
-	if ptr.Entry != req { // different pointers
-		req.Remove() // then remove request entry
-		GetRequestsAcquired.Add(1)
-	}
-	s.touch(ptr)
-	GetFound.Add(1)
-	return ptr, true
 }
-
-var (
-	SetTheSamePointer  = &atomic.Int64{}
-	SetFoundAndUpdated = &atomic.Int64{}
-	SetFoundAndTouched = &atomic.Int64{}
-	SetInsertedNewOne  = &atomic.Int64{}
-	SetNotAdmitted     = &atomic.Int64{}
-)
 
 // Set inserts or updates a response in the cache, updating Weight usage and InMemoryStorage position.
 // On 'wasPersisted=true' must be called Entry.Finalize, otherwise Entry.Finalize.
-func (s *InMemoryStorage) Set(new *model.VersionPointer) (entry *model.VersionPointer) {
+func (s *InMemoryStorage) Set(new *model.Entry) (persisted bool) {
 	key := new.MapKey()
 
 	// increase access counter of tinyLFU
@@ -121,57 +90,39 @@ func (s *InMemoryStorage) Set(new *model.VersionPointer) (entry *model.VersionPo
 
 	// try to find existing entry
 	if old, found := s.shardedMap.Get(key); found {
-		if new.Entry == old.Entry {
-			// just return because the new already acquired
-			SetTheSamePointer.Add(1)
-			return new
-		}
-
-		if old.Acquire() {
-			if old.IsSameFingerprint(new.Fingerprint()) {
-				// entry was found, no hash collisions, fingerprint check has passed, next check payload
-				if old.IsSamePayload(new.Entry) {
-					// nothing change, an existing entry has the same payload, just up the element in LRU list
-					s.touch(old)
-					SetFoundAndTouched.Add(1)
-				} else {
-					// payload has changes, updated it and up the element in LRU list of course
-					s.update(old, new)
-					SetFoundAndUpdated.Add(1)
-				}
-
-				new.Remove() // An attempt - because someone still possible has references to 'new' entry, we does now nothing about it.
-
-				return old
+		if old.IsSameFingerprint(new.Fingerprint()) {
+			// entry was found, no hash collisions, fingerprint check has passed, next check payload
+			if old.IsSamePayload(new) {
+				// nothing change, an existing entry has the same payload, just up the element in LRU list
+				s.touch(old)
+			} else {
+				// payload has changes, updated it and up the element in LRU list of course
+				s.update(old, new)
 			}
-
-			// hash collision found, remove collision element and try to set new one
-			s.Remove(old)
+			return true
 		}
+		// hash collision found, remove collision element and try to set new one
+		s.Remove(old)
 	}
 
 	// check whether we are still into memory limit
 	if s.ShouldEvict() { // if so then check admission by tinyLFU
 		if victim, admit := s.balancer.FindVictim(new.ShardKey()); !admit || !s.tinyLFU.Admit(new, victim) {
-			SetNotAdmitted.Add(1)
-			new.MarkAsDoomed()
-			return new
+			return false
 		}
 	}
-
-	SetInsertedNewOne.Add(1)
 
 	// insert a new one Entry into map
 	s.shardedMap.Set(key, new)
 	// insert a new one Entry LRU element into LRU list
 	s.balancer.Push(new)
 
-	return new
+	return true
 }
 
-func (s *InMemoryStorage) Remove(entry *model.VersionPointer) (freedBytes int64, finalized bool) {
-	s.shardedMap.Remove(entry.MapKey())
-	return entry.Remove()
+func (s *InMemoryStorage) Remove(entry *model.Entry) (freedBytes int64, hit bool) {
+	s.balancer.Remove(entry.ShardKey(), entry.LruListElement())
+	return s.shardedMap.Remove(entry.MapKey())
 }
 
 func (s *InMemoryStorage) Len() int64 {
@@ -199,18 +150,18 @@ func (s *InMemoryStorage) ShouldEvict() bool {
 	return s.Mem() >= s.memoryThreshold
 }
 
-func (s *InMemoryStorage) WalkShards(fn func(key uint64, shard *sharded.Shard[*model.VersionPointer])) {
+func (s *InMemoryStorage) WalkShards(fn func(key uint64, shard *sharded.Shard[*model.Entry])) {
 	s.shardedMap.WalkShards(fn)
 }
 
 // touch bumps the InMemoryStorage position of an existing entry (MoveToFront) and increases its refCount.
-func (s *InMemoryStorage) touch(existing *model.VersionPointer) {
+func (s *InMemoryStorage) touch(existing *model.Entry) {
 	s.balancer.Update(existing)
 }
 
 // update refreshes Weight accounting and InMemoryStorage position for an updated entry.
-func (s *InMemoryStorage) update(existing, new *model.VersionPointer) {
-	existing.SwapPayloads(new.Entry)
+func (s *InMemoryStorage) update(existing, new *model.Entry) {
+	existing.SwapPayloads(new)
 	existing.TouchUpdatedAt()
 	s.balancer.Update(existing)
 }

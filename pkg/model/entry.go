@@ -26,7 +26,6 @@ import (
 )
 
 var (
-	entriesPool       = &sync.Pool{New: func() any { return new(Entry).Init() }}
 	bufPool           = &sync.Pool{New: func() any { return new(bytes.Buffer) }}
 	hasherPool        = &sync.Pool{New: func() any { return xxh3.New() }}
 	ruleNotFoundError = errors.New("rule not found")
@@ -39,34 +38,16 @@ type Entry struct {
 	fingerprint  [16]byte // 128 bit xxh
 	rule         *config.Rule
 	payload      *atomic.Pointer[[]byte]
-	lruListElem  *atomic.Pointer[list.Element[*VersionPointer]]
+	lruListElem  *atomic.Pointer[list.Element[*Entry]]
 	revalidator  Revalidator
-	updatedAt    int64  // atomic: unix nano (last update was at)
-	isCompressed int64  // atomic: bool as int64
-	isDoomed     int64  // atomic: bool as int64
-	refCount     int64  // atomic: simple counter
-	version      uint64 // atomic: solves ABA problem (pattern: version pointers)
-	// (when you already changed an object in storage but someone just now try to do Acquire on already finalized and reused object)
+	updatedAt    int64 // atomic: unix nano (last update was at)
+	isCompressed int64 // atomic: bool as int64
 }
 
 func (e *Entry) Init() *Entry {
 	e.payload = &atomic.Pointer[[]byte]{}
-	e.lruListElem = &atomic.Pointer[list.Element[*VersionPointer]]{}
+	e.lruListElem = &atomic.Pointer[list.Element[*Entry]]{}
 	return e
-}
-
-func drainEntryPool() *Entry {
-	return entriesPool.Get().(*Entry)
-}
-
-func (e *Entry) backInUse() {
-	atomic.AddUint64(&e.version, 1)
-	atomic.StoreInt64(&e.isDoomed, 0)
-	atomic.StoreInt64(&e.refCount, 0)
-
-	if !e.Acquire(e.Version()) {
-		panic("failed to acquire drained entry")
-	}
 }
 
 // NewEntryNetHttp accepts path, query and request headers as bytes slices.
@@ -77,7 +58,7 @@ func NewEntryNetHttp(cfg *config.Cache, r *http.Request) (*Entry, error) {
 		return nil, ruleNotFoundError
 	}
 
-	entry := drainEntryPool()
+	entry := new(Entry).Init()
 	entry.rule = rule
 
 	filteredQueries, filteredQueriesReleaser := entry.GetFilteredAndSortedKeyQueriesNetHttp(r)
@@ -87,8 +68,6 @@ func NewEntryNetHttp(cfg *config.Cache, r *http.Request) (*Entry, error) {
 	defer filteredHeadersReleaser(filteredHeaders)
 
 	entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders)
-
-	entry.backInUse()
 
 	return entry, nil
 }
@@ -100,7 +79,7 @@ func NewEntryFastHttp(cfg *config.Cache, r *fasthttp.RequestCtx) (*Entry, error)
 		return nil, ruleNotFoundError
 	}
 
-	entry := drainEntryPool()
+	entry := new(Entry).Init()
 	entry.rule = rule
 
 	filteredQueries, filteredQueriesReleaser := entry.getFilteredAndSortedKeyQueriesFastHttp(r)
@@ -110,8 +89,6 @@ func NewEntryFastHttp(cfg *config.Cache, r *fasthttp.RequestCtx) (*Entry, error)
 	defer filteredHeadersReleaser(filteredHeaders)
 
 	entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders)
-
-	entry.backInUse()
 
 	return entry, nil
 }
@@ -126,7 +103,7 @@ func NewEntryManual(cfg *config.Cache, path, query []byte, headers *[][2][]byte,
 		return nil, ruleNotFoundError
 	}
 
-	entry := drainEntryPool()
+	entry := new(Entry).Init()
 	entry.rule = rule
 	entry.revalidator = revalidator
 
@@ -136,8 +113,6 @@ func NewEntryManual(cfg *config.Cache, path, query []byte, headers *[][2][]byte,
 	filteredHeaders := entry.filteredAndSortedKeyHeadersInPlace(headers)
 
 	entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders)
-
-	entry.backInUse()
 
 	return entry, nil
 }
@@ -152,7 +127,7 @@ func NewEntryFromField(
 	isCompressed int64,
 	updatedAt int64,
 ) *Entry {
-	entry := drainEntryPool()
+	entry := new(Entry).Init()
 	entry.key = key
 	entry.shard = shard
 	entry.fingerprint = fingerprint
@@ -161,181 +136,11 @@ func NewEntryFromField(
 	entry.revalidator = revalidator
 	entry.isCompressed = isCompressed
 	entry.updatedAt = updatedAt
-	entry.backInUse()
 	return entry
 }
 
 func (e *Entry) MapKey() uint64   { return e.key }
 func (e *Entry) ShardKey() uint64 { return e.shard }
-
-func (e *Entry) RefCount() int64 { return atomic.LoadInt64(&e.refCount) }
-func (e *Entry) IsDoomed() bool  { return atomic.LoadInt64(&e.isDoomed) == 1 }
-
-const (
-	// refCount values
-	preDoomedRefCount      = 1
-	zeroRefCount           = 0
-	finalizingRefCountMark = -1
-	// isDoomed values
-	notDoomedMark = 0
-	doomedMark    = 1
-)
-
-var (
-	Acquired     = &atomic.Int64{}
-	Released     = &atomic.Int64{}
-	Removed      = &atomic.Int64{}
-	Finalized    = &atomic.Int64{}
-	DoomedMarked = &atomic.Int64{}
-)
-
-func (e *Entry) Acquire(expectedVersion uint64) bool {
-	if e != nil {
-		for {
-			if e.wasEpochChanged(expectedVersion) || e.IsDoomed() {
-				panic("epoch was changed!")
-				return false
-			}
-			if ok, brake := e.incRefCount(); brake {
-				fmt.Println("brake while acquire, refCount: ", e.RefCount(), ", isDoomed: ", e.IsDoomed())
-				return false
-			} else if ok {
-				if e.wasEpochChanged(expectedVersion) {
-					return false
-				}
-				Acquired.Add(1)
-				return true
-			}
-		}
-	}
-	fmt.Println("entry(*e) == nil")
-	return false
-}
-
-func (e *Entry) release(remove, onlyMark bool) (freedBytes int64, finalized bool) {
-	if e != nil {
-		if remove {
-			e.markAsDoomed()
-			if onlyMark {
-				DoomedMarked.Add(1)
-				return
-			}
-			Removed.Add(1)
-		} else {
-			Released.Add(1)
-		}
-		for {
-			old := e.RefCount()
-			ok, brake := e.decRefCount(old)
-			if brake {
-				return
-			} else if !ok {
-				continue
-			}
-			if e.needFinalize(old) {
-				Finalized.Add(1)
-				return e.finalize(), true
-			}
-		}
-	}
-	return
-}
-
-func (e *Entry) Release() (freedBytes int64, finalized bool) {
-	if e != nil {
-		return e.release(false, false)
-	}
-	return
-}
-
-func (e *Entry) Remove() (freedBytes int64, finalized bool) {
-	if e != nil {
-		return e.release(true, false)
-	}
-	return
-}
-
-func (e *Entry) MarkAsDoomed() {
-	if e != nil {
-		e.release(true, true)
-	}
-}
-
-func (e *Entry) markAsDoomed() {
-	atomic.CompareAndSwapInt64(&e.isDoomed, notDoomedMark, doomedMark)
-}
-
-func (e *Entry) wasEpochChanged(expectedVersion uint64) bool {
-	return atomic.LoadUint64(&e.version) != expectedVersion
-}
-
-func (e *Entry) markAsInFinalize() bool {
-	return atomic.CompareAndSwapInt64(&e.refCount, zeroRefCount, finalizingRefCountMark)
-}
-
-func (e *Entry) needFinalize(oldOneRefCount int64) bool {
-	if oldOneRefCount == preDoomedRefCount && atomic.LoadInt64(&e.isDoomed) == doomedMark {
-		return e.markAsInFinalize()
-	}
-	return false
-}
-
-func (e *Entry) incRefCount() (ok, brake bool) {
-	oldOne := atomic.LoadInt64(&e.refCount)
-	newOne := oldOne + 1
-	if oldOne > finalizingRefCountMark {
-		return atomic.CompareAndSwapInt64(&e.refCount, oldOne, newOne), false
-	}
-	return false, true
-}
-
-func (e *Entry) decRefCount(oldOneRefCount int64) (ok, brake bool) {
-	newOne := oldOneRefCount - 1
-	if newOne > finalizingRefCountMark {
-		return atomic.CompareAndSwapInt64(&e.refCount, oldOneRefCount, newOne), false
-	}
-	return false, true
-}
-
-// finalize - after this action you cannot use this Entry!
-// if you will, you will receive errors which are extremely hard-debug like "nil pointer dereference" and "non-consistent data into entry"
-// due to the Entry which was returned into pool will be used again in other threads.
-func (e *Entry) finalize() (freedMem int64) {
-	if atomic.LoadInt64(&e.refCount) != finalizingRefCountMark {
-		return
-	}
-
-	e.key = 0
-	e.shard = 0
-	e.rule = nil
-	e.updatedAt = 0
-	e.isCompressed = 0
-	e.revalidator = nil
-	e.payload.Store(nil)
-	freedMem = e.Weight()
-
-	lruElem := e.lruListElem.Swap(nil)
-	if lruElem != nil {
-		lruList := lruElem.List()
-		if lruList != nil {
-			lruList.Remove(lruElem)
-			lruList.FreeElement(lruElem)
-		}
-	}
-
-	// return back to pool
-	entriesPool.Put(e)
-
-	return
-}
-
-func (e *Entry) IsPersisted() bool {
-	return e.lruListElem.Load() != nil
-}
-
-func (e *Entry) Version() uint64 {
-	return atomic.LoadUint64(&e.version)
-}
 
 var keyBufPool = sync.Pool{
 	New: func() interface{} {
@@ -936,12 +741,12 @@ func (e *Entry) filteredAndSortedKeyHeadersInPlace(headers *[][2][]byte) *[][2][
 }
 
 // SetLruListElement sets the LRU list element pointer.
-func (e *Entry) SetLruListElement(el *list.Element[*VersionPointer]) {
+func (e *Entry) SetLruListElement(el *list.Element[*Entry]) {
 	e.lruListElem.Store(el)
 }
 
 // LruListElement returns the LRU list element pointer (for LRU cache management).
-func (e *Entry) LruListElement() *list.Element[*VersionPointer] {
+func (e *Entry) LruListElement() *list.Element[*Entry] {
 	return e.lruListElem.Load()
 }
 

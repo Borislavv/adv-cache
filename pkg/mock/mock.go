@@ -35,7 +35,7 @@ var responseBytes = []byte(`{
 }
 `)
 
-func GenerateRandomEntryPointer(cfg *config.Cache, backend repository.Backender, path []byte) *model.VersionPointer {
+func GenerateRandomEntryPointer(cfg *config.Cache, backend repository.Backender, path []byte) *model.Entry {
 	i := rand.Intn(10_000_000)
 
 	query := make([]byte, 0, 512)
@@ -69,11 +69,11 @@ func GenerateRandomEntryPointer(cfg *config.Cache, backend repository.Backender,
 	}
 	entry.SetPayload(path, query, &queryHeaders, &responseHeaders, copiedBodyBytes(i), 200)
 
-	return model.NewVersionPointer(entry)
+	return entry
 }
 
-func GenerateEntryPointersConsecutive(cfg *config.Cache, backend repository.Backender, path []byte, num int) []*model.VersionPointer {
-	res := make([]*model.VersionPointer, 0, num)
+func GenerateEntryPointersConsecutive(cfg *config.Cache, backend repository.Backender, path []byte, num int) []*model.Entry {
+	res := make([]*model.Entry, 0, num)
 
 	i := 0
 	for {
@@ -111,7 +111,7 @@ func GenerateEntryPointersConsecutive(cfg *config.Cache, backend repository.Back
 		}
 		entry.SetPayload(path, query, &queryHeaders, &responseHeaders, copiedBodyBytes(i), 200)
 
-		res = append(res, model.NewVersionPointer(entry))
+		res = append(res, entry)
 
 		i++
 	}
@@ -119,26 +119,18 @@ func GenerateEntryPointersConsecutive(cfg *config.Cache, backend repository.Back
 	return res
 }
 
-func StreamEntryPointersConsecutive(ctx context.Context, cfg *config.Cache, backend repository.Backender, path []byte, num int) <-chan *model.VersionPointer {
-	outCh := make(chan *model.VersionPointer, runtime.GOMAXPROCS(0)*4)
+func StreamEntryPointersConsecutive(ctx context.Context, cfg *config.Cache, backend repository.Backender, path []byte, num int) <-chan *model.Entry {
+	outCh := make(chan *model.Entry, runtime.GOMAXPROCS(0)*4)
 	go func() {
 		defer close(outCh)
-
-		realDefer := func() {
-			for entry := range outCh {
-				entry.Remove()
-			}
-		}
 
 		i := 0
 		for {
 			select {
 			case <-ctx.Done():
-				go realDefer()
 				return
 			default:
 				if i >= num {
-					go realDefer()
 					return
 				}
 				query := make([]byte, 0, 512)
@@ -172,7 +164,7 @@ func StreamEntryPointersConsecutive(ctx context.Context, cfg *config.Cache, back
 				}
 				entry.SetPayload(path, query, &queryHeaders, &responseHeaders, copiedBodyBytes(i), 200)
 
-				outCh <- model.NewVersionPointer(entry)
+				outCh <- entry
 				i++
 			}
 		}
@@ -180,8 +172,8 @@ func StreamEntryPointersConsecutive(ctx context.Context, cfg *config.Cache, back
 	return outCh
 }
 
-func StreamEntriesConsecutive(ctx context.Context, cfg *config.Cache, backend repository.Backender, path []byte, num int) <-chan *model.VersionPointer {
-	outCh := make(chan *model.VersionPointer, runtime.GOMAXPROCS(0)*4*10000)
+func StreamEntriesConsecutive(ctx context.Context, cfg *config.Cache, backend repository.Backender, path []byte, num int) <-chan *model.Entry {
+	outCh := make(chan *model.Entry, runtime.GOMAXPROCS(0)*4*10000)
 	go func() {
 		defer close(outCh)
 		i := 0
@@ -224,7 +216,7 @@ func StreamEntriesConsecutive(ctx context.Context, cfg *config.Cache, backend re
 				}
 				entry.SetPayload(path, query, &queryHeaders, &responseHeaders, copiedBodyBytes(i), 200)
 
-				outCh <- model.NewVersionPointer(entry)
+				outCh <- entry
 				i++
 			}
 		}

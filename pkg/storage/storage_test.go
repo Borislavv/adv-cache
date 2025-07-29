@@ -99,9 +99,7 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 		i := 0
 		for pb.Next() {
 			for j := 0; j < 1000; j++ {
-				if entry, found := db.Get(entries[(i*j)%length].Entry); found {
-					entry.Release()
-				}
+				db.Get(entries[(i*j)%length])
 			}
 			i += 1000
 		}
@@ -124,30 +122,7 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 		i := 0
 		for pb.Next() {
 			for j := 0; j < 1000; j++ {
-				inserted, _, _ := db.Set(entries[(i*j)%length])
-				inserted.Release()
-			}
-			i += 1000
-		}
-	})
-	b.StopTimer()
-}
-
-func BenchmarkWriteCopyIntoStorage1000TimesPerIter(b *testing.B) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	backend := repository.NewBackend(ctx, cfg)
-	db := lru.NewStorage(ctx, cfg, backend)
-
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		i := 0
-		for pb.Next() {
-			for j := 0; j < 1000; j++ {
-				newEntry := mock.GenerateRandomEntryPointer(cfg, backend, path)
-				inserted, _, _ := db.Set(newEntry)
-				inserted.Release()
+				db.Set(entries[(i*j)%length])
 			}
 			i += 1000
 		}
@@ -167,9 +142,7 @@ func BenchmarkGetAllocs(b *testing.B) {
 
 	b.StartTimer()
 	allocs := testing.AllocsPerRun(maxRetriesNum, func() {
-		if cached, found := db.Get(entry.Entry); found {
-			cached.Release()
-		}
+		db.Get(entry)
 	})
 	b.StopTimer()
 	b.ReportMetric(allocs, "allocs/op")
@@ -186,8 +159,7 @@ func BenchmarkSetAllocs(b *testing.B) {
 
 	b.StartTimer()
 	allocs := testing.AllocsPerRun(maxRetriesNum, func() {
-		inserted, _, _ := db.Set(entry)
-		inserted.Release()
+		db.Set(entry)
 	})
 	b.StopTimer()
 	b.ReportMetric(allocs, "allocs/op")

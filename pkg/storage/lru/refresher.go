@@ -30,7 +30,7 @@ type Refresh struct {
 	rateLogCh           chan int
 	refreshSuccessNumCh chan struct{}
 	refreshErroredNumCh chan struct{}
-	refreshItemsCh      chan *model.VersionPointer
+	refreshItemsCh      chan *model.Entry
 }
 
 // NewRefresher constructs a Refresh.
@@ -49,9 +49,9 @@ func NewRefresher(ctx context.Context, cfg *config.Cache, storage *InMemoryStora
 		cfg:                 cfg,
 		storage:             storage,
 		rateLogCh:           make(chan int, cfg.Cache.Refresh.Rate),
-		refreshSuccessNumCh: make(chan struct{}, cfg.Cache.Refresh.Rate),              // Successful refreshes counter channel
-		refreshErroredNumCh: make(chan struct{}, cfg.Cache.Refresh.Rate),              // Failed refreshes counter channel
-		refreshItemsCh:      make(chan *model.VersionPointer, cfg.Cache.Refresh.Rate), // Failed refreshes counter channel
+		refreshSuccessNumCh: make(chan struct{}, cfg.Cache.Refresh.Rate),     // Successful refreshes counter channel
+		refreshErroredNumCh: make(chan struct{}, cfg.Cache.Refresh.Rate),     // Failed refreshes counter channel
+		refreshItemsCh:      make(chan *model.Entry, cfg.Cache.Refresh.Rate), // Failed refreshes counter channel
 	}
 }
 
@@ -108,12 +108,8 @@ func (r *Refresh) runProducer(scanRate, scanBurst int) {
 				return
 			case <-scansRateLimiter.Chan():
 				if item, ok := r.storage.Rand(); ok {
-					if item.Acquire() {
-						if item.ShouldBeRefreshed(r.cfg) {
-							r.refreshItemsCh <- item
-						} else {
-							item.Release()
-						}
+					if item.ShouldBeRefreshed(r.cfg) {
+						r.refreshItemsCh <- item
 					}
 				}
 			}
@@ -162,7 +158,6 @@ func (r *Refresh) runConsumer(reqRate, reqBurst int) {
 				return
 			case <-requestsRateLimiter.Chan():
 				go func() {
-					defer entry.Release()
 					if err := entry.Revalidate(); err != nil {
 						r.refreshErroredNumCh <- struct{}{}
 						return

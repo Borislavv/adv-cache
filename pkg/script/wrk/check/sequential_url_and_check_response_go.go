@@ -13,7 +13,7 @@ import (
 
 const (
 	baseURL           = "http://0.0.0.0:8021"
-	maxI              = 10_000_000
+	maxI              = 100000
 	startI            = 1
 	delay             = 0 * time.Millisecond // можно увеличить, чтобы не перегружать
 	httpClientTimeout = 5 * time.Second
