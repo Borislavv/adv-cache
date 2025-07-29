@@ -5,6 +5,7 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/storage/lfu"
 	"runtime"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/Borislavv/advanced-cache/pkg/config"
@@ -68,28 +69,51 @@ func (s *InMemoryStorage) Rand() (entry *model.VersionPointer, ok bool) {
 	return s.shardedMap.Rnd()
 }
 
+var (
+	GetFound                 = &atomic.Int64{}
+	GetNotFound              = &atomic.Int64{}
+	GetNotAcquired           = &atomic.Int64{}
+	GetNotTheSameFingerprint = &atomic.Int64{}
+	GetRequestsAcquired      = &atomic.Int64{}
+)
+
 // Get retrieves a response by request and bumps its InMemoryStorage position.
 // Returns: (response, releaser, found).
-func (s *InMemoryStorage) Get(req *model.Entry) (entry *model.VersionPointer, found bool) {
-	entry, found = s.shardedMap.Get(req.MapKey())
-	if !found || !entry.Acquire() {
+func (s *InMemoryStorage) Get(req *model.Entry) (ptr *model.VersionPointer, found bool) {
+	ptr, found = s.shardedMap.Get(req.MapKey())
+	if !found {
+		GetNotFound.Add(1)
 		return nil, false
 	}
-	if !entry.IsSameFingerprint(req.Fingerprint()) {
-		entry.Release()
+	if !ptr.Acquire() {
+		GetNotAcquired.Add(1)
 		return nil, false
 	}
-	s.touch(entry)
-	return
+	if !ptr.IsSameFingerprint(req.Fingerprint()) {
+		ptr.Release()
+		GetNotTheSameFingerprint.Add(1)
+		return nil, false
+	}
+	if ptr.Entry != req { // different pointers
+		req.Remove() // then remove request entry
+		GetRequestsAcquired.Add(1)
+	}
+	s.touch(ptr)
+	GetFound.Add(1)
+	return ptr, true
 }
+
+var (
+	SetTheSamePointer  = &atomic.Int64{}
+	SetFoundAndUpdated = &atomic.Int64{}
+	SetFoundAndTouched = &atomic.Int64{}
+	SetInsertedNewOne  = &atomic.Int64{}
+	SetNotAdmitted     = &atomic.Int64{}
+)
 
 // Set inserts or updates a response in the cache, updating Weight usage and InMemoryStorage position.
 // On 'wasPersisted=true' must be called Entry.Finalize, otherwise Entry.Finalize.
-func (s *InMemoryStorage) Set(new *model.VersionPointer) (entry *model.VersionPointer, persisted bool) {
-	if !new.Acquire() {
-		return nil, false
-	}
-
+func (s *InMemoryStorage) Set(new *model.VersionPointer) (entry *model.VersionPointer) {
 	key := new.MapKey()
 
 	// increase access counter of tinyLFU
@@ -98,7 +122,9 @@ func (s *InMemoryStorage) Set(new *model.VersionPointer) (entry *model.VersionPo
 	// try to find existing entry
 	if old, found := s.shardedMap.Get(key); found {
 		if new.Entry == old.Entry {
-			return new, true
+			// just return because the new already acquired
+			SetTheSamePointer.Add(1)
+			return new
 		}
 
 		if old.Acquire() {
@@ -107,14 +133,16 @@ func (s *InMemoryStorage) Set(new *model.VersionPointer) (entry *model.VersionPo
 				if old.IsSamePayload(new.Entry) {
 					// nothing change, an existing entry has the same payload, just up the element in LRU list
 					s.touch(old)
+					SetFoundAndTouched.Add(1)
 				} else {
 					// payload has changes, updated it and up the element in LRU list of course
 					s.update(old, new)
+					SetFoundAndUpdated.Add(1)
 				}
 
-				new.Release()
-				// return old and say that it's already persisted
-				return old, true
+				new.Remove() // An attempt - because someone still possible has references to 'new' entry, we does now nothing about it.
+
+				return old
 			}
 
 			// hash collision found, remove collision element and try to set new one
@@ -123,33 +151,35 @@ func (s *InMemoryStorage) Set(new *model.VersionPointer) (entry *model.VersionPo
 	}
 
 	// check whether we are still into memory limit
-	//if s.ShouldEvict() { // if so then check admission by tinyLFU
-	//	fmt.Println("not admit")
-	//	if victim, admit := s.balancer.FindVictim(new.ShardKey()); !admit || !s.tinyLFU.Admit(new, victim) {
-	//		new.Release() // new entry was not admitted, remove it.
-	//		// it was not persisted, tell it as is
-	//		return new, false
-	//	}
-	//}
+	if s.ShouldEvict() { // if so then check admission by tinyLFU
+		if victim, admit := s.balancer.FindVictim(new.ShardKey()); !admit || !s.tinyLFU.Admit(new, victim) {
+			SetNotAdmitted.Add(1)
+			new.MarkAsDoomed()
+			return new
+		}
+	}
 
-	//if s.ShouldEvict() {
-	//	fmt.Printf("cur: %v, threshold: %v\n", utils.FmtMem(s.Mem()), utils.FmtMem(s.memoryThreshold))
-	//}
+	SetInsertedNewOne.Add(1)
 
 	// insert a new one Entry into map
 	s.shardedMap.Set(key, new)
 	// insert a new one Entry LRU element into LRU list
 	s.balancer.Push(new)
 
-	return new, true
+	return new
 }
 
-func (s *InMemoryStorage) Remove(entry *model.VersionPointer) {
+func (s *InMemoryStorage) Remove(entry *model.VersionPointer) (freedBytes int64, finalized bool) {
 	s.shardedMap.Remove(entry.MapKey())
+	return entry.Remove()
 }
 
 func (s *InMemoryStorage) Len() int64 {
 	return s.shardedMap.Len()
+}
+
+func (s *InMemoryStorage) RealLen() int64 {
+	return s.shardedMap.RealLen()
 }
 
 func (s *InMemoryStorage) Mem() int64 {

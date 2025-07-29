@@ -114,6 +114,15 @@ func (smap *Map[V]) Len() int64 {
 	return atomic.LoadInt64(&smap.len)
 }
 
+func (smap *Map[V]) RealLen() int64 {
+	length := int64(0)
+	for _, shard := range smap.shards {
+		length += shard.Len()
+	}
+	atomic.StoreInt64(&smap.len, length)
+	return length
+}
+
 func (smap *Map[V]) Mem() int64 {
 	return atomic.LoadInt64(&smap.mem)
 }

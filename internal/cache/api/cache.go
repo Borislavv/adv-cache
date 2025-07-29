@@ -11,6 +11,7 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
 	serverutils "github.com/Borislavv/advanced-cache/pkg/server/utils"
+	"github.com/Borislavv/advanced-cache/pkg/storage"
 	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
 	"github.com/Borislavv/advanced-cache/pkg/utils"
 	"github.com/fasthttp/router"
@@ -40,10 +41,10 @@ var (
 )
 
 var (
-	total         = &atomic.Uint64{}
-	hits          = &atomic.Uint64{}
-	misses        = &atomic.Uint64{}
-	errors        = &atomic.Uint64{}
+	total         = &atomic.Int64{}
+	hits          = &atomic.Int64{}
+	misses        = &atomic.Int64{}
+	errors        = &atomic.Int64{}
 	totalDuration = &atomic.Int64{} // UnixNano
 )
 
@@ -51,7 +52,7 @@ var (
 type CacheController struct {
 	cfg     *config.Cache
 	ctx     context.Context
-	cache   lru.Storage
+	cache   storage.Storage
 	metrics metrics.Meter
 	backend repository.Backender
 }
@@ -61,7 +62,7 @@ type CacheController struct {
 func NewCacheController(
 	ctx context.Context,
 	cfg *config.Cache,
-	cache lru.Storage,
+	cache storage.Storage,
 	metrics metrics.Meter,
 	backend repository.Backender,
 ) *CacheController {
@@ -140,7 +141,7 @@ func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) {
 		payloadLastModified int64
 	)
 
-	foundEntry, found := c.cache.Get(newEntry)
+	foundEntry, found := c.cache.Get(newEntry) // newEntry - terminates right here on found case
 	if !found {
 		misses.Add(1)
 
@@ -163,25 +164,19 @@ func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) {
 
 		if payloadStatus != http.StatusOK {
 			// bad status code received, process request and don't store in cache, removed after use of course
-			defer newEntry.Remove()
-
+			newEntry.Remove()
 			payloadLastModified = time.Now().UnixNano()
 		} else {
 			newEntry.SetPayload(path, queryString, queryHeaders, payloadHeaders, payloadBody, payloadStatus)
 			newEntry.SetRevalidator(c.backend.RevalidatorMaker())
 
 			// build and store new VersionPointer in cache
-			foundEntry = c.cache.Set(model.NewVersionPointer(newEntry))
-			defer foundEntry.Release() // an Entry stored in the cache must be released after use
-
-			payloadLastModified = foundEntry.UpdateAt()
+			newEntryPointer := c.cache.Set(model.NewVersionPointer(newEntry))
+			payloadLastModified = newEntryPointer.UpdateAt()
+			newEntryPointer.Release()
 		}
 	} else {
 		hits.Add(1)
-
-		// deferred release and remove
-		newEntry.Remove()          // new Entry which was used as request for query cache does not need anymore
-		defer foundEntry.Release() // an Entry retrieved from the cache must be released after use
 
 		payloadLastModified = foundEntry.UpdateAt()
 
@@ -191,9 +186,12 @@ func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) {
 		_, _, queryHeaders, payloadHeaders, payloadBody, payloadStatus, payloadReleaser, err = foundEntry.Payload()
 		defer payloadReleaser(queryHeaders, payloadHeaders)
 		if err != nil {
+			foundEntry.Release()
 			c.respondThatServiceIsTemporaryUnavailable(err, r)
 			return
 		}
+
+		foundEntry.Release()
 	}
 
 	// Write payloadStatus, payloadHeaders, and payloadBody from the cached (or fetched) response.
@@ -255,11 +253,11 @@ func (c *CacheController) runLoggerMetricsWriter() {
 		metricsTicker := utils.NewTicker(c.ctx, time.Second)
 
 		var (
-			totalNum         uint64
-			hitsNum          uint64
-			missesNum        uint64
-			errorsNum        uint64
-			proxiedNum       uint64
+			totalNum         int64
+			hitsNum          int64
+			missesNum        int64
+			errorsNum        int64
+			proxiedNum       int64
 			totalDurationNum int64
 		)
 
@@ -286,10 +284,10 @@ func (c *CacheController) runLoggerMetricsWriter() {
 				memUsage, length := c.cache.Stat()
 				c.metrics.SetCacheLength(uint64(length))
 				c.metrics.SetCacheMemory(uint64(memUsage))
-				c.metrics.SetHits(hitsNumLoc)
-				c.metrics.SetMisses(missesNumLoc)
-				c.metrics.SetErrors(errorsNumLoc)
-				c.metrics.SetProxiedNum(proxiedNumLoc)
+				c.metrics.SetHits(uint64(hitsNumLoc))
+				c.metrics.SetMisses(uint64(missesNumLoc))
+				c.metrics.SetErrors(uint64(errorsNumLoc))
+				c.metrics.SetProxiedNum(uint64(proxiedNumLoc))
 				c.metrics.SetRPS(float64(totalNumLoc))
 				c.metrics.SetAvgResponseTime(avgDuration)
 
@@ -300,7 +298,41 @@ func (c *CacheController) runLoggerMetricsWriter() {
 				proxiedNum += proxiedNumLoc
 				totalDurationNum += totalDurationNumLoc
 
+				acquired := model.Acquired.Load()
+				released := model.Released.Load()
+				removed := model.Removed.Load()
+				finalized := model.Finalized.Load()
+				doomedMarked := model.DoomedMarked.Load()
+
+				setTheSamePointer := lru.SetTheSamePointer.Load()
+				setFoundAndUpdated := lru.SetFoundAndUpdated.Load()
+				setFoundAndTouched := lru.SetFoundAndTouched.Load()
+				setInserted := lru.SetInsertedNewOne.Load()
+				setNotAdmitted := lru.SetNotAdmitted.Load()
+
+				getFound := lru.GetFound.Load()
+				getNotFound := lru.GetNotFound.Load()
+				getNotAcquired := lru.GetNotAcquired.Load()
+				getHashCollision := lru.GetNotTheSameFingerprint.Load()
+				getRequestsAcquired := lru.GetRequestsAcquired.Load()
+
+				notReleasedYet := acquired - (released + removed)
+				notFinalizedYet := (removed + doomedMarked) - finalized
+				set := setTheSamePointer + setFoundAndUpdated + setInserted + setNotAdmitted
+				get := getFound + getNotFound + getNotAcquired + getHashCollision
+
 				if i == logIntervalSecs {
+					log.Info().Msgf(
+						"[refCounting] notReleasedYet: %d (acquired: %d - (released: %d + removed: %d)), "+
+							"notFinalizedYet: %d (finalized: %d - (removed: %d + markedAsDoomed: %d)), "+
+							"get: %d (found: %d, notFound: %d, notAcquired: %d, hashCollision: %d, reqAcquired: %d), "+
+							"set: %d (setTheSamePointer: %d, setFoundAndTouched: %d, setFoundAndUpdated: %d, setInserted: %d, setNotAdmitted: %d)",
+						notReleasedYet, acquired, released, removed,
+						notFinalizedYet, finalized, removed, doomedMarked,
+						get, getFound, getNotFound, getNotAcquired, getHashCollision, getRequestsAcquired,
+						set, setTheSamePointer, setFoundAndTouched, setFoundAndUpdated, setInserted, setNotAdmitted,
+					)
+
 					elapsed := time.Since(prev)
 					duration := time.Duration(int(avgDuration))
 					rps := float64(totalNum) / elapsed.Seconds()

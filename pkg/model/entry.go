@@ -56,18 +56,17 @@ func (e *Entry) Init() *Entry {
 }
 
 func drainEntryPool() *Entry {
-	e := entriesPool.Get().(*Entry)
+	return entriesPool.Get().(*Entry)
+}
 
+func (e *Entry) backInUse() {
+	atomic.AddUint64(&e.version, 1)
 	atomic.StoreInt64(&e.isDoomed, 0)
 	atomic.StoreInt64(&e.refCount, 0)
 
 	if !e.Acquire(e.Version()) {
-		panic("drainEntryPool: cannot acquire entry from pool " + fmt.Sprintf(
-			"(version: %d, refCount: %d, isDoomed: %v, acq: %d, rel: %d, fin: %d)",
-			e.Version(), e.RefCount(), e.IsDoomed(), Acquired.Load(), Released.Load(), Finalized.Load(),
-		))
+		panic("failed to acquire drained entry")
 	}
-	return e
 }
 
 // NewEntryNetHttp accepts path, query and request headers as bytes slices.
@@ -87,7 +86,11 @@ func NewEntryNetHttp(cfg *config.Cache, r *http.Request) (*Entry, error) {
 	filteredHeaders, filteredHeadersReleaser := entry.GetFilteredAndSortedKeyHeadersNetHttp(r)
 	defer filteredHeadersReleaser(filteredHeaders)
 
-	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), nil
+	entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders)
+
+	entry.backInUse()
+
+	return entry, nil
 }
 
 // NewEntryFastHttp accepts path, query and request headers as bytes slices.
@@ -106,7 +109,11 @@ func NewEntryFastHttp(cfg *config.Cache, r *fasthttp.RequestCtx) (*Entry, error)
 	filteredHeaders, filteredHeadersReleaser := entry.getFilteredAndSortedKeyHeadersFastHttp(r)
 	defer filteredHeadersReleaser(filteredHeaders)
 
-	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), nil
+	entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders)
+
+	entry.backInUse()
+
+	return entry, nil
 }
 
 func IsRouteWasNotFound(err error) bool {
@@ -128,7 +135,11 @@ func NewEntryManual(cfg *config.Cache, path, query []byte, headers *[][2][]byte,
 
 	filteredHeaders := entry.filteredAndSortedKeyHeadersInPlace(headers)
 
-	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), nil
+	entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders)
+
+	entry.backInUse()
+
+	return entry, nil
 }
 
 func NewEntryFromField(
@@ -150,92 +161,149 @@ func NewEntryFromField(
 	entry.revalidator = revalidator
 	entry.isCompressed = isCompressed
 	entry.updatedAt = updatedAt
+	entry.backInUse()
 	return entry
 }
 
 func (e *Entry) MapKey() uint64   { return e.key }
 func (e *Entry) ShardKey() uint64 { return e.shard }
 
-func (e *Entry) RefCount() int64 { return e.refCount }
-func (e *Entry) IsDoomed() bool  { return e.isDoomed == 1 }
+func (e *Entry) RefCount() int64 { return atomic.LoadInt64(&e.refCount) }
+func (e *Entry) IsDoomed() bool  { return atomic.LoadInt64(&e.isDoomed) == 1 }
 
 const (
 	// refCount values
-	preDoomedCount = 1
-	zeroRefCount   = 0
-	doomedRefCount = -1
+	preDoomedRefCount      = 1
+	zeroRefCount           = 0
+	finalizingRefCountMark = -1
 	// isDoomed values
-	notDoomed = 0
-	doomed    = 1
+	notDoomedMark = 0
+	doomedMark    = 1
 )
 
 var (
-	Acquired  = &atomic.Int64{}
-	Released  = &atomic.Int64{}
-	Removed   = &atomic.Int64{}
-	Finalized = &atomic.Int64{}
+	Acquired     = &atomic.Int64{}
+	Released     = &atomic.Int64{}
+	Removed      = &atomic.Int64{}
+	Finalized    = &atomic.Int64{}
+	DoomedMarked = &atomic.Int64{}
 )
 
 func (e *Entry) Acquire(expectedVersion uint64) bool {
-	if e == nil {
-		return false
-	}
-	for {
-		curVersion := atomic.LoadUint64(&e.version)
-		if curVersion != expectedVersion {
-			return false
-		}
-		ref := atomic.LoadInt64(&e.refCount)
-		if ref <= doomedRefCount {
-			return false
-		}
-		if atomic.CompareAndSwapInt64(&e.refCount, ref, ref+1) {
-			// double-check Version to catch finalize()
-			curVersion = atomic.LoadUint64(&e.version)
-			if curVersion != expectedVersion {
-				panic("version does not match after CAS of refCount")
+	if e != nil {
+		for {
+			if e.wasEpochChanged(expectedVersion) || e.IsDoomed() {
+				panic("epoch was changed!")
 				return false
 			}
-			Acquired.Add(1)
-			return true
+			if ok, brake := e.incRefCount(); brake {
+				fmt.Println("brake while acquire, refCount: ", e.RefCount(), ", isDoomed: ", e.IsDoomed())
+				return false
+			} else if ok {
+				if e.wasEpochChanged(expectedVersion) {
+					return false
+				}
+				Acquired.Add(1)
+				return true
+			}
 		}
 	}
+	fmt.Println("entry(*e) == nil")
+	return false
+}
+
+func (e *Entry) release(remove, onlyMark bool) (freedBytes int64, finalized bool) {
+	if e != nil {
+		if remove {
+			e.markAsDoomed()
+			if onlyMark {
+				DoomedMarked.Add(1)
+				return
+			}
+			Removed.Add(1)
+		} else {
+			Released.Add(1)
+		}
+		for {
+			old := e.RefCount()
+			ok, brake := e.decRefCount(old)
+			if brake {
+				return
+			} else if !ok {
+				continue
+			}
+			if e.needFinalize(old) {
+				Finalized.Add(1)
+				return e.finalize(), true
+			}
+		}
+	}
+	return
 }
 
 func (e *Entry) Release() (freedBytes int64, finalized bool) {
-	if e == nil {
-		return
+	if e != nil {
+		return e.release(false, false)
 	}
-	Released.Add(1)
-	for {
-		if old := atomic.LoadInt64(&e.refCount); old != doomedRefCount {
-			if atomic.CompareAndSwapInt64(&e.refCount, old, old-1) {
-				if old == preDoomedCount && atomic.LoadInt64(&e.isDoomed) == doomed {
-					if atomic.CompareAndSwapInt64(&e.refCount, zeroRefCount, doomedRefCount) {
-						Finalized.Add(1)
-						return e.finalize(), true
-					}
-				}
-			}
-			return
-		}
-	}
+	return
 }
 
 func (e *Entry) Remove() (freedBytes int64, finalized bool) {
-	if e == nil {
-		return
+	if e != nil {
+		return e.release(true, false)
 	}
-	Removed.Add(1)
-	atomic.CompareAndSwapInt64(&e.isDoomed, notDoomed, doomed)
-	return e.Release()
+	return
+}
+
+func (e *Entry) MarkAsDoomed() {
+	if e != nil {
+		e.release(true, true)
+	}
+}
+
+func (e *Entry) markAsDoomed() {
+	atomic.CompareAndSwapInt64(&e.isDoomed, notDoomedMark, doomedMark)
+}
+
+func (e *Entry) wasEpochChanged(expectedVersion uint64) bool {
+	return atomic.LoadUint64(&e.version) != expectedVersion
+}
+
+func (e *Entry) markAsInFinalize() bool {
+	return atomic.CompareAndSwapInt64(&e.refCount, zeroRefCount, finalizingRefCountMark)
+}
+
+func (e *Entry) needFinalize(oldOneRefCount int64) bool {
+	if oldOneRefCount == preDoomedRefCount && atomic.LoadInt64(&e.isDoomed) == doomedMark {
+		return e.markAsInFinalize()
+	}
+	return false
+}
+
+func (e *Entry) incRefCount() (ok, brake bool) {
+	oldOne := atomic.LoadInt64(&e.refCount)
+	newOne := oldOne + 1
+	if oldOne > finalizingRefCountMark {
+		return atomic.CompareAndSwapInt64(&e.refCount, oldOne, newOne), false
+	}
+	return false, true
+}
+
+func (e *Entry) decRefCount(oldOneRefCount int64) (ok, brake bool) {
+	newOne := oldOneRefCount - 1
+	if newOne > finalizingRefCountMark {
+		return atomic.CompareAndSwapInt64(&e.refCount, oldOneRefCount, newOne), false
+	}
+	return false, true
 }
 
 // finalize - after this action you cannot use this Entry!
 // if you will, you will receive errors which are extremely hard-debug like "nil pointer dereference" and "non-consistent data into entry"
 // due to the Entry which was returned into pool will be used again in other threads.
 func (e *Entry) finalize() (freedMem int64) {
-	atomic.AddUint64(&e.version, 1)
+	if atomic.LoadInt64(&e.refCount) != finalizingRefCountMark {
+		return
+	}
 
 	e.key = 0
 	e.shard = 0
@@ -257,8 +325,12 @@ func (e *Entry) finalize() (freedMem int64) {
 
 	// return back to pool
 	entriesPool.Put(e)
-	
+
 	return
+}
+
+func (e *Entry) IsPersisted() bool {
+	return e.lruListElem.Load() != nil
 }
 
 func (e *Entry) Version() uint64 {

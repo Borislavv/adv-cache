@@ -13,11 +13,12 @@ type Storage interface {
 	Get(*model.Entry) (entry *model.VersionPointer, found bool)
 
 	// Set stores a new response in the cache and returns a releaser for managing resource lifetime.
-	// 1. You definitely cannot use 'request' after use in Set due to it can be removed, you will receive a cache entry on hit!
-	Set(request *model.VersionPointer) (entry *model.VersionPointer, persisted bool)
+	// 1. You definitely cannot use 'inEntry' after use in Set due to it can be removed, you will receive a cache entry on hit!
+	// 2. Use Release and Remove for manage Entry lifetime.
+	Set(inEntry *model.VersionPointer) (entry *model.VersionPointer)
 
 	// Remove is removes one element.
-	Remove(*model.VersionPointer)
+	Remove(*model.VersionPointer) (freedBytes int64, finalized bool)
 
 	// Clear is removes all cache entries from the storage.
 	Clear()
@@ -27,6 +28,8 @@ type Storage interface {
 
 	// Len - return stored value (refreshes every 100ms).
 	Len() int64
+
+	RealLen() int64
 
 	// Mem - return stored value (refreshes every 100ms).
 	Mem() int64

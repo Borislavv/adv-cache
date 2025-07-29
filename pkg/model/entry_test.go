@@ -3,6 +3,7 @@ package model
 import (
 	"bytes"
 	"compress/gzip"
+	"fmt"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/stretchr/testify/require"
 	"io"
@@ -20,8 +21,9 @@ func TestRefCountingNew(t *testing.T) {
 	)
 
 	for idx := 0; idx < 150; idx++ {
-		e := NewEntryFromField(0, 0, [16]byte{}, []byte(""), nil, nil, 0, 0)
-		db[idx] = NewVersionPointer(e)
+		db[idx] = NewVersionPointer(
+			NewEntryFromField(0, 0, [16]byte{}, []byte("hello_world"), nil, nil, 0, 0),
+		)
 	}
 
 	go func() {
@@ -44,7 +46,7 @@ func TestRefCountingNew(t *testing.T) {
 						mu.Unlock()
 						payload := te.payload.Load()
 						if payload == nil {
-							panic("payload is nil")
+							panic(fmt.Sprintf("payload is nil (version: %d, refCount: %d, isDoomed: %v)", te.Version(), te.RefCount(), te.IsDoomed()))
 						}
 						te.Release()
 					} else {
@@ -70,8 +72,9 @@ func TestRefCountingNew(t *testing.T) {
 					if old.Acquire() {
 						old.Remove()
 					}
-					e := NewEntryFromField(0, 0, [16]byte{}, []byte(""), nil, nil, 0, 0)
-					db[idx] = NewVersionPointer(e)
+					db[idx] = NewVersionPointer(
+						NewEntryFromField(0, 0, [16]byte{}, []byte("hello_world"), nil, nil, 0, 0),
+					)
 					mu.Unlock()
 				}
 			}

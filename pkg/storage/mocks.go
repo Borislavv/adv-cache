@@ -10,14 +10,18 @@ import (
 
 func LoadMocks(ctx context.Context, config *config.Cache, backend repository.Backender, storage Storage, num int) {
 	go func() {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(ctx)
+		defer cancel()
+
 		log.Info().Msg("[dump] dump restored 0 keys, mock data start loading")
 		defer log.Info().Msg("[dump] mocked data finished loading")
+
 		path := []byte("/api/v2/pagedata")
 		for entry := range mock.StreamEntryPointersConsecutive(ctx, config, backend, path, num) {
-			if inserted, persisted := storage.Set(entry); persisted {
-				inserted.Release()
-			} else {
-				inserted.Remove()
+			if _, removed := storage.Set(entry).Release(); removed { // remove after set means that memory limit exceeded
+				cancel()
+				break
 			}
 		}
 	}()

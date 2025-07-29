@@ -198,11 +198,7 @@ func (d *Dump) Load(ctx context.Context) error {
 					atomic.AddInt32(&errorNum, 1)
 					continue
 				}
-				if inserted, persisted := d.storage.Set(model.NewVersionPointer(entry)); persisted {
-					inserted.Release()
-				} else {
-					inserted.Remove()
-				}
+				d.storage.Set(model.NewVersionPointer(entry)).Release()
 				atomic.AddInt32(&successNum, 1)
 
 				select {

@@ -12,7 +12,7 @@ import (
 	httpserver "github.com/Borislavv/advanced-cache/pkg/server"
 	"github.com/Borislavv/advanced-cache/pkg/server/controller"
 	"github.com/Borislavv/advanced-cache/pkg/server/middleware"
-	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
+	"github.com/Borislavv/advanced-cache/pkg/storage"
 	"github.com/rs/zerolog/log"
 	"sync"
 	"sync/atomic"
@@ -32,7 +32,7 @@ type Http interface {
 type HttpServer struct {
 	ctx           context.Context
 	cfg           *config.Cache
-	db            lru.Storage
+	db            storage.Storage
 	backend       repository.Backender
 	probe         liveness.Prober
 	metrics       metrics.Meter
@@ -45,7 +45,7 @@ type HttpServer struct {
 func New(
 	ctx context.Context,
 	cfg *config.Cache,
-	db lru.Storage,
+	db storage.Storage,
 	backend repository.Backender,
 	probe liveness.Prober,
 	meter metrics.Meter,

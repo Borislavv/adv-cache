@@ -2,7 +2,6 @@ package lru
 
 import (
 	"context"
-	"fmt"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/rs/zerolog/log"
 	"runtime"
@@ -49,6 +48,7 @@ func NewEvictor(ctx context.Context, cfg *config.Cache, db *InMemoryStorage, bal
 // Run is the main background eviction loop for one worker.
 // Each worker tries to bring Weight usage under the threshold by evicting from most loaded shards.
 func (e *Evict) Run() *Evict {
+	return e
 	e.runLogger()
 	go func() {
 		t := utils.NewTicker(e.ctx, time.Millisecond*500)
@@ -114,15 +114,11 @@ func (e *Evict) evictUntilWithinLimit() (items int, mem int64) {
 				continue // already marked as doomed but not removed yet, skip it
 			}
 
-			e.db.Remove(entry)
-
-			freedMem, isHit := entry.Remove()
+			freedMem, isHit := e.db.Remove(entry)
 			if isHit {
 				items++
 				evictions++
 				mem += freedMem
-
-				fmt.Printf("-----> remove: refCount=%d, isDoomed=%v\n", entry.RefCount(), entry.IsDoomed())
 			}
 
 			offset++

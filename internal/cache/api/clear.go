@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"github.com/Borislavv/advanced-cache/pkg/config"
-	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
+	"github.com/Borislavv/advanced-cache/pkg/storage"
 	"sync"
 	"time"
 
@@ -15,14 +15,14 @@ import (
 )
 
 type ClearController struct {
-	db      lru.Storage
+	db      storage.Storage
 	cfg     *config.Cache
 	mu      sync.Mutex
 	token   string
 	expires time.Time
 }
 
-func NewClearController(cfg *config.Cache, db lru.Storage) *ClearController {
+func NewClearController(cfg *config.Cache, db storage.Storage) *ClearController {
 	return &ClearController{cfg: cfg, db: db}
 }
 
