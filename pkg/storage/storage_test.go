@@ -2,9 +2,11 @@ package storage
 
 import (
 	"context"
+	"fmt"
 	"github.com/Borislavv/advanced-cache/pkg/mock"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
 	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -92,8 +94,13 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 	db := lru.NewStorage(ctx, cfg, backend)
 
 	entries := mock.GenerateEntryPointersConsecutive(cfg, backend, path, maxEntriesNum)
+	for _, entry := range entries {
+		db.Set(entry)
+	}
 	length := len(entries)
 
+	var ok int64
+	var total int64
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
@@ -105,6 +112,10 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 		}
 	})
 	b.StopTimer()
+
+	if atomic.LoadInt64(&ok) != atomic.LoadInt64(&total) {
+		panic(fmt.Sprintf("BenchmarkReadFromStorage1000TimesPerIter: total[%d] != ok[%d]", atomic.LoadInt64(&total), atomic.LoadInt64(&ok)))
+	}
 }
 
 func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
