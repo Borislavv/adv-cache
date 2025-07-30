@@ -2,10 +2,12 @@ package storage
 
 import (
 	"bufio"
+	"compress/gzip"
 	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"os"
 	"path/filepath"
@@ -22,180 +24,192 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-var (
-	errDumpNotEnabled = errors.New("persistence mode is not enabled")
-)
+var errDumpNotEnabled = errors.New("persistence mode is not enabled")
 
-// Dumper defines dump & load operations.
 type Dumper interface {
 	Dump(ctx context.Context) error
 	Load(ctx context.Context) error
 }
 
-// Dump implements persistence with versioned directories.
 type Dump struct {
 	cfg     *config.Cache
 	storage Storage
 	backend repository.Backender
 }
 
-// NewDumper constructs a Dump.
 func NewDumper(cfg *config.Cache, storage Storage, backend repository.Backender) *Dump {
-	return &Dump{
-		cfg:     cfg,
-		storage: storage,
-		backend: backend,
-	}
+	return &Dump{cfg, storage, backend}
 }
 
-// Dump writes all entries into a new versioned directory.
-// It then rotates old dirs, keeping only the latest cfg.MaxVersions.
 func (d *Dump) Dump(ctx context.Context) error {
 	start := time.Now()
 	cfg := d.cfg.Cache.Persistence.Dump
 	if !d.cfg.Cache.Enabled || !cfg.IsEnabled {
 		return errDumpNotEnabled
 	}
-
-	// Ensure base dir exists
 	if err := os.MkdirAll(cfg.Dir, 0o755); err != nil {
 		return fmt.Errorf("create base dump dir: %w", err)
 	}
 
-	// Determine new version dir
-	version := nextVersionDir(cfg.Dir)
-	versionDir := filepath.Join(cfg.Dir, fmt.Sprintf("v%d", version))
+	versionDir := filepath.Join(cfg.Dir, fmt.Sprintf("v%d", nextVersionDir(cfg.Dir)))
 	if err := os.MkdirAll(versionDir, 0o755); err != nil {
 		return fmt.Errorf("create version dir: %w", err)
 	}
-
 	timestamp := time.Now().Format("20060102T150405")
 	var wg sync.WaitGroup
-	var successNum, errorNum int32
+	var success, failures int32
 
-	// Parallel dump shards
-	d.storage.WalkShards(func(shardKey uint64, shard *sharded.Shard[*model.VersionPointer]) {
+	d.storage.WalkShards(ctx, func(shardKey uint64, shard *sharded.Shard[*model.Entry]) {
 		wg.Add(1)
-		go func(sh uint64) {
+		go func(key uint64, s *sharded.Shard[*model.Entry]) {
 			defer wg.Done()
+			ext := ".dump"
+			if cfg.Gzip {
+				ext += ".gz"
+			}
+			name := fmt.Sprintf("%s/%s-shard-%d-%s%s", versionDir, cfg.Name, key, timestamp, ext)
+			tmp := name + ".tmp"
 
-			filename := fmt.Sprintf("%s/%s-shard-%d-%s.dump",
-				versionDir, cfg.Name, sh, timestamp)
-			tmpName := filename + ".tmp"
-
-			f, err := os.Create(tmpName)
+			f, err := os.Create(tmp)
 			if err != nil {
-				log.Error().Err(err).Msg("[dump] create error")
-				atomic.AddInt32(&errorNum, 1)
+				log.Error().Err(err).Str("file", tmp).Msg("[dump] create error")
+				atomic.AddInt32(&failures, 1)
 				return
 			}
-			defer f.Close()
+			var (
+				writer io.Writer = f
+				gw     *gzip.Writer
+			)
+			if cfg.Gzip {
+				gw = gzip.NewWriter(f)
+				writer = gw
+			}
+			bw := bufio.NewWriterSize(writer, 512*1024)
 
-			bw := bufio.NewWriterSize(f, 512*1024)
-			shard.Walk(ctx, func(key uint64, entry *model.VersionPointer) bool {
-				data, releaser := entry.ToBytes()
-				defer releaser()
+			s.Walk(ctx, func(_ uint64, e *model.Entry) bool {
+				data, release := e.ToBytes()
+				defer release()
+				var crc uint32
+				if cfg.Crc32Control {
+					crc = crc32.ChecksumIEEE(data)
+				}
 
-				// write length + data
-				var lenBuf [4]byte
-				binary.LittleEndian.PutUint32(lenBuf[:], uint32(len(data)))
-				bw.Write(lenBuf[:])
-				bw.Write(data)
-				atomic.AddInt32(&successNum, 1)
+				var lenBuf [8]byte
+				binary.LittleEndian.PutUint32(lenBuf[0:4], uint32(len(data)))
+				binary.LittleEndian.PutUint32(lenBuf[4:8], crc)
+				if _, err := bw.Write(lenBuf[:]); err != nil {
+					atomic.AddInt32(&failures, 1)
+					return true
+				}
+				if _, err := bw.Write(data); err != nil {
+					atomic.AddInt32(&failures, 1)
+					return true
+				}
+				atomic.AddInt32(&success, 1)
 				return true
 			}, true)
 
-			bw.Flush()
-			f.Close() // ensure file closed before rename
-			os.Rename(tmpName, filename)
-		}(shardKey)
+			_ = bw.Flush()
+			if gw != nil {
+				_ = gw.Close()
+			}
+			_ = f.Close()
+			_ = os.Rename(tmp, name)
+		}(shardKey, shard)
 	})
 
 	wg.Wait()
-
-	// Rotate old version dirs, keeping only latest MaxVersions
 	if cfg.MaxVersions > 0 {
 		rotateVersionDirs(cfg.Dir, cfg.MaxVersions)
 	}
 
-	log.Info().
-		Msgf("[dump] finished: %d entries, errors: %d, elapsed: %s",
-			successNum, errorNum, time.Since(start))
-
-	if errorNum > 0 {
-		return fmt.Errorf("dump finished with %d errors", errorNum)
+	log.Info().Msgf("[dump] finished: %d entries, errors: %d, elapsed: %s", success, failures, time.Since(start))
+	if failures > 0 {
+		return fmt.Errorf("dump finished with %d errors", failures)
 	}
 	return nil
 }
 
-// Load reads from the latest versioned dir; if none, falls back to mock.
 func (d *Dump) Load(ctx context.Context) error {
-	var successNum int32
-
 	start := time.Now()
 	cfg := d.cfg.Cache.Persistence.Dump
 	if !d.cfg.Cache.Enabled || !cfg.IsEnabled {
 		return errDumpNotEnabled
 	}
 
-	latestDir := getLatestVersionDir(cfg.Dir)
-	if latestDir == "" {
+	dir := getLatestVersionDir(cfg.Dir)
+	if dir == "" {
 		return fmt.Errorf("no versioned dump dirs found in %s", cfg.Dir)
 	}
 
-	pattern := fmt.Sprintf("%s-shard-*.dump", cfg.Name)
-	files, err := filepath.Glob(filepath.Join(latestDir, pattern))
-	if err != nil {
-		return fmt.Errorf("glob error: %w", err)
-	}
+	pattern := filepath.Join(dir, fmt.Sprintf("%s-shard-*.dump*", cfg.Name))
+	files, _ := filepath.Glob(pattern)
 	if len(files) == 0 {
-		return fmt.Errorf("no dump files found in %s", latestDir)
+		return fmt.Errorf("no dump files found in %s", dir)
 	}
-
-	latestTs := extractLatestTimestamp(files)
-	toLoad := filterFilesByTimestamp(files, latestTs)
+	ts := extractLatestTimestamp(files)
+	files = filterFilesByTimestamp(files, ts)
 
 	var wg sync.WaitGroup
-	var errorNum int32
+	var success, failures int32
 
-	for _, file := range toLoad {
+	for _, file := range files {
 		wg.Add(1)
 		go func(fn string) {
 			defer wg.Done()
+
 			f, err := os.Open(fn)
 			if err != nil {
-				log.Error().Err(err).Msg("[load] open error")
-				atomic.AddInt32(&errorNum, 1)
+				log.Error().Err(err).Str("file", fn).Msg("[load] open error")
+				atomic.AddInt32(&failures, 1)
 				return
 			}
 			defer f.Close()
 
-			br := bufio.NewReaderSize(f, 512*1024)
-			var sizeBuf [4]byte
+			var reader io.Reader = f
+			if strings.HasSuffix(fn, ".gz") {
+				gzr, err := gzip.NewReader(f)
+				if err != nil {
+					log.Error().Err(err).Str("file", fn).Msg("[load] gzip open error")
+					atomic.AddInt32(&failures, 1)
+					return
+				}
+				defer gzr.Close()
+				reader = gzr
+			}
+
+			br := bufio.NewReaderSize(reader, 512*1024)
+			var metaBuf [8]byte
 			for {
-				if _, err := io.ReadFull(br, sizeBuf[:]); err == io.EOF {
+				if _, err := io.ReadFull(br, metaBuf[:]); err == io.EOF {
 					break
 				} else if err != nil {
-					log.Error().Err(err).Msg("[load] read size error")
-					atomic.AddInt32(&errorNum, 1)
+					log.Error().Err(err).Str("file", fn).Msg("[load] read meta error")
+					atomic.AddInt32(&failures, 1)
 					break
 				}
-				sz := binary.LittleEndian.Uint32(sizeBuf[:])
+
+				sz := binary.LittleEndian.Uint32(metaBuf[0:4])
+				expCRC := binary.LittleEndian.Uint32(metaBuf[4:8])
 				buf := make([]byte, sz)
 				if _, err := io.ReadFull(br, buf); err != nil {
-					log.Error().Err(err).Msg("[load] read entry error")
-					atomic.AddInt32(&errorNum, 1)
+					log.Error().Err(err).Str("file", fn).Msg("[load] read entry error")
+					atomic.AddInt32(&failures, 1)
 					break
 				}
-				entry, err := model.EntryFromBytes(buf, d.cfg, d.backend)
-				if err != nil {
-					log.Error().Err(err).Msg("[load] entry decode error")
-					atomic.AddInt32(&errorNum, 1)
+				if cfg.Crc32Control && crc32.ChecksumIEEE(buf) != expCRC {
+					log.Error().Str("file", fn).Msg("[load] crc mismatch")
+					atomic.AddInt32(&failures, 1)
 					continue
 				}
-				d.storage.Set(model.NewVersionPointer(entry)).Release()
-				atomic.AddInt32(&successNum, 1)
-
+				e, err := model.EntryFromBytes(buf, d.cfg, d.backend)
+				if err != nil {
+					log.Error().Err(err).Str("file", fn).Msg("[load] entry decode error")
+					atomic.AddInt32(&failures, 1)
+					continue
+				}
+				d.storage.Set(e)
+				atomic.AddInt32(&success, 1)
 				select {
 				case <-ctx.Done():
 					return
@@ -206,11 +220,9 @@ func (d *Dump) Load(ctx context.Context) error {
 	}
 
 	wg.Wait()
-	log.Info().
-		Msgf("[dump] restored: %d entries, errors: %d, elapsed: %s",
-			successNum, errorNum, time.Since(start))
-	if errorNum > 0 {
-		return fmt.Errorf("load finished with %d errors", errorNum)
+	log.Info().Msgf("[dump] restored: %d entries, errors: %d, elapsed: %s", success, failures, time.Since(start))
+	if failures > 0 {
+		return fmt.Errorf("load finished with %d errors", failures)
 	}
 	return nil
 }

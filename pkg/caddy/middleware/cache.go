@@ -51,7 +51,7 @@ type CacheMiddleware struct {
 	cfg        *config.Cache
 	storage    storage.Storage
 	backend    repository.Backender
-	refresher  storage.Refresher
+	refresher  lru.Refresher
 	evictor    lru.Evictor
 	dumper     storage.Dumper
 	metrics    metrics.Meter
@@ -135,24 +135,16 @@ func (m *CacheMiddleware) handleThroughCache(w http.ResponseWriter, r *http.Requ
 
 		if status != http.StatusOK {
 			errors.Add(1)
-
-			// non-positive status code received, skip saving
-			defer newEntry.Remove()
 		} else {
 			// Save the response into the new newEntry
 			newEntry.SetPayload(path, query, queryHeaders, headers, body, status)
 			newEntry.SetRevalidator(m.backend.RevalidatorMaker())
 
 			// build and store new Entry in cache
-			foundEntry = m.storage.Set(model.NewVersionPointer(newEntry))
-			defer foundEntry.Release() // an Entry stored in the cache must be released after use
+			m.storage.Set(newEntry)
 		}
 	} else {
 		hits.Add(1)
-
-		// deferred release and remove
-		newEntry.Remove()          // new Entry which was used as request for query cache does not need anymore
-		defer foundEntry.Release() // an Entry retrieved from the cache must be released after use
 
 		// Always read from cached foundEntry
 		var queryHeaders *[][2][]byte

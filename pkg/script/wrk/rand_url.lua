@@ -1,11 +1,47 @@
 -- random_url.lua
 math.randomseed(os.time())
 
+-- sequential_url.lua
+
+-- Диапазон ключей
+local i_min, i_max = 1, 100000
+
+-- Фиксированный язык
+local language = "en"
+
+-- Фиксированные значения
+local domain = "1x001.com"
+local project_id = "285"
+
+-- Флаг для вывода первого запроса
+local printed_first = false
+
 request = function()
-    local sport = math.random(1, 10)
-    local championship = math.random(1, 100)
-    local match = math.random(1, 100)
-    local q = "choice[name]=betting&choice[choice][name]=betting_live&choice[choice][choice]=betting_live_null&choice[choice][choice][choice]=betting_live_null_".. sport .."&choice[choice][choice][choice][choice]=betting_live_null_".. sport .."_".. championship .."&choice[choice][choice][choice][choice][choice]=betting_live_null_".. sport .."_".. championship .."_".. match
-    local path = "/api/v2/pagedata?language=en&domain=melbet-djibouti.com&timezone=3&project[id]=62&stream=homepage&" .. q
-    return wrk.format("GET", path)
+    i = math.random(i_min, i_max)
+    local q =
+        "?project[id]=" .. project_id ..
+        "&domain=" .. domain ..
+        "&language=" .. language ..
+        "&choice[name]=betting" ..
+        "&choice[choice][name]=betting_live" ..
+        "&choice[choice][choice][name]=betting_live_null" ..
+        "&choice[choice][choice][choice][name]=betting_live_null_" .. i ..
+        "&choice[choice][choice][choice][choice][name]=betting_live_null_" .. i .. "_" .. i ..
+        "&choice[choice][choice][choice][choice][choice][name]=betting_live_null_" .. i .. "_" .. i .. "_" .. i ..
+        "&choice[choice][choice][choice][choice][choice][choice]=null"
+
+    local path = "/api/v2/pagedata" .. q
+
+    -- Инкремент и цикл
+    i = i + 1
+    if i > i_max then
+        i = i_min
+    end
+
+    return wrk.format("GET", path, {
+        ["Host"] = "0.0.0.0:8020",
+        ["Accept-Encoding"] = "gzip, deflate, br",
+        ["Accept-Language"] = "en-US,en;q=0.9",
+        ["Content-Type"] = "application/json"
+    })
 end

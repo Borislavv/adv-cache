@@ -26,7 +26,6 @@ import (
 )
 
 var (
-	entriesPool       = &sync.Pool{New: func() any { return new(Entry).Init() }}
 	bufPool           = &sync.Pool{New: func() any { return new(bytes.Buffer) }}
 	hasherPool        = &sync.Pool{New: func() any { return xxh3.New() }}
 	ruleNotFoundError = errors.New("rule not found")
@@ -39,26 +38,16 @@ type Entry struct {
 	fingerprint  [16]byte // 128 bit xxh
 	rule         *config.Rule
 	payload      *atomic.Pointer[[]byte]
-	lruListElem  *atomic.Pointer[list.Element[*VersionPointer]]
+	lruListElem  *atomic.Pointer[list.Element[*Entry]]
 	revalidator  Revalidator
-	updatedAt    int64  // atomic: unix nano (last update was at)
-	isCompressed int64  // atomic: bool as int64
-	isDoomed     int64  // atomic: bool as int64
-	refCount     int64  // atomic: simple counter
-	version      uint64 // atomic: solves ABA problem (pattern: version pointers)
-	// (when you already changed an object in storage but someone just now try to do Acquire on already finalized and reused object)
+	updatedAt    int64 // atomic: unix nano (last update was at)
+	isCompressed int64 // atomic: bool as int64
 }
 
 func (e *Entry) Init() *Entry {
 	e.payload = &atomic.Pointer[[]byte]{}
-	e.lruListElem = &atomic.Pointer[list.Element[*VersionPointer]]{}
-	return e
-}
-
-func drainEntryPool() *Entry {
-	e := entriesPool.Get().(*Entry)
-	atomic.StoreInt64(&e.isDoomed, 0)
-	atomic.StoreInt64(&e.refCount, 1)
+	e.lruListElem = &atomic.Pointer[list.Element[*Entry]]{}
+	atomic.StoreInt64(&e.updatedAt, time.Now().UnixNano())
 	return e
 }
 
@@ -70,7 +59,7 @@ func NewEntryNetHttp(cfg *config.Cache, r *http.Request) (*Entry, error) {
 		return nil, ruleNotFoundError
 	}
 
-	entry := drainEntryPool()
+	entry := new(Entry).Init()
 	entry.rule = rule
 
 	filteredQueries, filteredQueriesReleaser := entry.GetFilteredAndSortedKeyQueriesNetHttp(r)
@@ -79,7 +68,9 @@ func NewEntryNetHttp(cfg *config.Cache, r *http.Request) (*Entry, error) {
 	filteredHeaders, filteredHeadersReleaser := entry.GetFilteredAndSortedKeyHeadersNetHttp(r)
 	defer filteredHeadersReleaser(filteredHeaders)
 
-	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), nil
+	entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders)
+
+	return entry, nil
 }
 
 // NewEntryFastHttp accepts path, query and request headers as bytes slices.
@@ -89,7 +80,7 @@ func NewEntryFastHttp(cfg *config.Cache, r *fasthttp.RequestCtx) (*Entry, error)
 		return nil, ruleNotFoundError
 	}
 
-	entry := drainEntryPool()
+	entry := new(Entry).Init()
 	entry.rule = rule
 
 	filteredQueries, filteredQueriesReleaser := entry.getFilteredAndSortedKeyQueriesFastHttp(r)
@@ -98,7 +89,9 @@ func NewEntryFastHttp(cfg *config.Cache, r *fasthttp.RequestCtx) (*Entry, error)
 	filteredHeaders, filteredHeadersReleaser := entry.getFilteredAndSortedKeyHeadersFastHttp(r)
 	defer filteredHeadersReleaser(filteredHeaders)
 
-	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), nil
+	entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders)
+
+	return entry, nil
 }
 
 func IsRouteWasNotFound(err error) bool {
@@ -111,7 +104,7 @@ func NewEntryManual(cfg *config.Cache, path, query []byte, headers *[][2][]byte,
 		return nil, ruleNotFoundError
 	}
 
-	entry := drainEntryPool()
+	entry := new(Entry).Init()
 	entry.rule = rule
 	entry.revalidator = revalidator
 
@@ -120,7 +113,9 @@ func NewEntryManual(cfg *config.Cache, path, query []byte, headers *[][2][]byte,
 
 	filteredHeaders := entry.filteredAndSortedKeyHeadersInPlace(headers)
 
-	return entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders), nil
+	entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders)
+
+	return entry, nil
 }
 
 func NewEntryFromField(
@@ -133,7 +128,7 @@ func NewEntryFromField(
 	isCompressed int64,
 	updatedAt int64,
 ) *Entry {
-	entry := drainEntryPool()
+	entry := new(Entry).Init()
 	entry.key = key
 	entry.shard = shard
 	entry.fingerprint = fingerprint
@@ -147,94 +142,6 @@ func NewEntryFromField(
 
 func (e *Entry) MapKey() uint64   { return e.key }
 func (e *Entry) ShardKey() uint64 { return e.shard }
-
-const (
-	// refCount values
-	preDoomedCount = 1
-	zeroRefCount   = 0
-	doomedRefCount = -1
-	// isDoomed values
-	notDoomed = 0
-	doomed    = 1
-)
-
-func (e *Entry) Acquire(expectedVersion uint64) bool {
-	if e == nil {
-		return false
-	}
-	for {
-		curVersion := atomic.LoadUint64(&e.version)
-		if curVersion != expectedVersion {
-			return false
-		}
-		ref := atomic.LoadInt64(&e.refCount)
-		if ref < 0 {
-			return false
-		}
-		if atomic.CompareAndSwapInt64(&e.refCount, ref, ref+1) {
-			// double-check Version to catch finalize()
-			if atomic.LoadUint64(&e.version) != expectedVersion {
-				e.Release()
-				return false
-			}
-			return true
-		}
-	}
-}
-
-func (e *Entry) Release() {
-	if e == nil {
-		return
-	}
-	for {
-		if old := atomic.LoadInt64(&e.refCount); atomic.CompareAndSwapInt64(&e.refCount, old, old-1) {
-			if old == preDoomedCount && atomic.LoadInt64(&e.isDoomed) == doomed {
-				if atomic.CompareAndSwapInt64(&e.refCount, zeroRefCount, doomedRefCount) {
-					e.finalize()
-					return
-				}
-			}
-			return
-		}
-	}
-}
-
-func (e *Entry) Remove() {
-	if e == nil {
-		return
-	}
-	if atomic.CompareAndSwapInt64(&e.isDoomed, notDoomed, doomed) {
-		e.Release()
-		return
-	}
-	return
-}
-
-// finalize - after this action you cannot use this Entry!
-// if you will, you will receive errors which are extremely hard-debug like "nil pointer dereference" and "non-consistent data into entry"
-// due to the Entry which was returned into pool will be used again in other threads.
-func (e *Entry) finalize() (freedMem int64) {
-	atomic.AddUint64(&e.version, 1)
-
-	e.key = 0
-	e.shard = 0
-	e.rule = nil
-	e.updatedAt = 0
-	e.isCompressed = 0
-	e.revalidator = nil
-	e.lruListElem.Store(nil)
-	e.payload.Store(nil)
-	freedMem = e.Weight()
-
-	// return back to pool
-	entriesPool.Put(e)
-
-	return
-}
-
-func (e *Entry) Version() uint64 {
-	return atomic.LoadUint64(&e.version)
-}
 
 var keyBufPool = sync.Pool{
 	New: func() interface{} {
@@ -292,8 +199,46 @@ func (e *Entry) calculateAndSetUpKeys(filteredQueries, filteredHeaders *[][2][]b
 	return e
 }
 
+func (e *Entry) DumpBuffer(r *fasthttp.RequestCtx) {
+	filteredQueries, filteredQueriesReleaser := e.getFilteredAndSortedKeyQueriesFastHttp(r)
+	defer filteredQueriesReleaser(filteredQueries)
+
+	filteredHeaders, filteredHeadersReleaser := e.getFilteredAndSortedKeyHeadersFastHttp(r)
+	defer filteredHeadersReleaser(filteredHeaders)
+
+	l := 0
+	for _, pair := range *filteredQueries {
+		l += len(pair[0]) + len(pair[1])
+	}
+	for _, pair := range *filteredHeaders {
+		l += len(pair[0]) + len(pair[1])
+	}
+
+	buf := keyBufPool.Get().(*bytes.Buffer)
+	buf.Grow(l)
+	defer func() {
+		buf.Reset()
+		keyBufPool.Put(buf)
+	}()
+
+	for _, pair := range *filteredQueries {
+		buf.Write(pair[0])
+		buf.Write(pair[1])
+	}
+	for _, pair := range *filteredHeaders {
+		buf.Write(pair[0])
+		buf.Write(pair[1])
+	}
+
+	fmt.Println("buffer--->>>>", buf.String())
+}
+
 func (e *Entry) Fingerprint() [16]byte {
 	return e.fingerprint
+}
+
+func (e *Entry) IsSamePayload(another *Entry) bool {
+	return e.isPayloadsAreEquals(e.PayloadBytes(), another.PayloadBytes())
 }
 
 func (e *Entry) IsSameFingerprint(another [16]byte) bool {
@@ -303,6 +248,14 @@ func (e *Entry) IsSameFingerprint(another [16]byte) bool {
 func (e *Entry) IsSameEntry(another *Entry) bool {
 	return subtle.ConstantTimeCompare(e.fingerprint[:], another.fingerprint[:]) == 1 &&
 		e.isPayloadsAreEquals(e.PayloadBytes(), another.PayloadBytes())
+}
+
+func (e *Entry) SwapPayloads(another *Entry) {
+	another.payload.Store(e.payload.Swap(another.payload.Load()))
+}
+
+func (e *Entry) TouchUpdatedAt() {
+	atomic.StoreInt64(&e.updatedAt, time.Now().Unix())
 }
 
 func (e *Entry) SetRevalidator(revalidator Revalidator) {
@@ -699,9 +652,9 @@ func (e *Entry) getFilteredAndSortedKeyHeadersFastHttp(r *fasthttp.RequestCtx) (
 	allowed := e.rule.CacheKey.HeadersMap
 
 	n := 0
-	r.Request.Header.VisitAll(func(k, v []byte) {
+	r.Request.Header.All()(func(k, v []byte) bool {
 		if _, ok := allowed[unsafe.String(unsafe.SliceData(k), len(k))]; !ok {
-			return
+			return true
 		}
 
 		if n < cap(*out) {
@@ -717,6 +670,8 @@ func (e *Entry) getFilteredAndSortedKeyHeadersFastHttp(r *fasthttp.RequestCtx) (
 			*out = append(*out, [2][]byte{k, v})
 		}
 		n++
+
+		return true
 	})
 
 	*out = (*out)[:n]
@@ -821,12 +776,12 @@ func (e *Entry) filteredAndSortedKeyHeadersInPlace(headers *[][2][]byte) *[][2][
 }
 
 // SetLruListElement sets the LRU list element pointer.
-func (e *Entry) SetLruListElement(el *list.Element[*VersionPointer]) {
+func (e *Entry) SetLruListElement(el *list.Element[*Entry]) {
 	e.lruListElem.Store(el)
 }
 
 // LruListElement returns the LRU list element pointer (for LRU cache management).
-func (e *Entry) LruListElement() *list.Element[*VersionPointer] {
+func (e *Entry) LruListElement() *list.Element[*Entry] {
 	return e.lruListElem.Load()
 }
 
@@ -837,28 +792,38 @@ func (e *Entry) ShouldBeRefreshed(cfg *config.Cache) bool {
 		return false
 	}
 
-	now := time.Now().UnixNano()
+	var (
+		ttl         = cfg.Cache.Refresh.TTL.Nanoseconds()
+		beta        = cfg.Cache.Refresh.Beta
+		coefficient = cfg.Cache.Refresh.Coefficient
+	)
+
+	if e.rule.Refresh != nil {
+		if !e.rule.Refresh.Enabled {
+			return false
+		}
+
+		if e.rule.Refresh.TTL.Nanoseconds() > 0 {
+			ttl = e.rule.Refresh.TTL.Nanoseconds()
+		}
+		if e.rule.Refresh.Beta > 0 {
+			beta = e.rule.Refresh.Beta
+		}
+		if e.rule.Refresh.Coefficient > 0 {
+			coefficient = e.rule.Refresh.Coefficient
+		}
+	}
+
 	// время, прошедшее с последнего обновления
-	elapsed := now - atomic.LoadInt64(&e.updatedAt)
-	if elapsed < 0 {
-		// если по какой‑то причине clock skew, считаем, что прошло 0
-		elapsed = 0
+	elapsed := time.Now().UnixNano() - atomic.LoadInt64(&e.updatedAt)
+	minStale := int64(float64(ttl) * coefficient)
+
+	if minStale > elapsed {
+		return false
 	}
 
-	// TTL из правила, иначе из глобальной конфигурации
-	interval := e.rule.TTL.Nanoseconds()
-	if interval == 0 {
-		interval = cfg.Cache.Refresh.TTL.Nanoseconds()
-	}
-
-	// β из правила, иначе из глобальной конфигурации
-	beta := e.rule.Beta
-	if beta == 0 {
-		beta = cfg.Cache.Refresh.Beta
-	}
-
-	// нормируем x = elapsed / interval в [0,1]
-	x := float64(elapsed) / float64(interval)
+	// нормируем x = elapsed / ttl в [0,1]
+	x := float64(elapsed) / float64(ttl)
 	if x < 0 {
 		x = 0
 	} else if x > 1 {
@@ -916,7 +881,7 @@ func (e *Entry) ToBytes() (data []byte, releaseFn func()) {
 	buf.Write(scratch4[:])
 	buf.Write(rulePath)
 
-	// === Key ===
+	// === RuleKey ===
 	binary.LittleEndian.PutUint64(scratch8[:], e.key)
 	buf.Write(scratch8[:])
 
@@ -961,7 +926,7 @@ func EntryFromBytes(data []byte, cfg *config.Cache, backend repository.Backender
 		return nil, fmt.Errorf("rule not found for path: '%s'", string(rulePath))
 	}
 
-	// Key
+	// RuleKey
 	key := binary.LittleEndian.Uint64(data[offset:])
 	offset += 8
 
@@ -1026,7 +991,7 @@ func (e *Entry) DumpPayload() {
 	}
 
 	fmt.Printf("\n========== DUMP PAYLOAD ==========\n")
-	fmt.Printf("Key:          %d\n", e.key)
+	fmt.Printf("RuleKey:          %d\n", e.key)
 	fmt.Printf("Shard:        %d\n", e.shard)
 	fmt.Printf("IsCompressed: %v\n", e.IsCompressed())
 	fmt.Printf("UpdateAt:	 %s\n", time.Unix(0, e.UpdateAt()).Format(time.RFC3339Nano))

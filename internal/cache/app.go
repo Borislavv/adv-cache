@@ -71,14 +71,15 @@ func (c *Cache) Start(gc shutdown.Gracefuller) {
 
 	log.Info().Msg("[app] starting cache")
 
-	if c.cfg.Cache.Persistence.Dump.IsEnabled {
-		if err := c.dumper.Load(c.ctx); err != nil {
-			log.Warn().Msg("[dump] failed to load dump: " + err.Error())
+	if c.cfg.Cache.Enabled {
+		if c.cfg.Cache.Persistence.Dump.IsEnabled {
+			if err := c.dumper.Load(c.ctx); err != nil {
+				log.Warn().Msg("[dump] failed to load dump: " + err.Error())
+			}
 		}
-	}
-
-	if c.cfg.Cache.Persistence.Mock.Enabled {
-		storage.LoadMocks(c.ctx, c.cfg, c.backend, c.db, c.cfg.Cache.Persistence.Mock.Length)
+		if c.cfg.Cache.Persistence.Mock.Enabled {
+			storage.LoadMocks(c.ctx, c.cfg, c.backend, c.db, c.cfg.Cache.Persistence.Mock.Length)
+		}
 	}
 
 	waitCh := make(chan struct{})

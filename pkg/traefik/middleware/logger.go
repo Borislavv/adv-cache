@@ -45,7 +45,7 @@ func (m *TraefikCacheMiddleware) runLoggerMetricsWriter() {
 				m.metrics.SetHits(hitsNumLoc)
 				m.metrics.SetMisses(missesNumLoc)
 				m.metrics.SetErrors(errorsNumLoc)
-				m.metrics.SetRPS(totalNumLoc)
+				m.metrics.SetRPS(float64(totalNumLoc))
 				m.metrics.SetAvgResponseTime(avgDuration)
 
 				totalNum += totalNumLoc

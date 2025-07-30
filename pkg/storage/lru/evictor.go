@@ -3,20 +3,15 @@ package lru
 import (
 	"context"
 	"github.com/Borislavv/advanced-cache/pkg/config"
-	"github.com/Borislavv/advanced-cache/pkg/storage"
 	"github.com/rs/zerolog/log"
 	"runtime"
 	"strconv"
 	"time"
 
-	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
 	"github.com/Borislavv/advanced-cache/pkg/utils"
 )
 
-var (
-	_maxShards          = float64(sharded.NumOfShards)
-	fatShardsPercentage = int(_maxShards * 0.17)
-)
+const fatShardsPercent = 0.17
 
 var evictionStatCh = make(chan EvictionStat, runtime.GOMAXPROCS(0)*4)
 
@@ -31,27 +26,36 @@ type Evictor interface {
 }
 
 type Evict struct {
-	ctx             context.Context
-	cfg             *config.Cache
-	db              storage.Storage
-	balancer        Balancer
-	memoryThreshold int64
+	ctx                 context.Context
+	cfg                 *config.Cache
+	db                  *InMemoryStorage
+	balancer            *Balance
+	memoryThreshold     int64
+	fatShardsPercentage int
 }
 
-func NewEvictor(ctx context.Context, cfg *config.Cache, db storage.Storage, balancer Balancer) *Evict {
+func NewEvictor(ctx context.Context, cfg *config.Cache, db *InMemoryStorage, balancer *Balance) *Evict {
 	return &Evict{
-		ctx:             ctx,
-		cfg:             cfg,
-		db:              db,
-		balancer:        balancer,
-		memoryThreshold: int64(float64(cfg.Cache.Storage.Size) * cfg.Cache.Eviction.Threshold),
+		ctx:                 ctx,
+		cfg:                 cfg,
+		db:                  db,
+		balancer:            balancer,
+		fatShardsPercentage: int(float64(cfg.Cache.Preallocate.Shards) * fatShardsPercent),
+		memoryThreshold:     int64(float64(cfg.Cache.Storage.Size) * cfg.Cache.Eviction.Threshold),
 	}
 }
 
 // Run is the main background eviction loop for one worker.
 // Each worker tries to bring Weight usage under the threshold by evicting from most loaded shards.
 func (e *Evict) Run() *Evict {
-	e.runLogger()
+	if e.cfg.Cache.Enabled && e.cfg.Cache.Eviction.Enabled {
+		e.runLogger()
+		e.runEvictor()
+	}
+	return e
+}
+
+func (e *Evict) runEvictor() {
 	go func() {
 		t := utils.NewTicker(e.ctx, time.Millisecond*500)
 		for {
@@ -70,7 +74,6 @@ func (e *Evict) Run() *Evict {
 			}
 		}
 	}()
-	return e
 }
 
 // ShouldEvict [HOT PATH METHOD] (max stale value = 25ms) checks if current Weight usage has reached or exceeded the threshold.
@@ -83,18 +86,18 @@ func (e *Evict) shouldEvictRightNow() bool {
 	return e.db.RealMem() >= e.memoryThreshold
 }
 
-// evictUntilWithinLimit repeatedly removes entries from the most loaded Shard (tail of Storage)
+// evictUntilWithinLimit repeatedly removes entries from the most loaded Shard (tail of InMemoryStorage)
 // until Weight drops below threshold or no more can be evicted.
 func (e *Evict) evictUntilWithinLimit() (items int, mem int64) {
 	shardOffset := 0
 	for e.shouldEvictRightNow() {
 		shardOffset++
-		if shardOffset >= fatShardsPercentage {
+		if shardOffset >= e.fatShardsPercentage {
 			e.balancer.Rebalance()
 			shardOffset = 0
 		}
 
-		shard, found := e.balancer.MostLoadedSampled(shardOffset)
+		shard, found := e.balancer.MostLoaded(shardOffset)
 		if !found {
 			continue
 		}
@@ -111,19 +114,13 @@ func (e *Evict) evictUntilWithinLimit() (items int, mem int64) {
 				break // end of the LRU list, move to next
 			}
 
-			entry := el.Value()
-			if !entry.Acquire() {
-				continue // already marked as doomed but not removed yet, skip it
-			}
-
-			freedMem, isHit := e.db.Remove(entry)
-			if isHit {
+			freedMem, hit := e.db.Remove(el.Value())
+			if hit {
 				items++
 				evictions++
 				mem += freedMem
 			}
 
-			entry.Release()
 			offset++
 		}
 	}

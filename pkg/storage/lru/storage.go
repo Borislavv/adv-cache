@@ -2,7 +2,6 @@ package lru
 
 import (
 	"context"
-	"github.com/Borislavv/advanced-cache/pkg/storage"
 	"github.com/Borislavv/advanced-cache/pkg/storage/lfu"
 	"runtime"
 	"strconv"
@@ -16,24 +15,24 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// Storage is a Weight-aware, sharded Storage cache with background eviction and refreshItem support.
-type Storage struct {
-	ctx             context.Context                     // Main context for lifecycle control
-	cfg             *config.Cache                       // CacheBox configuration
-	shardedMap      *sharded.Map[*model.VersionPointer] // Sharded storage for cache entries
-	tinyLFU         *lfu.TinyLFU                        // Helps hold more frequency used items in cache while eviction
-	backend         repository.Backender                // Remote backend server.
-	balancer        Balancer                            // Helps pick shards to evict from
-	mem             int64                               // Current Weight usage (bytes)
-	memoryThreshold int64                               // Threshold for triggering eviction (bytes)
+// InMemoryStorage is a Weight-aware, sharded InMemoryStorage cache with background eviction and refreshItem support.
+type InMemoryStorage struct {
+	ctx             context.Context            // Main context for lifecycle control
+	cfg             *config.Cache              // CacheBox configuration
+	shardedMap      *sharded.Map[*model.Entry] // Sharded storage for cache entries
+	tinyLFU         *lfu.TinyLFU               // Helps hold more frequency used items in cache while eviction
+	backend         repository.Backender       // Remote backend server.
+	balancer        Balancer                   // Helps pick shards to evict from
+	mem             int64                      // Current Weight usage (bytes)
+	memoryThreshold int64                      // Threshold for triggering eviction (bytes)
 }
 
-// NewStorage constructs a new Storage cache instance and launches eviction and refreshItem routines.
-func NewStorage(ctx context.Context, cfg *config.Cache, backend repository.Backender) *Storage {
-	shardedMap := sharded.NewMap[*model.VersionPointer](ctx, cfg.Cache.Preallocate.PerShard)
+// NewStorage constructs a new InMemoryStorage cache instance and launches eviction and refreshItem routines.
+func NewStorage(ctx context.Context, cfg *config.Cache, backend repository.Backender) *InMemoryStorage {
+	shardedMap := sharded.NewMap[*model.Entry](ctx, cfg.Cache.Preallocate.PerShard)
 	balancer := NewBalancer(ctx, shardedMap)
 
-	db := (&Storage{
+	db := (&InMemoryStorage{
 		ctx:             ctx,
 		cfg:             cfg,
 		shardedMap:      shardedMap,
@@ -43,122 +42,132 @@ func NewStorage(ctx context.Context, cfg *config.Cache, backend repository.Backe
 		memoryThreshold: int64(float64(cfg.Cache.Storage.Size) * cfg.Cache.Eviction.Threshold),
 	}).init().runLogger()
 
-	storage.NewRefresher(ctx, cfg, db).Run()
+	NewRefresher(ctx, cfg, db).Run()
 	NewEvictor(ctx, cfg, db, balancer).Run()
 
 	return db
 }
 
-func (s *Storage) init() *Storage {
+func (s *InMemoryStorage) init() *InMemoryStorage {
 	// Register all existing shards with the balancer.
-	s.shardedMap.WalkShards(func(shardKey uint64, shard *sharded.Shard[*model.VersionPointer]) {
+	s.shardedMap.WalkShards(s.ctx, func(shardKey uint64, shard *sharded.Shard[*model.Entry]) {
 		s.balancer.Register(shard)
 	})
 
 	return s
 }
 
-func (s *Storage) Clear() {
-	s.shardedMap.WalkShards(func(key uint64, shard *sharded.Shard[*model.VersionPointer]) {
+func (s *InMemoryStorage) Clear() {
+	s.shardedMap.WalkShards(s.ctx, func(key uint64, shard *sharded.Shard[*model.Entry]) {
 		shard.Clear()
 	})
 }
 
-// Get retrieves a response by request and bumps its Storage position.
-// Returns: (response, releaser, found).
-func (s *Storage) Get(req *model.Entry) (entry *model.VersionPointer, ok bool) {
-	if entry, ok = s.shardedMap.Get(req.MapKey()); ok && entry.IsSameFingerprint(req.Fingerprint()) {
-		s.touch(entry)
-		return entry, true
-	}
-	return nil, false
-}
-
 // Rand returns a random item from storage.
-func (s *Storage) Rand() (entry *model.VersionPointer, ok bool) {
+func (s *InMemoryStorage) Rand() (entry *model.Entry, ok bool) {
 	return s.shardedMap.Rnd()
 }
 
-// Set inserts or updates a response in the cache, updating Weight usage and Storage position.
-func (s *Storage) Set(new *model.VersionPointer) (entry *model.VersionPointer) {
-	// Track access frequency
-	s.tinyLFU.Increment(new.MapKey())
-
-	// Attempt to find entry in cache, if found then touch and return it
-	if old, found := s.shardedMap.Get(new.MapKey()); found && old.IsSameEntry(new.Entry) {
-		// Check the pointers are really different,
-		// if so then update the 'old' data and remove 'new' one, return old of course
-		if old != new && old.Entry != new.Entry {
-			//s.update(old, new) // TODO need update payload if necessary
-			s.update(old)
-			new.Remove()
-		}
-		return old
+// Get retrieves a response by request and bumps its InMemoryStorage position.
+// Returns: (response, releaser, found).
+func (s *InMemoryStorage) Get(req *model.Entry) (ptr *model.Entry, found bool) {
+	ptr, found = s.shardedMap.Get(req.MapKey())
+	if !found || !ptr.IsSameFingerprint(req.Fingerprint()) {
+		return nil, false
+	} else {
+		s.touch(ptr)
+		return ptr, true
 	}
-
-	// Admission control: if memory is over threshold, evaluate before inserting
-	if s.ShouldEvict() {
-		if victim, found := s.balancer.FindVictim(new.ShardKey()); !found || !s.tinyLFU.Admit(new, victim) {
-			// Cases that answer the question: why are we here?
-			// 1. Victim not found (cannot write more than the given memory limit)
-			// 2. New element is rarer than victim, skip insertion
-			return new
-		}
-	}
-
-	s.set(new)
-	return new
 }
 
-func (s *Storage) Remove(entry *model.VersionPointer) (freedBytes int64, isHit bool) {
+// Set inserts or updates a response in the cache, updating Weight usage and InMemoryStorage position.
+// On 'wasPersisted=true' must be called Entry.Finalize, otherwise Entry.Finalize.
+func (s *InMemoryStorage) Set(new *model.Entry) (persisted bool) {
+	key := new.MapKey()
+
+	// increase access counter of tinyLFU
+	s.tinyLFU.Increment(key)
+
+	// try to find existing entry
+	if old, found := s.shardedMap.Get(key); found {
+		if old.IsSameFingerprint(new.Fingerprint()) {
+			// entry was found, no hash collisions, fingerprint check has passed, next check payload
+			if old.IsSamePayload(new) {
+				// nothing change, an existing entry has the same payload, just up the element in LRU list
+				s.touch(old)
+			} else {
+				// payload has changes, updated it and up the element in LRU list of course
+				s.update(old, new)
+			}
+			return true
+		}
+		// hash collision found, remove collision element and try to set new one
+		s.Remove(old)
+	}
+
+	// check whether we are still into memory limit
+	if s.ShouldEvict() { // if so then check admission by tinyLFU
+		if victim, admit := s.balancer.FindVictim(new.ShardKey()); !admit || !s.tinyLFU.Admit(new, victim) {
+			return false
+		}
+	}
+
+	// insert a new one Entry into map
+	s.shardedMap.Set(key, new)
+	// insert a new one Entry LRU element into LRU list
+	s.balancer.Push(new)
+
+	return true
+}
+
+func (s *InMemoryStorage) Remove(entry *model.Entry) (freedBytes int64, hit bool) {
 	s.balancer.Remove(entry.ShardKey(), entry.LruListElement())
 	return s.shardedMap.Remove(entry.MapKey())
 }
 
-func (s *Storage) Len() int64 {
+func (s *InMemoryStorage) Len() int64 {
 	return s.shardedMap.Len()
 }
 
-func (s *Storage) Mem() int64 {
+func (s *InMemoryStorage) RealLen() int64 {
+	return s.shardedMap.RealLen()
+}
+
+func (s *InMemoryStorage) Mem() int64 {
 	return s.shardedMap.Mem() + s.balancer.Mem()
 }
 
-func (s *Storage) RealMem() int64 {
+func (s *InMemoryStorage) RealMem() int64 {
 	return s.shardedMap.RealMem()
 }
 
-func (s *Storage) Stat() (bytes int64, length int64) {
+func (s *InMemoryStorage) Stat() (bytes int64, length int64) {
 	return s.shardedMap.Mem(), s.shardedMap.Len()
 }
 
 // ShouldEvict [HOT PATH METHOD] (max stale value = 25ms) checks if current Weight usage has reached or exceeded the threshold.
-func (s *Storage) ShouldEvict() bool {
+func (s *InMemoryStorage) ShouldEvict() bool {
 	return s.Mem() >= s.memoryThreshold
 }
 
-func (s *Storage) WalkShards(fn func(key uint64, shard *sharded.Shard[*model.VersionPointer])) {
-	s.shardedMap.WalkShards(fn)
+func (s *InMemoryStorage) WalkShards(ctx context.Context, fn func(key uint64, shard *sharded.Shard[*model.Entry])) {
+	s.shardedMap.WalkShards(ctx, fn)
 }
 
-// touch bumps the Storage position of an existing entry (MoveToFront) and increases its refCount.
-func (s *Storage) touch(existing *model.VersionPointer) {
+// touch bumps the InMemoryStorage position of an existing entry (MoveToFront) and increases its refCount.
+func (s *InMemoryStorage) touch(existing *model.Entry) {
 	s.balancer.Update(existing)
 }
 
-// update refreshes Weight accounting and Storage position for an updated entry.
-func (s *Storage) update(existing *model.VersionPointer) {
+// update refreshes Weight accounting and InMemoryStorage position for an updated entry.
+func (s *InMemoryStorage) update(existing, new *model.Entry) {
+	existing.SwapPayloads(new)
+	existing.TouchUpdatedAt()
 	s.balancer.Update(existing)
-}
-
-// set inserts a new response, updates Weight usage and registers in balancer.
-func (s *Storage) set(new *model.VersionPointer) (ok bool) {
-	ok = s.shardedMap.Set(new.MapKey(), new)
-	s.balancer.Set(new)
-	return
 }
 
 // runLogger emits detailed stats about evictions, Weight, and GC activity every 5 seconds if debugging is enabled.
-func (s *Storage) runLogger() *Storage {
+func (s *InMemoryStorage) runLogger() *InMemoryStorage {
 	go func() {
 		var ticker = utils.NewTicker(s.ctx, 5*time.Second)
 

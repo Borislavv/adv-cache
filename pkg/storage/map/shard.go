@@ -51,66 +51,53 @@ func (shard *Shard[V]) Len() int64 {
 
 // Set inserts or updates a value by key, resets refCount, and updates counters.
 // Returns a releaser for the inserted value.
-func (shard *Shard[V]) Set(key uint64, new V) (ok bool) {
+func (shard *Shard[V]) Set(key uint64, new V) {
 	shard.Lock()
-	old := shard.items[key]
+	old, found := shard.items[key]
 	shard.items[key] = new
 	shard.Unlock()
 
-	if old.Acquire() {
+	if found {
 		atomic.AddInt64(&shard.mem, new.Weight()-old.Weight())
-		old.Remove()
 	} else {
 		atomic.AddInt64(&shard.len, 1)
 		atomic.AddInt64(&shard.mem, new.Weight())
 	}
-
-	return true
 }
 
 // Get retrieves a value and returns a releaser for it, incrementing its refCount.
 // Returns (value, releaser, true) if found; otherwise (zero, nil, false).
 func (shard *Shard[V]) Get(key uint64) (val V, ok bool) {
 	shard.RLock()
-	item, ok := shard.items[key]
+	val, ok = shard.items[key]
 	shard.RUnlock()
-
-	if ok && item.Acquire() {
-		return item, ok
-	}
-
-	// not found or hash collision or already removed
-	return val, false
+	return
 }
 
 func (shard *Shard[V]) GetRand() (val V, ok bool) {
 	shard.RLock()
 	defer shard.RUnlock()
 	for _, item := range shard.items {
-		if item.Acquire() {
-			return item, true
-		}
+		return item, true
 	}
 	return val, false
 }
 
 // Remove removes a value from the shard, decrements counters, and may trigger full resource cleanup.
 // Returns (memory_freed, pointer_to_list_element, was_found).
-func (shard *Shard[V]) Remove(key uint64) (freed int64, ok bool) {
+func (shard *Shard[V]) Remove(key uint64) (freedBytes int64, hit bool) {
 	shard.Lock()
-	var item V
-	item, ok = shard.items[key]
-	if ok {
+	entry, found := shard.items[key]
+	if found {
+		freed := entry.Weight()
 		delete(shard.items, key)
 		shard.Unlock()
-		if item.Acquire() {
-			freed = item.Weight()
-			atomic.AddInt64(&shard.len, -1)
-			atomic.AddInt64(&shard.mem, -freed)
-			item.Remove()
-		}
-		return
+
+		atomic.AddInt64(&shard.len, -1)
+		atomic.AddInt64(&shard.mem, -freed)
+
+		return freed, true
 	}
 	shard.Unlock()
-	return
+	return 0, false
 }

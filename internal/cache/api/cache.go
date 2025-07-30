@@ -40,10 +40,11 @@ var (
 )
 
 var (
-	total         = &atomic.Uint64{}
-	hits          = &atomic.Uint64{}
-	misses        = &atomic.Uint64{}
-	errors        = &atomic.Uint64{}
+	total         = &atomic.Int64{}
+	hits          = &atomic.Int64{}
+	misses        = &atomic.Int64{}
+	proxies       = &atomic.Int64{}
+	errors        = &atomic.Int64{}
 	totalDuration = &atomic.Int64{} // UnixNano
 )
 
@@ -91,6 +92,8 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 }
 
 func (c *CacheController) handleTroughProxy(r *fasthttp.RequestCtx) {
+	proxies.Add(1)
+
 	// extract request data
 	path := r.Path()
 	queryString := r.QueryArgs().QueryString()
@@ -163,25 +166,17 @@ func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) {
 
 		if payloadStatus != http.StatusOK {
 			// bad status code received, process request and don't store in cache, removed after use of course
-			defer newEntry.Remove()
-
 			payloadLastModified = time.Now().UnixNano()
 		} else {
 			newEntry.SetPayload(path, queryString, queryHeaders, payloadHeaders, payloadBody, payloadStatus)
 			newEntry.SetRevalidator(c.backend.RevalidatorMaker())
 
-			// build and store new VersionPointer in cache
-			foundEntry = c.cache.Set(model.NewVersionPointer(newEntry))
-			defer foundEntry.Release() // an Entry stored in the cache must be released after use
+			c.cache.Set(newEntry)
 
-			payloadLastModified = foundEntry.UpdateAt()
+			payloadLastModified = newEntry.UpdateAt()
 		}
 	} else {
 		hits.Add(1)
-
-		// deferred release and remove
-		newEntry.Remove()          // new Entry which was used as request for query cache does not need anymore
-		defer foundEntry.Release() // an Entry retrieved from the cache must be released after use
 
 		payloadLastModified = foundEntry.UpdateAt()
 
@@ -255,41 +250,53 @@ func (c *CacheController) runLoggerMetricsWriter() {
 		metricsTicker := utils.NewTicker(c.ctx, time.Second)
 
 		var (
-			totalNum         uint64
-			hitsNum          uint64
-			missesNum        uint64
-			errorsNum        uint64
-			proxiedNum       uint64
+			// 5s логика
+			totalNum         int64
+			hitsNum          int64
+			missesNum        int64
+			errorsNum        int64
+			proxiedNum       int64
 			totalDurationNum int64
+
+			accHourly   counters
+			acc12Hourly counters
+			acc24Hourly counters
+
+			// тикеры
+			eachHour   = time.NewTicker(time.Hour)
+			each12Hour = time.NewTicker(12 * time.Hour)
+			each24Hour = time.NewTicker(24 * time.Hour)
 		)
 
 		const logIntervalSecs = 5
 		i := logIntervalSecs
 		prev := time.Now()
+
 		for {
 			select {
 			case <-c.ctx.Done():
 				return
+
 			case <-metricsTicker:
 				totalNumLoc := total.Swap(0)
 				hitsNumLoc := hits.Swap(0)
 				missesNumLoc := misses.Swap(0)
+				proxiedNumLoc := proxies.Swap(0)
 				errorsNumLoc := errors.Swap(0)
-				proxiedNumLoc := totalNumLoc - hitsNumLoc - missesNumLoc - errorsNumLoc
 				totalDurationNumLoc := totalDuration.Swap(0)
 
+				// metrics export
 				var avgDuration float64
 				if totalNumLoc > 0 {
 					avgDuration = float64(totalDurationNumLoc) / float64(totalNumLoc)
 				}
-
 				memUsage, length := c.cache.Stat()
 				c.metrics.SetCacheLength(uint64(length))
 				c.metrics.SetCacheMemory(uint64(memUsage))
-				c.metrics.SetHits(hitsNumLoc)
-				c.metrics.SetMisses(missesNumLoc)
-				c.metrics.SetErrors(errorsNumLoc)
-				c.metrics.SetProxiedNum(proxiedNumLoc)
+				c.metrics.SetHits(uint64(hitsNumLoc))
+				c.metrics.SetMisses(uint64(missesNumLoc))
+				c.metrics.SetErrors(uint64(errorsNumLoc))
+				c.metrics.SetProxiedNum(uint64(proxiedNumLoc))
 				c.metrics.SetRPS(float64(totalNumLoc))
 				c.metrics.SetAvgResponseTime(avgDuration)
 
@@ -300,13 +307,20 @@ func (c *CacheController) runLoggerMetricsWriter() {
 				proxiedNum += proxiedNumLoc
 				totalDurationNum += totalDurationNumLoc
 
+				accHourly.add(totalNumLoc, hitsNumLoc, missesNumLoc, errorsNumLoc, proxiedNumLoc, totalDurationNumLoc)
+				acc12Hourly.add(totalNumLoc, hitsNumLoc, missesNumLoc, errorsNumLoc, proxiedNumLoc, totalDurationNumLoc)
+				acc24Hourly.add(totalNumLoc, hitsNumLoc, missesNumLoc, errorsNumLoc, proxiedNumLoc, totalDurationNumLoc)
+
 				if i == logIntervalSecs {
 					elapsed := time.Since(prev)
 					duration := time.Duration(int(avgDuration))
 					rps := float64(totalNum) / elapsed.Seconds()
 
-					logEvent := log.Info()
+					if duration == 0 && rps == 0 {
+						continue
+					}
 
+					logEvent := log.Info()
 					var target string
 					if enabled.Load() {
 						target = "cache-controller"
@@ -326,8 +340,8 @@ func (c *CacheController) runLoggerMetricsWriter() {
 
 					if enabled.Load() {
 						logEvent.Msgf(
-							"[%s][%s] served %d requests (rps: %.f, avg.dur.: %s hits: %d, misses: %d, proxied: %d, errors: %d)",
-							target, elapsed.String(), totalNum, rps, duration.String(), hitsNum, missesNum, proxiedNum, errorsNum,
+							"[%s][%s] served %d requests (rps: %.f, avg.dur.: %s hits: %d, misses: %d, errors: %d)",
+							target, elapsed.String(), totalNum, rps, duration.String(), hitsNum, missesNum, errorsNum,
 						)
 					} else {
 						logEvent.Msgf(
@@ -346,7 +360,82 @@ func (c *CacheController) runLoggerMetricsWriter() {
 					i = 0
 				}
 				i++
+
+			case <-eachHour.C:
+				logLong("1h", accHourly, c.cfg)
+				accHourly.reset()
+
+			case <-each12Hour.C:
+				logLong("12h", acc12Hourly, c.cfg)
+				acc12Hourly.reset()
+
+			case <-each24Hour.C:
+				logLong("24h", acc24Hourly, c.cfg)
+				acc24Hourly.reset()
 			}
 		}
 	}()
+}
+
+type counters struct {
+	total    int64
+	hits     int64
+	misses   int64
+	errors   int64
+	proxied  int64
+	duration int64
+}
+
+func (c *counters) add(total, hits, misses, errors, proxied, dur int64) {
+	c.total += total
+	c.hits += hits
+	c.misses += misses
+	c.errors += errors
+	c.proxied += proxied
+	c.duration += dur
+}
+
+func (c *counters) reset() {
+	c.total, c.hits, c.misses, c.errors, c.proxied, c.duration = 0, 0, 0, 0, 0, 0
+}
+
+func logLong(label string, c counters, cfg *config.Cache) {
+	if c.total == 0 {
+		return
+	}
+
+	var (
+		avgDur = time.Duration(0)
+		avgRPS float64
+	)
+
+	if c.total > 0 {
+		avgDur = time.Duration(int(c.duration / c.total))
+
+		switch label {
+		case "1h":
+			avgRPS = float64(c.total) / 3600
+		case "12h":
+			avgRPS = float64(c.total) / (12 * 3600)
+		case "24h":
+			avgRPS = float64(c.total) / (24 * 3600)
+		}
+	}
+
+	logEvent := log.Info()
+	if cfg.IsProd() {
+		logEvent = logEvent.
+			Str("target", "cache-long-metrics").
+			Str("period", label).
+			Int64("total", c.total).
+			Int64("hits", c.hits).
+			Int64("misses", c.misses).
+			Int64("errors", c.errors).
+			Int64("proxied", c.proxied).
+			Float64("avgRPS", avgRPS).
+			Str("avgDuration", avgDur.String())
+	}
+
+	logEvent.Msgf("[cache][%s] total=%d hits=%d misses=%d errors=%d proxied=%d avgRPS=%.2f avgDur=%s",
+		label, c.total, c.hits, c.misses, c.errors, c.proxied, avgRPS, avgDur.String())
 }
