@@ -15,7 +15,7 @@ const (
 )
 
 type Cache struct {
-	Cache CacheBox `yaml:"cache"`
+	Cache *CacheBox `yaml:"cache"`
 }
 
 func (c *Cache) IsProd() bool {
@@ -41,13 +41,13 @@ type CacheBox struct {
 	Persistence *Persistence     `yaml:"persistence"`
 	Refresh     *Refresh         `yaml:"refresh"`
 	Eviction    *Eviction        `yaml:"eviction"`
+	Storage     *Storage         `yaml:"storage"`
 	Logs        Logs             `yaml:"logs"`
 	K8S         K8S              `yaml:"k8s"`
 	Metrics     Metrics          `yaml:"metrics"`
 	ForceGC     ForceGC          `yaml:"forceGC"`
 	LifeTime    Lifetime         `yaml:"lifetime"`
 	Preallocate Preallocation    `yaml:"preallocate"`
-	Storage     Storage          `yaml:"storage"`
 	Rules       map[string]*Rule `yaml:"rules"`
 }
 

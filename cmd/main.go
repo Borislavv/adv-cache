@@ -20,21 +20,25 @@ const (
 )
 
 var (
-	from     = flag.String("from", "http://localhost:8080", "Origin server address to proxy requests from")
-	to       = flag.String("to", ":8020", "Port or address to serve the cache application on")
-	mocks    = flag.Bool("mocks", false, "Enable mocks mode (for dev/testing)")
-	mocksLen = flag.Int("mockslen", 10000, "Length of mock data to generate if mocks mode is enabled")
-	dump     = flag.Bool("dump", false, "Enable dump loading at startup and writing at shutdown")
-	refresh  = flag.Bool("refresh", false, "Enable background data refresh")
-	eviction = flag.Bool("eviction", false, "Enable data eviction on overflow")
+	from         = flag.String("from", "http://localhost:8080", "Origin server address to proxy requests from")
+	to           = flag.String("to", ":8020", "Port or address to serve the cache application on")
+	mocks        = flag.Bool("mocks", false, "Enable mocks mode (for dev/testing)")
+	mocksLen     = flag.Int("mockslen", 10000, "Length of mock data to generate if mocks mode is enabled")
+	dump         = flag.Bool("dump", false, "Enable dump loading at startup and writing at shutdown")
+	refresh      = flag.Bool("refresh", false, "Enable background data refresh")
+	eviction     = flag.Bool("eviction", false, "Enable data eviction on overflow")
+	upstreamRate = flag.Int("upstreamrate", 1000, "Maximum rate of upstream requests per second")
+	memoryLimit  = flag.Int("memorylimit", 34359738368, "Maximum amount of bytes that can be used to cache evictions")
 
-	fromDefined     = false
-	toDefined       = false
-	mocksDefined    = false
-	mockslenDefined = false
-	dumpDefined     = false
-	refreshDefined  = false
-	evictionDefined = false
+	fromDefined         = false
+	toDefined           = false
+	mocksDefined        = false
+	mockslenDefined     = false
+	dumpDefined         = false
+	refreshDefined      = false
+	evictionDefined     = false
+	upstreamRateDefined = false
+	memoryLimitDefined  = false
 )
 
 func init() {
@@ -63,6 +67,12 @@ func init() {
 		} else if f.Name == "eviction" {
 			evictionDefined = true
 			logEvent.Bool("eviction", *eviction)
+		} else if f.Name == "upstreamrate" {
+			upstreamRateDefined = true
+			logEvent.Int("upstreamrate", *upstreamRate)
+		} else if f.Name == "memorylimit" {
+			memoryLimitDefined = true
+			logEvent.Int("memorylimit", *memoryLimit)
 		}
 	})
 
@@ -115,6 +125,12 @@ func loadCfg() (*config.Cache, error) {
 	}
 	if evictionDefined {
 		cfg.Cache.Eviction.Enabled = *eviction
+	}
+	if upstreamRateDefined {
+		cfg.Cache.Proxy.Rate = *upstreamRate
+	}
+	if memoryLimitDefined {
+		cfg.Cache.Storage.Size = uint(*memoryLimit)
 	}
 
 	return cfg, nil
