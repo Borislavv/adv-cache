@@ -85,7 +85,7 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 
 	total.Add(1)
 	if enabled.Load() {
-		c.handleTroughCache(r)
+		c.handleThroughProxy(r)
 	} else {
 		c.handleTroughProxy(r)
 	}
@@ -124,7 +124,7 @@ func (c *CacheController) handleTroughProxy(r *fasthttp.RequestCtx) {
 	}
 }
 
-func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) {
+func (c *CacheController) handleThroughProxy(r *fasthttp.RequestCtx) {
 	// make a lightweight request Entry (contains only key, shardKey and fingerprint)
 	newEntry, err := model.NewEntryFastHttp(c.cfg, r) // must be removed on hit and release on miss
 	if err != nil {
