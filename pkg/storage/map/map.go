@@ -97,15 +97,20 @@ func (smap *Map[V]) Shard(key uint64) *Shard[V] {
 
 // WalkShards launches fn concurrently for each shard (key, *Shard[V]).
 // The callback runs in a separate goroutine for each shard; fn should be goroutine-safe.
-func (smap *Map[V]) WalkShards(fn func(key uint64, shard *Shard[V])) {
+func (smap *Map[V]) WalkShards(ctx context.Context, fn func(key uint64, shard *Shard[V])) {
 	var wg sync.WaitGroup
 	wg.Add(int(NumOfShards))
 	defer wg.Wait()
 	for k, s := range smap.shards {
-		go func(key uint64, shard *Shard[V]) {
-			defer wg.Done()
-			fn(key, shard)
-		}(uint64(k), s)
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			go func(key uint64, shard *Shard[V]) {
+				defer wg.Done()
+				fn(key, shard)
+			}(uint64(k), s)
+		}
 	}
 }
 

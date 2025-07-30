@@ -16,10 +16,6 @@ type ShardNode struct {
 	Shard       *sharded.Shard[*model.Entry] // Reference to the actual Shard (map + sync)
 }
 
-func (s *ShardNode) RandItem() (*model.Entry, bool) {
-	return s.Shard.GetRand()
-}
-
 // Weight returns an approximate Weight usage of this ShardNode structure.
 func (s *ShardNode) Weight() int64 {
 	return s.Shard.Weight()

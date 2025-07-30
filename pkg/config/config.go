@@ -37,16 +37,16 @@ type Env struct {
 type CacheBox struct {
 	Env         string           `yaml:"env"`
 	Enabled     bool             `yaml:"enabled"`
-	Proxy       Proxy            `yaml:"proxy"`
+	Proxy       *Proxy           `yaml:"proxy"`
+	Persistence *Persistence     `yaml:"persistence"`
+	Refresh     *Refresh         `yaml:"refresh"`
+	Eviction    *Eviction        `yaml:"eviction"`
 	Logs        Logs             `yaml:"logs"`
 	K8S         K8S              `yaml:"k8s"`
 	Metrics     Metrics          `yaml:"metrics"`
 	ForceGC     ForceGC          `yaml:"forceGC"`
 	LifeTime    Lifetime         `yaml:"lifetime"`
-	Persistence Persistence      `yaml:"persistence"`
 	Preallocate Preallocation    `yaml:"preallocate"`
-	Eviction    Eviction         `yaml:"eviction"`
-	Refresh     Refresh          `yaml:"refresh"`
 	Storage     Storage          `yaml:"storage"`
 	Rules       map[string]*Rule `yaml:"rules"`
 }
@@ -94,15 +94,17 @@ type Proxy struct {
 }
 
 type Dump struct {
-	IsEnabled   bool   `yaml:"enabled"`
-	Dir         string `yaml:"dump_dir"`
-	Name        string `yaml:"dump_name"`
-	MaxVersions int    `yaml:"max_versions"`
+	IsEnabled    bool   `yaml:"enabled"`
+	Dir          string `yaml:"dump_dir"`
+	Name         string `yaml:"dump_name"`
+	MaxVersions  int    `yaml:"max_versions"`
+	Gzip         bool   `yaml:"gzip"`
+	Crc32Control bool   `yaml:"crc32_control_sum"`
 }
 
 type Persistence struct {
-	Dump Dump `yaml:"dump"`
-	Mock Mock `yaml:"mock"`
+	Dump *Dump `yaml:"dump"`
+	Mock *Mock `yaml:"mock"`
 }
 
 type Preallocation struct {
@@ -111,7 +113,7 @@ type Preallocation struct {
 }
 
 type Eviction struct {
-	Policy    string  `yaml:"policy"`    // at now, it's only "lru" + TinyLFU
+	Enabled   bool    `yaml:"enabled"`
 	Threshold float64 `yaml:"threshold"` // 0.9 means 90%
 }
 
@@ -123,9 +125,7 @@ type Storage struct {
 type Refresh struct {
 	Enabled bool `yaml:"enabled"`
 	// TTL - refresh TTL (max time life of response item in cache without refreshing).
-	TTL time.Duration `yaml:"ttl"` // e.g. "1d" (responses with 200 status code)
-	// ErrorTTL - error refresh TTL (max time life of response item with non 200 status code in cache without refreshing).
-	ErrorTTL time.Duration `yaml:"error_ttl"` // e.g. "1h" (responses with non 200 status code)
+	TTL      time.Duration `yaml:"ttl"`       // e.g. "1d" (responses with 200 status code)
 	Rate     int           `yaml:"rate"`      // Rate limiting to external backend.
 	ScanRate int           `yaml:"scan_rate"` // Rate limiting of num scans items per second.
 	// beta определяет коэффициент, используемый для вычисления случайного момента обновления кэша.
@@ -134,8 +134,22 @@ type Refresh struct {
 	// expireTime = ttl * (-beta * ln(random()))
 	// Подробнее: RFC 5861 и https://web.archive.org/web/20100829170210/http://labs.google.com/papers/staleness.pdf
 	// beta: "0.4"
-	Beta     float64       `yaml:"beta"` // between 0 and 1
-	MinStale time.Duration // computed=time.Duration(float64(TTL/ErrorTTL) * Beta)
+	Beta        float64 `yaml:"beta"`        // between 0 and 1
+	Coefficient float64 `yaml:"coefficient"` // Starts attempts to renew data after TTL*coefficient=50% (12h if whole TTL is 24h)
+}
+
+type RuleRefresh struct {
+	Enabled bool `yaml:"enabled"`
+	// TTL - refresh TTL (max time life of response item in cache without refreshing).
+	TTL time.Duration `yaml:"ttl"` // e.g. "1d" (responses with 200 status code)
+	// beta определяет коэффициент, используемый для вычисления случайного момента обновления кэша.
+	// Чем выше beta, тем чаще кэш будет обновляться до истечения TTL.
+	// Формула взята из подхода "stochastic cache expiration" (см. Google Staleness paper):
+	// expireTime = ttl * (-beta * ln(random()))
+	// Подробнее: RFC 5861 и https://web.archive.org/web/20100829170210/http://labs.google.com/papers/staleness.pdf
+	// beta: "0.4"
+	Beta        float64 `yaml:"beta"`        // between 0 and 1
+	Coefficient float64 `yaml:"coefficient"` // Starts attempts to renew data after TTL*coefficient=50% (12h if whole TTL is 24h)
 }
 
 type Gzip struct {
@@ -144,26 +158,23 @@ type Gzip struct {
 }
 
 type Rule struct {
-	Gzip       Gzip `yaml:"gzip"`
-	PathBytes  []byte
-	TTL        time.Duration `yaml:"ttl"`       // TTL for this rule.
-	ErrorTTL   time.Duration `yaml:"error_ttl"` // ErrorTTL for this rule.
-	Beta       float64       `yaml:"beta"`      // between 0 and 1
-	CacheKey   Key           `yaml:"cache_key"`
-	CacheValue Value         `yaml:"cache_value"`
-	MinStale   time.Duration // computed=time.Duration(float64(TTL/ErrorTTL) * Beta)
+	Gzip       Gzip         `yaml:"gzip"`
+	CacheKey   RuleKey      `yaml:"cache_key"`
+	CacheValue RuleValue    `yaml:"cache_value"`
+	Refresh    *RuleRefresh `yaml:"refresh"`
+	PathBytes  []byte       // Virtual field
 }
 
-type Key struct {
-	Query      []string `yaml:"query"` // Параметры, которые будут участвовать в ключе кэширования
-	QueryBytes [][]byte
-	Headers    []string `yaml:"headers"` // Хедеры, которые будут участвовать в ключе кэширования
-	HeadersMap map[string]struct{}
+type RuleKey struct {
+	Query      []string            `yaml:"query"` // Параметры, которые будут участвовать в ключе кэширования
+	QueryBytes [][]byte            // Virtual field
+	Headers    []string            `yaml:"headers"` // Хедеры, которые будут участвовать в ключе кэширования
+	HeadersMap map[string]struct{} // Virtual field
 }
 
-type Value struct {
-	Headers    []string `yaml:"headers"` // Хедеры ответа, которые будут сохранены в кэше вместе с body
-	HeadersMap map[string]struct{}
+type RuleValue struct {
+	Headers    []string            `yaml:"headers"` // Хедеры ответа, которые будут сохранены в кэше вместе с body
+	HeadersMap map[string]struct{} // Virtual field
 }
 
 func LoadConfig(path string) (*Cache, error) {
@@ -212,14 +223,9 @@ func LoadConfig(path string) (*Cache, error) {
 			valueHeadersMap[header] = struct{}{}
 		}
 		rule.CacheValue.HeadersMap = valueHeadersMap
-
-		// Other
-		rule.MinStale = time.Duration(float64(rule.TTL) * rule.Beta)
 	}
 
 	cfg.Cache.Proxy.FromUrl = []byte(cfg.Cache.Proxy.From)
-
-	cfg.Cache.Refresh.MinStale = time.Duration(float64(cfg.Cache.Refresh.TTL) * cfg.Cache.Refresh.Beta)
 
 	cfg.Cache.LifeTime.EscapeMaxReqDurationHeaderBytes = []byte(cfg.Cache.LifeTime.EscapeMaxReqDurationHeader)
 

@@ -48,7 +48,14 @@ func NewEvictor(ctx context.Context, cfg *config.Cache, db *InMemoryStorage, bal
 // Run is the main background eviction loop for one worker.
 // Each worker tries to bring Weight usage under the threshold by evicting from most loaded shards.
 func (e *Evict) Run() *Evict {
-	e.runLogger()
+	if e.cfg.Cache.Enabled && e.cfg.Cache.Eviction.Enabled {
+		e.runLogger()
+		e.runEvictor()
+	}
+	return e
+}
+
+func (e *Evict) runEvictor() {
 	go func() {
 		t := utils.NewTicker(e.ctx, time.Millisecond*500)
 		for {
@@ -67,7 +74,6 @@ func (e *Evict) Run() *Evict {
 			}
 		}
 	}()
-	return e
 }
 
 // ShouldEvict [HOT PATH METHOD] (max stale value = 25ms) checks if current Weight usage has reached or exceeded the threshold.

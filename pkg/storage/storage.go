@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"github.com/Borislavv/advanced-cache/pkg/model"
 	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
 )
@@ -40,5 +41,5 @@ type Storage interface {
 	// Rand returns a random elem from the map.
 	Rand() (entry *model.Entry, ok bool)
 
-	WalkShards(fn func(key uint64, shard *sharded.Shard[*model.Entry]))
+	WalkShards(ctx context.Context, fn func(key uint64, shard *sharded.Shard[*model.Entry]))
 }

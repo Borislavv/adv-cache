@@ -47,6 +47,7 @@ type Entry struct {
 func (e *Entry) Init() *Entry {
 	e.payload = &atomic.Pointer[[]byte]{}
 	e.lruListElem = &atomic.Pointer[list.Element[*Entry]]{}
+	atomic.StoreInt64(&e.updatedAt, time.Now().UnixNano())
 	return e
 }
 
@@ -196,6 +197,40 @@ func (e *Entry) calculateAndSetUpKeys(filteredQueries, filteredHeaders *[][2][]b
 	e.shard = sharded.MapShardKey(e.key)
 
 	return e
+}
+
+func (e *Entry) DumpBuffer(r *fasthttp.RequestCtx) {
+	filteredQueries, filteredQueriesReleaser := e.getFilteredAndSortedKeyQueriesFastHttp(r)
+	defer filteredQueriesReleaser(filteredQueries)
+
+	filteredHeaders, filteredHeadersReleaser := e.getFilteredAndSortedKeyHeadersFastHttp(r)
+	defer filteredHeadersReleaser(filteredHeaders)
+
+	l := 0
+	for _, pair := range *filteredQueries {
+		l += len(pair[0]) + len(pair[1])
+	}
+	for _, pair := range *filteredHeaders {
+		l += len(pair[0]) + len(pair[1])
+	}
+
+	buf := keyBufPool.Get().(*bytes.Buffer)
+	buf.Grow(l)
+	defer func() {
+		buf.Reset()
+		keyBufPool.Put(buf)
+	}()
+
+	for _, pair := range *filteredQueries {
+		buf.Write(pair[0])
+		buf.Write(pair[1])
+	}
+	for _, pair := range *filteredHeaders {
+		buf.Write(pair[0])
+		buf.Write(pair[1])
+	}
+
+	fmt.Println("buffer--->>>>", buf.String())
 }
 
 func (e *Entry) Fingerprint() [16]byte {
@@ -757,28 +792,38 @@ func (e *Entry) ShouldBeRefreshed(cfg *config.Cache) bool {
 		return false
 	}
 
-	now := time.Now().UnixNano()
+	var (
+		ttl         = cfg.Cache.Refresh.TTL.Nanoseconds()
+		beta        = cfg.Cache.Refresh.Beta
+		coefficient = cfg.Cache.Refresh.Coefficient
+	)
+
+	if e.rule.Refresh != nil {
+		if !e.rule.Refresh.Enabled {
+			return false
+		}
+
+		if e.rule.Refresh.TTL.Nanoseconds() > 0 {
+			ttl = e.rule.Refresh.TTL.Nanoseconds()
+		}
+		if e.rule.Refresh.Beta > 0 {
+			beta = e.rule.Refresh.Beta
+		}
+		if e.rule.Refresh.Coefficient > 0 {
+			coefficient = e.rule.Refresh.Coefficient
+		}
+	}
+
 	// время, прошедшее с последнего обновления
-	elapsed := now - atomic.LoadInt64(&e.updatedAt)
-	if elapsed < 0 {
-		// если по какой‑то причине clock skew, считаем, что прошло 0
-		elapsed = 0
+	elapsed := time.Now().UnixNano() - atomic.LoadInt64(&e.updatedAt)
+	minStale := int64(float64(ttl) * coefficient)
+
+	if minStale > elapsed {
+		return false
 	}
 
-	// TTL из правила, иначе из глобальной конфигурации
-	interval := e.rule.TTL.Nanoseconds()
-	if interval == 0 {
-		interval = cfg.Cache.Refresh.TTL.Nanoseconds()
-	}
-
-	// β из правила, иначе из глобальной конфигурации
-	beta := e.rule.Beta
-	if beta == 0 {
-		beta = cfg.Cache.Refresh.Beta
-	}
-
-	// нормируем x = elapsed / interval в [0,1]
-	x := float64(elapsed) / float64(interval)
+	// нормируем x = elapsed / ttl в [0,1]
+	x := float64(elapsed) / float64(ttl)
 	if x < 0 {
 		x = 0
 	} else if x > 1 {
@@ -836,7 +881,7 @@ func (e *Entry) ToBytes() (data []byte, releaseFn func()) {
 	buf.Write(scratch4[:])
 	buf.Write(rulePath)
 
-	// === Key ===
+	// === RuleKey ===
 	binary.LittleEndian.PutUint64(scratch8[:], e.key)
 	buf.Write(scratch8[:])
 
@@ -881,7 +926,7 @@ func EntryFromBytes(data []byte, cfg *config.Cache, backend repository.Backender
 		return nil, fmt.Errorf("rule not found for path: '%s'", string(rulePath))
 	}
 
-	// Key
+	// RuleKey
 	key := binary.LittleEndian.Uint64(data[offset:])
 	offset += 8
 
@@ -946,7 +991,7 @@ func (e *Entry) DumpPayload() {
 	}
 
 	fmt.Printf("\n========== DUMP PAYLOAD ==========\n")
-	fmt.Printf("Key:          %d\n", e.key)
+	fmt.Printf("RuleKey:          %d\n", e.key)
 	fmt.Printf("Shard:        %d\n", e.shard)
 	fmt.Printf("IsCompressed: %v\n", e.IsCompressed())
 	fmt.Printf("UpdateAt:	 %s\n", time.Unix(0, e.UpdateAt()).Format(time.RFC3339Nano))

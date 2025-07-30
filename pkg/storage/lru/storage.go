@@ -50,7 +50,7 @@ func NewStorage(ctx context.Context, cfg *config.Cache, backend repository.Backe
 
 func (s *InMemoryStorage) init() *InMemoryStorage {
 	// Register all existing shards with the balancer.
-	s.shardedMap.WalkShards(func(shardKey uint64, shard *sharded.Shard[*model.Entry]) {
+	s.shardedMap.WalkShards(s.ctx, func(shardKey uint64, shard *sharded.Shard[*model.Entry]) {
 		s.balancer.Register(shard)
 	})
 
@@ -58,7 +58,7 @@ func (s *InMemoryStorage) init() *InMemoryStorage {
 }
 
 func (s *InMemoryStorage) Clear() {
-	s.shardedMap.WalkShards(func(key uint64, shard *sharded.Shard[*model.Entry]) {
+	s.shardedMap.WalkShards(s.ctx, func(key uint64, shard *sharded.Shard[*model.Entry]) {
 		shard.Clear()
 	})
 }
@@ -150,8 +150,8 @@ func (s *InMemoryStorage) ShouldEvict() bool {
 	return s.Mem() >= s.memoryThreshold
 }
 
-func (s *InMemoryStorage) WalkShards(fn func(key uint64, shard *sharded.Shard[*model.Entry])) {
-	s.shardedMap.WalkShards(fn)
+func (s *InMemoryStorage) WalkShards(ctx context.Context, fn func(key uint64, shard *sharded.Shard[*model.Entry])) {
+	s.shardedMap.WalkShards(ctx, fn)
 }
 
 // touch bumps the InMemoryStorage position of an existing entry (MoveToFront) and increases its refCount.

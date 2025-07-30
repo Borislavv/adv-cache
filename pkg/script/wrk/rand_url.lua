@@ -4,7 +4,7 @@ math.randomseed(os.time())
 -- sequential_url.lua
 
 -- Диапазон ключей
-local i_min, i_max = 1, 10000000
+local i_min, i_max = 1, 100000
 
 -- Фиксированный язык
 local language = "en"
