@@ -14,6 +14,10 @@ const (
 	Test = "test"
 )
 
+type TraefikIntermediateConfig struct {
+	ConfigPath string `yaml:"configPath" mapstructure:"configPath"`
+}
+
 type Cache struct {
 	Cache *CacheBox `yaml:"cache"`
 }
