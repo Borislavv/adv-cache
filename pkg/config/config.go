@@ -41,6 +41,7 @@ type Env struct {
 type CacheBox struct {
 	Env         string           `yaml:"env"`
 	Enabled     bool             `yaml:"enabled"`
+	Runtime     *Runtime         `yaml:"runtime"`
 	Proxy       *Proxy           `yaml:"proxy"`
 	Persistence *Persistence     `yaml:"persistence"`
 	Refresh     *Refresh         `yaml:"refresh"`
@@ -53,6 +54,10 @@ type CacheBox struct {
 	LifeTime    Lifetime         `yaml:"lifetime"`
 	Preallocate Preallocation    `yaml:"preallocate"`
 	Rules       map[string]*Rule `yaml:"rules"`
+}
+
+type Runtime struct {
+	Gomaxprocs int `yaml:"gomaxprocs"`
 }
 
 type Probe struct {

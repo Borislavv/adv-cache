@@ -2,6 +2,9 @@ cache:
   env: "dev"
   enabled: true
 
+  runtime:
+    gomaxprocs: 3
+
   proxy:
     name: "star.fast"               # Proxy server name
     from: "http://localhost:8080"   # Backend (example of full qualified url: http://localhost:8080)

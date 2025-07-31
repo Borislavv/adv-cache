@@ -9,7 +9,6 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/k8s/probe/liveness"
 	"github.com/Borislavv/advanced-cache/pkg/shutdown"
 	"github.com/rs/zerolog/log"
-	"go.uber.org/automaxprocs/maxprocs"
 	"runtime"
 	"time"
 )
@@ -29,6 +28,7 @@ var (
 	eviction     = flag.Bool("eviction", false, "Enable data eviction on overflow")
 	upstreamRate = flag.Int("upstreamrate", 1000, "Maximum rate of upstream requests per second")
 	memoryLimit  = flag.Int("memorylimit", 34359738368, "Maximum amount of bytes that can be used to cache evictions")
+	gomaxprocs   = flag.Int("procs", 3, "Maximum number of CPU cores to use")
 
 	fromDefined         = false
 	toDefined           = false
@@ -39,6 +39,7 @@ var (
 	evictionDefined     = false
 	upstreamRateDefined = false
 	memoryLimitDefined  = false
+	gomaxprocsDefined   = false
 )
 
 func init() {
@@ -73,6 +74,9 @@ func init() {
 		} else if f.Name == "memorylimit" {
 			memoryLimitDefined = true
 			logEvent.Int("memorylimit", *memoryLimit)
+		} else if f.Name == "procs" {
+			gomaxprocsDefined = true
+			logEvent.Int("procs", *gomaxprocs)
 		}
 	})
 
@@ -81,12 +85,9 @@ func init() {
 
 // setMaxProcs automatically sets the optimal GOMAXPROCS value (CPU parallelism)
 // based on the available CPUs and cgroup/docker CPU quotas (uses automaxprocs).
-func setMaxProcs() {
-	if _, err := maxprocs.Set(); err != nil {
-		log.Err(err).Msg("[main] setting up GOMAXPROCS value failed")
-		panic(err)
-	}
-	log.Info().Msgf("[main] optimized GOMAXPROCS=%d was set up", runtime.GOMAXPROCS(0))
+func setMaxProcs(cfg *config.Cache) {
+	runtime.GOMAXPROCS(cfg.Cache.Runtime.Gomaxprocs)
+	log.Info().Msgf("[main] GOMAXPROCS=%d was set up", runtime.GOMAXPROCS(0))
 }
 
 // loadCfg loads the configuration struct from environment variables
@@ -132,6 +133,9 @@ func loadCfg() (*config.Cache, error) {
 	if memoryLimitDefined {
 		cfg.Cache.Storage.Size = uint(*memoryLimit)
 	}
+	if gomaxprocsDefined {
+		cfg.Cache.Runtime.Gomaxprocs = *gomaxprocs
+	}
 
 	return cfg, nil
 }
@@ -142,15 +146,15 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Optimize GOMAXPROCS for the current environment.
-	setMaxProcs()
-
 	// Load the application configuration from env vars.
 	cfg, cfgError := loadCfg()
 	if cfgError != nil {
 		log.Err(cfgError).Msg("[main] failed to load cache config")
 		return
 	}
+
+	// Optimize GOMAXPROCS for the current environment.
+	setMaxProcs(cfg)
 
 	// Setup gracefulShutdown shutdown handler (SIGTERM, SIGINT, etc).
 	gracefulShutdown := shutdown.NewGraceful(ctx, cancel)
@@ -176,7 +180,7 @@ func main() {
 	go gc.Run(gcCtx, cfg)
 
 	// Listen for OS signals or context cancellation and wait for gracefulShutdown shutdown.
-	if err := gracefulShutdown.ListenCancelAndAwait(); err != nil {
+	if err = gracefulShutdown.ListenCancelAndAwait(); err != nil {
 		log.Err(err).Msg("failed to gracefully shut down service")
 	}
 }

@@ -130,7 +130,7 @@ func StreamEntryPointersConsecutive(ctx context.Context, cfg *config.Cache, back
 			case <-ctx.Done():
 				return
 			default:
-				if i >= num {
+				if i > num {
 					return
 				}
 				query := make([]byte, 0, 512)
