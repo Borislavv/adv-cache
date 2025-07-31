@@ -110,7 +110,7 @@ func (s *HTTP) initServer(r *router.Router, middlewares []middleware.HttpMiddlew
 		CloseOnShutdown:               true,
 		Concurrency:                   1_000_000,
 		Handler:                       s.wrapMiddlewaresOverRouterHandler(r.Handler, middlewares),
-		ReadBufferSize:                4 * 1024, // 4K alignment
-		WriteBufferSize:               4 * 1024, // 4K alignment
+		ReadBufferSize:                32 * 1024, // 4K alignment
+		WriteBufferSize:               32 * 1024, // 4K alignment
 	}
 }
