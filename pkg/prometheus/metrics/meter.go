@@ -24,6 +24,7 @@ type Meter interface {
 	SetHits(value uint64)
 	SetMisses(value uint64)
 	SetErrors(value uint64)
+	SetPanics(value uint64)
 	SetProxiedNum(value uint64)
 	SetRPS(value float64)
 	SetCacheLength(count uint64)
@@ -56,11 +57,15 @@ func (m *Metrics) SetCacheMemory(bytes uint64) {
 }
 
 func (m *Metrics) SetErrors(value uint64) {
-	metrics.GetOrCreateCounter(keyword.UpstreamErrors).Set(value)
+	metrics.GetOrCreateCounter(keyword.Errored).Set(value)
+}
+
+func (m *Metrics) SetPanics(value uint64) {
+	metrics.GetOrCreateCounter(keyword.Panicked).Set(value)
 }
 
 func (m *Metrics) SetProxiedNum(value uint64) {
-	metrics.GetOrCreateCounter(keyword.NumOfProxiedRequests).Set(value)
+	metrics.GetOrCreateCounter(keyword.Proxied).Set(value)
 }
 
 func (m *Metrics) SetCacheLength(count uint64) {

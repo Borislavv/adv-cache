@@ -27,7 +27,7 @@ var cfg *config.Cache
 
 func init() {
 	cfg = &config.Cache{
-		Cache: config.CacheBox{
+		Cache: &config.CacheBox{
 			Enabled: true,
 			LifeTime: config.Lifetime{
 				MaxReqDuration:             time.Millisecond * 100,
@@ -49,7 +49,7 @@ func init() {
 				TTL:  time.Hour,
 				Beta: 0.4,
 			},
-			Storage: config.Storage{
+			Storage: &config.Storage{
 				Type: "malloc",
 				Size: 1024 * 500000, // 5 MB
 			},

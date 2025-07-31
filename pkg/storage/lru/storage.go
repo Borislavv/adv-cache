@@ -4,7 +4,6 @@ import (
 	"context"
 	"github.com/Borislavv/advanced-cache/pkg/storage/lfu"
 	"runtime"
-	"strconv"
 	"time"
 
 	"github.com/Borislavv/advanced-cache/pkg/config"
@@ -179,34 +178,15 @@ func (s *InMemoryStorage) runLogger() *InMemoryStorage {
 				var m runtime.MemStats
 				runtime.ReadMemStats(&m)
 
-				var (
-					realMem    = s.shardedMap.Mem()
-					mem        = utils.FmtMem(realMem)
-					length     = strconv.Itoa(int(s.shardedMap.Len()))
-					gc         = strconv.Itoa(int(m.NumGC))
-					limit      = utils.FmtMem(int64(s.cfg.Cache.Storage.Size))
-					goroutines = strconv.Itoa(runtime.NumGoroutine())
-					alloc      = utils.FmtMem(int64(m.Alloc))
-				)
-
-				logEvent := log.Info()
-
-				if s.cfg.IsProd() {
-					logEvent.
-						Str("target", "storage").
-						Str("mem", strconv.Itoa(int(realMem))).
-						Str("memStr", mem).
-						Str("len", length).
-						Str("gc", gc).
-						Str("memLimit", strconv.Itoa(int(s.cfg.Cache.Storage.Size))).
-						Str("memLimitStr", limit).
-						Str("goroutines", goroutines).
-						Str("alloc", strconv.Itoa(int(m.Alloc))).
-						Str("allocStr", alloc)
-				}
-
-				logEvent.Msgf("[storage][5s] usage: %s, len: %s, limit: %s, alloc: %s, goroutines: %s, gc: %s",
-					mem, length, limit, alloc, goroutines, gc)
+				log.Info().
+					Str("target", "storage").
+					Int64("len", s.shardedMap.Len()).
+					Str("memoryUsage", utils.FmtMem(s.shardedMap.Mem())).
+					Str("memLimit", utils.FmtMem(int64(s.cfg.Cache.Storage.Size))).
+					Str("allocStr", utils.FmtMem(int64(m.Alloc))).
+					Int("goroutines", runtime.NumGoroutine()).
+					Uint32("gc", m.NumGC).
+					Msg("[storage][5s]")
 			}
 		}
 	}()

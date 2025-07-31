@@ -38,7 +38,7 @@ type Dump struct {
 }
 
 func NewDumper(cfg *config.Cache, storage Storage, backend repository.Backender) *Dump {
-	return &Dump{cfg, storage, backend}
+	return &Dump{cfg: cfg, storage: storage, backend: backend}
 }
 
 func (d *Dump) Dump(ctx context.Context) error {

@@ -74,7 +74,6 @@ func (r *Refresh) run() {
 						case <-upstreamRateCh:
 							go func() {
 								if err := entry.Revalidate(); err != nil {
-									log.Error().Err(err).Msg("failed to refresh entry")
 									failedRefreshesNumCounter.Add(1)
 								} else {
 									successRefreshesNumCounter.Add(1)
@@ -115,17 +114,13 @@ func (r *Refresh) runLogger() {
 		}
 
 		logCounters := func(label string, c *counters) {
-			logEvent := log.Info()
-			if r.cfg.IsProd() {
-				logEvent = logEvent.
-					Str("target", "refresher").
-					Int64("refreshes", c.success).
-					Int64("errors", c.errors).
-					Int64("scans", c.scans).
-					Int64("scans_found", c.found)
-			}
-			logEvent.Msgf("[refresher][%s] stats: refreshes=%d, errors=%d, scans=%d, found=%d",
-				label, c.success, c.errors, c.scans, c.found)
+			log.Info().
+				Str("target", "refresher").
+				Int64("refreshes", c.success).
+				Int64("errors", c.errors).
+				Int64("scans", c.scans).
+				Int64("scans_found", c.found).
+				Msgf("[refresher][%s]", label)
 		}
 
 		for {
@@ -160,8 +155,7 @@ func (r *Refresh) runLogger() {
 					Int64("errors", errors).
 					Int64("scans", scans).
 					Int64("scans_found", found).
-					Msgf("[refresher][5s] updated %d items, errors: %d, scans: %d, found: %d",
-						success, errors, scans, found)
+					Msg("[refresher][5s]")
 
 			case <-eachHour:
 				logCounters("1h", accHourly)

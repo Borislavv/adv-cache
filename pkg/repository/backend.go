@@ -3,6 +3,7 @@ package repository
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/pools"
 	"github.com/valyala/fasthttp"
@@ -31,6 +32,12 @@ var transport = &http.Transport{
 		Timeout:   30 * time.Second,
 		KeepAlive: 30 * time.Second,
 	}).DialContext,
+
+	DialTLS: func(network, addr string) (net.Conn, error) {
+		return tls.Dial("tcp", addr, &tls.Config{
+			InsecureSkipVerify: true, // или false — если нужен real cert check
+		})
+	},
 
 	// Optional: configure TLS handshake timeout, etc.
 	TLSHandshakeTimeout: 10 * time.Second,
@@ -173,16 +180,14 @@ func (s *Backend) requestExternalBackend(
 
 	if rule != nil {
 		allowedHeadersMap := rule.CacheValue.HeadersMap
-		resp.Header.All()(func(k, v []byte) bool {
+		resp.Header.VisitAll(func(k, v []byte) {
 			if _, ok := allowedHeadersMap[unsafe.String(unsafe.SliceData(k), len(k))]; ok {
 				*headers = append(*headers, [2][]byte{k, v})
 			}
-			return true
 		})
 	} else {
-		resp.Header.All()(func(k, v []byte) bool {
+		resp.Header.VisitAll(func(k, v []byte) {
 			*headers = append(*headers, [2][]byte{k, v})
-			return true
 		})
 	}
 

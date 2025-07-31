@@ -27,14 +27,18 @@ var (
 	}
 )
 
-func SetLastModifiedNetHttp(w http.ResponseWriter, entry *model.Entry) {
+func SetLastModifiedValueNetHttp(w http.ResponseWriter, v int64) {
 	buf := bufPool.Get().(*[]byte)
 	*buf = (*buf)[:0]
 
-	*buf = appendLastModifiedHeader(buf, entry.UpdateAt())
+	*buf = appendLastModifiedHeader(buf, v)
 	w.Header().Set(lastModifiedStrKey, string(*buf))
 
 	bufPool.Put(buf)
+}
+
+func SetLastModifiedNetHttp(w http.ResponseWriter, entry *model.Entry) {
+	SetLastModifiedValueNetHttp(w, entry.UpdateAt())
 }
 
 func SetLastModifiedFastHttp(r *fasthttp.RequestCtx, entry *model.Entry) {
