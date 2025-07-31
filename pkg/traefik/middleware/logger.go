@@ -4,9 +4,9 @@ import (
 	"context"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
+	"github.com/Borislavv/advanced-cache/pkg/router/counter"
+	"github.com/Borislavv/advanced-cache/pkg/router/route"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
-	"github.com/Borislavv/advanced-cache/pkg/traefik/middleware/router/counter"
-	"github.com/Borislavv/advanced-cache/pkg/traefik/middleware/router/route"
 	"github.com/Borislavv/advanced-cache/pkg/utils"
 	"github.com/rs/zerolog/log"
 	"strconv"
@@ -29,8 +29,7 @@ func NewMetricsLogger(ctx context.Context, cfg *config.Cache, storage storage.St
 	}
 }
 
-// runControllerLogger runs a goroutine to periodically log RPS and avg duration per window, if debug enabled.
-func (l *MetricsLogger) run() {
+func (l *MetricsLogger) Run() {
 	go func() {
 		metricsTicker := utils.NewTicker(l.ctx, time.Second)
 

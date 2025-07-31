@@ -5,10 +5,9 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
+	route2 "github.com/Borislavv/advanced-cache/pkg/router/route"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
 	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
-	"github.com/Borislavv/advanced-cache/pkg/traefik/middleware/router"
-	"github.com/Borislavv/advanced-cache/pkg/traefik/middleware/router/route"
 	"github.com/rs/zerolog/log"
 )
 
@@ -27,25 +26,25 @@ func (m *TraefikCacheMiddleware) setUpCache() {
 	db := lru.NewStorage(ctx, cacheCfg, backend)
 	cacheDumper = storage.NewDumper(cacheCfg, db, backend)
 
-	m.router = router.NewRouter(
-		route.NewUpstream(backend),
-		route.NewCacheRoutes(cacheCfg, db, backend),
-		route.NewClearRoute(cacheCfg, db),
-		route.NewK8sProbeRoute(),
-		route.NewEnableRoute(),
-		route.NewDisableRoute(),
-		route.NewMetricsRoute(),
-	)
+	//m.router = router.NewRouter(
+	//	route2.NewUpstream(backend),
+	//	route2.NewCacheRoutes(cacheCfg, db, backend),
+	//	route2.NewClearRoute(cacheCfg, db),
+	//	route2.NewK8sProbeRoute(),
+	//	route2.NewEnableRoute(),
+	//	route2.NewDisableRoute(),
+	//	route2.NewMetricsRoute(),
+	//)
 
 	// run additional workers
-	NewMetricsLogger(ctx, cacheCfg, db, meter).run()
+	NewMetricsLogger(ctx, cacheCfg, db, meter).Run()
 
 	// load data if necessary
 	LoadDumpIfNecessary(ctx)
 	m.loadMocksIfNecessary(ctx, backend, db)
 
 	// tell everyone that cache is enabled
-	route.EnableCache()
+	route2.EnableCache()
 }
 
 func (m *TraefikCacheMiddleware) loadMocksIfNecessary(ctx context.Context, backend repository.Backender, db storage.Storage) {

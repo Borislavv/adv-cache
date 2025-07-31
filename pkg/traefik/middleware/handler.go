@@ -3,7 +3,7 @@ package middleware
 import (
 	"context"
 	"github.com/Borislavv/advanced-cache/pkg/config"
-	"github.com/Borislavv/advanced-cache/pkg/traefik/middleware/router"
+	"github.com/Borislavv/advanced-cache/pkg/router"
 	"net/http"
 )
 
@@ -30,5 +30,5 @@ func New(ctx context.Context, next http.Handler, cfg *config.TraefikIntermediate
 }
 
 func (m *TraefikCacheMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	m.router.ServeHTTP(w, r)
+	//m.router.Handle(w, r)
 }

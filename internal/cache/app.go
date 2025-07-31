@@ -2,14 +2,17 @@ package cache
 
 import (
 	"context"
-	"github.com/Borislavv/advanced-cache/internal/cache/server"
+	"github.com/Borislavv/advanced-cache/internal/cache/api"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/k8s/probe/liveness"
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
 	"github.com/Borislavv/advanced-cache/pkg/repository"
+	"github.com/Borislavv/advanced-cache/pkg/router"
+	"github.com/Borislavv/advanced-cache/pkg/router/route"
 	"github.com/Borislavv/advanced-cache/pkg/shutdown"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
 	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
+	"github.com/Borislavv/advanced-cache/pkg/traefik/middleware"
 	"github.com/rs/zerolog/log"
 	"time"
 )
@@ -26,21 +29,27 @@ type Cache struct {
 	cancel  context.CancelFunc
 	probe   liveness.Prober
 	dumper  storage.Dumper
-	server  server.Http
+	server  Http
 	backend repository.Backender
 	db      storage.Storage
 }
 
 // NewApp builds a new Cache app, wiring together db, repo, reader, and server.
 func NewApp(ctx context.Context, cfg *config.Cache, probe liveness.Prober) (*Cache, error) {
+	var err error
 	ctx, cancel := context.WithCancel(ctx)
+	defer func() {
+		if err != nil {
+			cancel()
+		}
+	}()
 
-	meter := metrics.New()
+	metor := metrics.New()
 	backend := repository.NewBackend(ctx, cfg)
 	db := lru.NewStorage(ctx, cfg, backend)
 	dumper := storage.NewDumper(cfg, db, backend)
 
-	cacheObj := &Cache{
+	c := &Cache{
 		ctx:     ctx,
 		cancel:  cancel,
 		cfg:     cfg,
@@ -50,15 +59,17 @@ func NewApp(ctx context.Context, cfg *config.Cache, probe liveness.Prober) (*Cac
 		dumper:  dumper,
 	}
 
-	// Compose the HTTP server (API, metrics and so on)
-	srv, err := server.New(ctx, cfg, db, backend, probe, meter)
+	middleware.NewMetricsLogger(ctx, cfg, db, metor).Run()
+
+	handler := api.NewCacheController(ctx, cfg, db, metor, backend)
+	//handler := route.NewCacheRoutes(c.cfg, c.db, c.backend).Handle
+	fasthttpServer, err := New(ctx, cfg, route.NewUpstream(backend), handler.Index, c.routes()...)
 	if err != nil {
-		cancel()
 		return nil, err
 	}
-	cacheObj.server = srv
+	c.server = fasthttpServer
 
-	return cacheObj, nil
+	return c, nil
 }
 
 // Start runs the cache server and liveness probe, and handles graceful shutdown.
@@ -95,6 +106,16 @@ func (c *Cache) Start(gc shutdown.Gracefuller) {
 	<-waitCh // Wait until the server exits
 }
 
+// IsAlive is called by liveness probes to check app health.
+// Returns false if the HTTP server is not alive.
+func (c *Cache) IsAlive(_ context.Context) bool {
+	if !c.server.IsAlive() {
+		log.Info().Msg("[app] http server has gone away")
+		return false
+	}
+	return true
+}
+
 // stop cancels the main application context and logs shutdown.
 func (c *Cache) stop() {
 	log.Info().Msg("[app] stopping cache")
@@ -112,12 +133,14 @@ func (c *Cache) stop() {
 	log.Info().Msg("[app] cache has been stopped")
 }
 
-// IsAlive is called by liveness probes to check app health.
-// Returns false if the HTTP server is not alive.
-func (c *Cache) IsAlive(_ context.Context) bool {
-	if !c.server.IsAlive() {
-		log.Info().Msg("[app] http server has gone away")
-		return false
+func (c *Cache) routes() []router.Route {
+	return []router.Route{
+		route.NewUpstream(c.backend),
+		//route.NewCacheRoutes(c.cfg, c.db, c.backend),
+		route.NewClearRoute(c.cfg, c.db),
+		route.NewK8sProbeRoute(),
+		route.NewMetricsRoute(),
+		route.NewEnableRoute(),
+		route.NewDisableRoute(),
 	}
-	return true
 }

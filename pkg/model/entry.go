@@ -68,12 +68,26 @@ func NewEntryNetHttp(rule *config.Rule, r *http.Request) *Entry {
 }
 
 // NewEntryFastHttp accepts path, query and request headers as bytes slices.
-func NewEntryFastHttp(cfg *config.Cache, r *fasthttp.RequestCtx) (*Entry, error) {
+func NewEntryFastHttp(rule *config.Rule, r *fasthttp.RequestCtx) *Entry {
+	entry := new(Entry).Init()
+	entry.rule = rule
+
+	filteredQueries, filteredQueriesReleaser := entry.getFilteredAndSortedKeyQueriesFastHttp(r)
+	defer filteredQueriesReleaser(filteredQueries)
+
+	filteredHeaders, filteredHeadersReleaser := entry.getFilteredAndSortedKeyHeadersFastHttp(r)
+	defer filteredHeadersReleaser(filteredHeaders)
+
+	entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders)
+
+	return entry
+}
+
+func NewEntryMatchedFastHttp(cfg *config.Cache, r *fasthttp.RequestCtx) (*Entry, error) {
 	rule := MatchRule(cfg, r.Path())
 	if rule == nil {
 		return nil, ruleNotFoundError
 	}
-
 	entry := new(Entry).Init()
 	entry.rule = rule
 
@@ -457,6 +471,9 @@ func (e *Entry) Payload() (
 }
 
 func (e *Entry) Rule() *config.Rule {
+	if e == nil {
+		return nil
+	}
 	return e.rule
 }
 

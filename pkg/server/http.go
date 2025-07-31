@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 	"github.com/Borislavv/advanced-cache/pkg/config"
-	"github.com/Borislavv/advanced-cache/pkg/server/controller"
+	"github.com/Borislavv/advanced-cache/pkg/router"
 	"github.com/Borislavv/advanced-cache/pkg/server/middleware"
-	"github.com/fasthttp/router"
+	router2 "github.com/fasthttp/router"
 	"github.com/rs/zerolog/log"
 	"github.com/valyala/fasthttp"
 	"sync"
@@ -17,16 +17,18 @@ type HTTP struct {
 	ctx    context.Context
 	config *config.Cache
 	server *fasthttp.Server
+	cache  fasthttp.RequestHandler
 }
 
 func New(
 	ctx context.Context,
 	config *config.Cache,
-	controllers []controller.HttpController,
+	router *router.Router,
+	cache fasthttp.RequestHandler,
 	middlewares []middleware.HttpMiddleware,
 ) (*HTTP, error) {
-	s := &HTTP{ctx: ctx, config: config}
-	s.initServer(s.buildRouter(controllers), middlewares)
+	s := &HTTP{ctx: ctx, config: config, cache: cache}
+	s.initServer(router, middlewares)
 	return s, nil
 }
 
@@ -71,15 +73,6 @@ func (s *HTTP) shutdown(wg *sync.WaitGroup) {
 	}
 }
 
-func (s *HTTP) buildRouter(controllers []controller.HttpController) *router.Router {
-	r := router.New()
-	// set up other controllers
-	for _, contr := range controllers {
-		contr.AddRoute(r)
-	}
-	return r
-}
-
 func (s *HTTP) wrapMiddlewaresOverRouterHandler(
 	handler fasthttp.RequestHandler,
 	middlewares []middleware.HttpMiddleware,
@@ -101,16 +94,28 @@ func (s *HTTP) mergeMiddlewares(
 	return handler
 }
 
-func (s *HTTP) initServer(r *router.Router, middlewares []middleware.HttpMiddleware) {
-	s.server = &fasthttp.Server{
+//func (s *HTTP) buildRouter(controllers []controller.HttpController) *router.Router {
+//	r := router2.New()
+//	// set up other controllers
+//	for _, contr := range controllers {
+//		contr.AddRoute(r)
+//	}
+//	return r
+//}
+
+func (s *HTTP) initServer(router *router.Router, middlewares []middleware.HttpMiddleware) {
+	r := router2.New()
+	r.
+		s.server = &fasthttp.Server{
 		GetOnly:                       true,
 		ReduceMemoryUsage:             true,
 		DisablePreParseMultipartForm:  true,
 		DisableHeaderNamesNormalizing: true,
 		CloseOnShutdown:               true,
-		Concurrency:                   1_000_000,
-		Handler:                       s.wrapMiddlewaresOverRouterHandler(r.Handler, middlewares),
-		ReadBufferSize:                4 * 1024, // 4K alignment
-		WriteBufferSize:               4 * 1024, // 4K alignment
+		Concurrency:                   500_000,
+		//Handler:                       s.wrapMiddlewaresOverRouterHandler(router.Handle, middlewares),
+		Handler:         s.cache,
+		ReadBufferSize:  4 * 1024, // 4K alignment
+		WriteBufferSize: 4 * 1024, // 4K alignment
 	}
 }
