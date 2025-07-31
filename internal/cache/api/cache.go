@@ -91,39 +91,6 @@ func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 	}
 }
 
-func (c *CacheController) handleTroughProxy(r *fasthttp.RequestCtx) {
-	proxies.Add(1)
-
-	// extract request data
-	path := r.Path()
-	queryString := r.QueryArgs().QueryString()
-	queryHeaders, queryReleaser := c.queryHeaders(r)
-	defer queryReleaser(queryHeaders)
-
-	// fetch data from upstream
-	payloadStatus, payloadHeaders, payloadBody, payloadReleaser, err := c.backend.Fetch(nil, path, queryString, queryHeaders)
-	defer payloadReleaser()
-	if err != nil {
-		c.respondThatServiceIsTemporaryUnavailable(err, r)
-		return
-	}
-
-	// Write payloadStatus, payloadHeaders, and payloadBody from the cached (or fetched) response.
-	r.Response.SetStatusCode(payloadStatus)
-	for _, kv := range *payloadHeaders {
-		r.Response.Header.AddBytesKV(kv[0], kv[1])
-	}
-
-	// Set up Last-Modified header
-	header.SetLastModifiedValueFastHttp(r, time.Now().UnixNano())
-
-	// Write payloadBody
-	if _, err = serverutils.Write(payloadBody, r); err != nil {
-		c.respondThatServiceIsTemporaryUnavailable(err, r)
-		return
-	}
-}
-
 func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) {
 	// make a lightweight request Entry (contains only key, shardKey and fingerprint)
 	newEntry, err := model.NewEntryFastHttp(c.cfg, r) // must be removed on hit and release on miss
@@ -199,6 +166,39 @@ func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) {
 
 	// Set up Last-Modified header
 	header.SetLastModifiedValueFastHttp(r, payloadLastModified)
+
+	// Write payloadBody
+	if _, err = serverutils.Write(payloadBody, r); err != nil {
+		c.respondThatServiceIsTemporaryUnavailable(err, r)
+		return
+	}
+}
+
+func (c *CacheController) handleTroughProxy(r *fasthttp.RequestCtx) {
+	proxies.Add(1)
+
+	// extract request data
+	path := r.Path()
+	queryString := r.QueryArgs().QueryString()
+	queryHeaders, queryReleaser := c.queryHeaders(r)
+	defer queryReleaser(queryHeaders)
+
+	// fetch data from upstream
+	payloadStatus, payloadHeaders, payloadBody, payloadReleaser, err := c.backend.Fetch(nil, path, queryString, queryHeaders)
+	defer payloadReleaser()
+	if err != nil {
+		c.respondThatServiceIsTemporaryUnavailable(err, r)
+		return
+	}
+
+	// Write payloadStatus, payloadHeaders, and payloadBody from the cached (or fetched) response.
+	r.Response.SetStatusCode(payloadStatus)
+	for _, kv := range *payloadHeaders {
+		r.Response.Header.AddBytesKV(kv[0], kv[1])
+	}
+
+	// Set up Last-Modified header
+	header.SetLastModifiedValueFastHttp(r, time.Now().UnixNano())
 
 	// Write payloadBody
 	if _, err = serverutils.Write(payloadBody, r); err != nil {
