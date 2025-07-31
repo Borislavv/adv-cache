@@ -114,13 +114,17 @@ func (r *Refresh) runLogger() {
 		}
 
 		logCounters := func(label string, c *counters) {
-			log.Info().
-				Str("target", "refresher").
-				Int64("refreshes", c.success).
-				Int64("errors", c.errors).
-				Int64("scans", c.scans).
-				Int64("scans_found", c.found).
-				Msgf("[refresher][%s]", label)
+			logEvent := log.Info()
+			if r.cfg.IsProd() {
+				logEvent = logEvent.
+					Str("target", "refresher").
+					Int64("refreshes", c.success).
+					Int64("errors", c.errors).
+					Int64("scans", c.scans).
+					Int64("scans_found", c.found)
+			}
+			logEvent.Msgf("[refresher][%s] stats: refreshes=%d, errors=%d, scans=%d, found=%d",
+				label, c.success, c.errors, c.scans, c.found)
 		}
 
 		for {
