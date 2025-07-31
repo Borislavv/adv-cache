@@ -115,18 +115,33 @@ func (l *MetricsLogger) Run() {
 						target = "proxy-controller"
 					}
 
-					log.Info().
-						Str("target", target).
-						Float64("rps", rps).
-						Int64("served", totalNum).
-						Int64("hits", hitsNum).
-						Int64("missed", missesNum).
-						Int64("errors", errorsNum).
-						Int64("panics", panicsNum).
-						Str("periodMs", strconv.Itoa(logIntervalSecs*1000)).
-						Str("avgDuration", duration.String()).
-						Str("elapsed", elapsed.String()).
-						Msgf("[%s][%s]", target, elapsed.String())
+					logEvent := log.Info()
+
+					if l.cfg.IsProd() {
+						logEvent.
+							Str("target", target).
+							Float64("rps", rps).
+							Int64("served", totalNum).
+							Int64("hits", hitsNum).
+							Int64("missed", missesNum).
+							Int64("errors", errorsNum).
+							Int64("panics", panicsNum).
+							Str("periodMs", strconv.Itoa(logIntervalSecs*1000)).
+							Str("avgDuration", duration.String()).
+							Str("elapsed", elapsed.String())
+					}
+
+					if route.IsCacheEnabled() {
+						logEvent.Msgf(
+							"[%s][%s] served %d requests (rps: %.f, avg.dur.: %s hits: %d, misses: %d, errors: %d)",
+							target, elapsed.String(), totalNum, rps, duration.String(), hitsNum, missesNum, errorsNum,
+						)
+					} else {
+						logEvent.Msgf(
+							"[%s][%s] served %d requests (rps: %.f, avg.dur.: %s total: %d, errors: %d)",
+							target, elapsed.String(), totalNum, rps, duration.String(), totalNum, errorsNum,
+						)
+					}
 
 					totalNum = 0
 					hitsNum = 0
@@ -202,16 +217,38 @@ func (l *MetricsLogger) logLong(label string, c counters) {
 		}
 	}
 
-	log.Info().
-		Str("target", "cache-long-metrics").
-		Str("period", label).
-		Int64("total", c.total).
-		Int64("hits", c.hits).
-		Int64("misses", c.misses).
-		Int64("errors", c.errors).
-		Int64("panics", c.panics).
-		Int64("proxied", c.proxied).
-		Float64("avgRPS", avgRPS).
-		Str("avgDuration", avgDur.String()).
-		Msgf("[cache/proxy-controller][%s] ", label)
+	logEvent := log.Info()
+
+	if l.cfg.IsProd() {
+		logEvent.
+			Str("target", "cache-long-metrics").
+			Str("period", label).
+			Int64("total", c.total).
+			Int64("hits", c.hits).
+			Int64("misses", c.misses).
+			Int64("errors", c.errors).
+			Int64("panics", c.panics).
+			Int64("proxied", c.proxied).
+			Float64("avgRPS", avgRPS).
+			Str("avgDuration", avgDur.String())
+	}
+
+	var target string
+	if route.IsCacheEnabled() {
+		target = "cache-controller"
+	} else {
+		target = "proxy-controller"
+	}
+
+	if route.IsCacheEnabled() {
+		logEvent.Msgf(
+			"[%s][%s] served %d requests (rps: %.f, avg.dur.: %s hits: %d, misses: %d, errors: %d)",
+			target, label, c.total, avgRPS, avgDur.String(), c.hits, c.misses, c.errors,
+		)
+	} else {
+		logEvent.Msgf(
+			"[%s][%s] served %d requests (rps: %.f, avg.dur.: %s, errors: %d)",
+			target, label, c.total, avgRPS, avgDur.String(), c.errors,
+		)
+	}
 }

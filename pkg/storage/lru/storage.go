@@ -178,15 +178,29 @@ func (s *InMemoryStorage) runLogger() *InMemoryStorage {
 				var m runtime.MemStats
 				runtime.ReadMemStats(&m)
 
-				log.Info().
-					Str("target", "storage").
-					Int64("len", s.shardedMap.Len()).
-					Str("memoryUsage", utils.FmtMem(s.shardedMap.Mem())).
-					Str("memLimit", utils.FmtMem(int64(s.cfg.Cache.Storage.Size))).
-					Str("allocStr", utils.FmtMem(int64(m.Alloc))).
-					Int("goroutines", runtime.NumGoroutine()).
-					Uint32("gc", m.NumGC).
-					Msg("[storage][5s]")
+				logEvent := log.Info()
+
+				var (
+					length     = s.shardedMap.Len()
+					mem        = utils.FmtMem(s.shardedMap.Mem())
+					memLimit   = utils.FmtMem(int64(s.cfg.Cache.Storage.Size))
+					allocs     = utils.FmtMem(int64(m.Alloc))
+					goroutines = runtime.NumGoroutine()
+				)
+
+				if s.cfg.IsProd() {
+					logEvent.
+						Str("target", "storage").
+						Int64("len", length).
+						Str("memoryUsage", mem).
+						Str("memLimit", memLimit).
+						Str("allocStr", allocs).
+						Int("goroutines", goroutines).
+						Uint32("gc", m.NumGC)
+				}
+
+				logEvent.Msgf("[DB][5s] usage: %s, len: %d, limit: %s, alloc: %s, goroutines: %d, GC: %d",
+					mem, length, memLimit, allocs, goroutines, m.NumGC)
 			}
 		}
 	}()

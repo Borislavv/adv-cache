@@ -114,13 +114,17 @@ func (r *Refresh) runLogger() {
 		}
 
 		logCounters := func(label string, c *counters) {
-			log.Info().
-				Str("target", "refresher").
-				Int64("refreshes", c.success).
-				Int64("errors", c.errors).
-				Int64("scans", c.scans).
-				Int64("scans_found", c.found).
-				Msgf("[refresher][%s]", label)
+			logEvent := log.Info()
+			if r.cfg.IsProd() {
+				logEvent = logEvent.
+					Str("target", "refresher").
+					Int64("refreshes", c.success).
+					Int64("errors", c.errors).
+					Int64("scans", c.scans).
+					Int64("scans_found", c.found)
+			}
+			logEvent.Msgf("[refresher][%s] updated %d items, errors: %d, scans: %d, found_scans: %d",
+				label, c.success, c.errors, c.scans, c.found)
 		}
 
 		for {
@@ -149,13 +153,21 @@ func (r *Refresh) runLogger() {
 				acc24Hourly.scans += scans
 				acc24Hourly.found += found
 
-				log.Info().
-					Str("target", "refresher").
-					Int64("refreshes", success).
-					Int64("errors", errors).
-					Int64("scans", scans).
-					Int64("scans_found", found).
-					Msg("[refresher][5s]")
+				logEvent := log.Info()
+
+				if r.cfg.IsProd() {
+					logEvent.
+						Str("target", "refresher").
+						Int64("refreshes", success).
+						Int64("errors", errors).
+						Int64("scans", scans).
+						Int64("scans_found", found)
+				}
+
+				logEvent.Msgf(
+					"[refresher][5s] updated %d items, errors: %d, scans: %d, found_scans: %d",
+					success, errors, scans, found,
+				)
 
 			case <-eachHour:
 				logCounters("1h", accHourly)

@@ -8,7 +8,6 @@ import (
 	httpserver "github.com/Borislavv/advanced-cache/pkg/server"
 	"github.com/Borislavv/advanced-cache/pkg/server/middleware"
 	"github.com/rs/zerolog/log"
-	"github.com/valyala/fasthttp"
 	"sync"
 	"sync/atomic"
 )
@@ -30,19 +29,16 @@ type HttpServer struct {
 
 	server        httpserver.Server
 	isServerAlive *atomic.Bool
-
-	cache fasthttp.RequestHandler
 }
 
 // New creates a new HttpServer, initializing metrics and the HTTP server itself.
 // If any step fails, returns an error and performs cleanup.
-func New(ctx context.Context, cfg *config.Cache, upstream router.Upstream, cache fasthttp.RequestHandler, routes ...router.Route) (*HttpServer, error) {
+func New(ctx context.Context, cfg *config.Cache, upstream router.Upstream, routes ...router.Route) (*HttpServer, error) {
 	var err error
 
 	srv := &HttpServer{
 		ctx:           ctx,
 		cfg:           cfg,
-		cache:         cache,
 		isServerAlive: &atomic.Bool{},
 	}
 
@@ -90,7 +86,7 @@ func (s *HttpServer) spawnServer(wg *sync.WaitGroup) {
 // initServer creates the HTTP server instance, sets up controllers and middlewares, and stores the result.
 func (s *HttpServer) initServer(router *router.Router) error {
 	// Compose server with controllers and middlewares.
-	if server, err := httpserver.New(s.ctx, s.cfg, router, s.cache, s.middlewares()); err != nil {
+	if server, err := httpserver.New(s.ctx, s.cfg, router, s.middlewares()); err != nil {
 		log.Err(err).Msg(InitFailedErrorMessage)
 		return errors.New(InitFailedErrorMessage)
 	} else {

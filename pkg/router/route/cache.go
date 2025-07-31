@@ -61,11 +61,6 @@ func (c *CacheRoute) Handle(r *fasthttp.RequestCtx) {
 	defer func() { counter.Duration.Add(time.Since(from).Nanoseconds()) }()
 	counter.Total.Add(1)
 
-	r.SetContentTypeBytes(contentType)
-	r.SetStatusCode(200)
-	r.Write([]byte(`{"status":"ok"}`))
-	return
-
 	rule, ok := c.rules[unsafe.String(unsafe.SliceData(r.Path()), len(r.Path()))]
 	if !ok {
 		//return routeNotFoundError

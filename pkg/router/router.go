@@ -41,7 +41,7 @@ func (router *Router) Handle(r *fasthttp.RequestCtx) {
 	defer func() {
 		if err := recover(); err != nil {
 			counter.Panics.Add(1)
-			log.Panic().Msgf("Recovered from panic: %v\n", err)
+			log.Panic().Msgf("Recovered from panic: %v", err)
 			router.unavailable.Handle(r)
 			return
 		}

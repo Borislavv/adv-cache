@@ -143,12 +143,12 @@ func (smap *Map[V]) RealMem() int64 {
 
 func (smap *Map[V]) runMemRefresher() {
 	go func() {
-		log.Info().Msg("[storage] memory refresher has been launched (refresh each 100ms)")
+		log.Info().Msg("[DB] memory refresher has been launched (refresh each 100ms)")
 		t := utils.NewTicker(smap.ctx, time.Millisecond*100)
 		for {
 			select {
 			case <-smap.ctx.Done():
-				log.Info().Msg("[storage] memory refresher has been closed")
+				log.Info().Msg("[DB] memory refresher has been closed")
 				return
 			case <-t:
 				mem := int64(0)

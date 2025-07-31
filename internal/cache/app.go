@@ -2,7 +2,6 @@ package cache
 
 import (
 	"context"
-	"github.com/Borislavv/advanced-cache/internal/cache/api"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/k8s/probe/liveness"
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
@@ -61,9 +60,7 @@ func NewApp(ctx context.Context, cfg *config.Cache, probe liveness.Prober) (*Cac
 
 	middleware.NewMetricsLogger(ctx, cfg, db, metor).Run()
 
-	handler := api.NewCacheController(ctx, cfg, db, metor, backend)
-	//handler := route.NewCacheRoutes(c.cfg, c.db, c.backend).Handle
-	fasthttpServer, err := New(ctx, cfg, route.NewUpstream(backend), handler.Index, c.routes()...)
+	fasthttpServer, err := New(ctx, cfg, route.NewUpstream(backend), c.routes()...)
 	if err != nil {
 		return nil, err
 	}
