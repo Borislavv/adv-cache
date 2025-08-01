@@ -40,7 +40,7 @@ cache:
     interval: "10s"
 
   lifetime:
-    max_req_dur: "1s"                          # If a request lifetime is longer than 100ms then request will be canceled by context.
+    max_req_dur: "10s"                         # If a request lifetime is longer than 100ms then request will be canceled by context.
     escape_max_req_dur_header: "X-Google-Bot"  # If the header exists the timeout above will be skipped.
 
   preallocate:
