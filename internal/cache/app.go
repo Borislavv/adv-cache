@@ -152,16 +152,16 @@ func (c *Cache) LoadData(ctx context.Context, interactive bool) error {
 
 var useYamlCfgErr = errors.New("user choose a yaml config file instead")
 
-// LoadDataInteractive asks user to select dump by size desc, mocks, yaml config or exit.
+// loadDataInteractive asks user to select dump by date desc, mocks, yaml config, edit or exit.
 func (c *Cache) loadDataInteractive(ctx context.Context) error {
-	versionDirItems, err := os.ReadDir(c.cfg.Cache.Persistence.Dump.Dir)
+	entries, err := os.ReadDir(c.cfg.Cache.Persistence.Dump.Dir)
 	if err != nil {
 		log.Fatal().Err(err).Msgf("[dump] failed to read dumps dir %q: %v", c.cfg.Cache.Persistence.Dump.Dir, err)
 		return err
 	}
 
-	var versions []Version // filter version
-	for _, e := range versionDirItems {
+	var versions []Version
+	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
@@ -183,18 +183,19 @@ func (c *Cache) loadDataInteractive(ctx context.Context) error {
 		return err
 	}
 
-	// sort by size descending
-	sort.Slice(versions, func(i, j int) bool { return versions[i].ModTime.UnixNano() > versions[j].ModTime.UnixNano() })
+	// sort by ModTime descending
+	sort.Slice(versions, func(i, j int) bool { return versions[i].ModTime.After(versions[j].ModTime) })
 
-	// build menu: versions then custom actions
-	items := make([]string, 0, len(versions)+4)
+	// build menu
+	items := make([]string, 0, len(versions)+5)
 	for _, v := range versions {
 		items = append(items, fmt.Sprintf("%s\t%s\t%s", v.Name, c.byteCount(v.Size), v.ModTime.Format(time.RFC3339)))
 	}
 	items = append(items,
 		"Continue without dump loading",
 		"Run mocks loading",
-		"Run with yaml file config",
+		"Run yaml file config",
+		"Edit and run yaml config",
 		"Exit",
 	)
 
@@ -210,118 +211,105 @@ func (c *Cache) loadDataInteractive(ctx context.Context) error {
 	case idx < n:
 		// apply version
 		ver := versions[idx]
-		confirm := promptui.Prompt{Label: fmt.Sprintf("Apply version %s?", ver.Name), IsConfirm: true}
-		if _, err := confirm.Run(); err != nil {
+		applyVersionPrompt := promptui.Prompt{Label: fmt.Sprintf("Apply version %s?", ver.Name), IsConfirm: true}
+		if _, err := applyVersionPrompt.Run(); err != nil {
 			fmt.Println("Aborted.")
 			return err
 		}
-		fmt.Println(fmt.Sprintf("Applying dump %q…", ver.Name))
+		fmt.Printf("Applying dump %q…\n", ver.Name)
 		if err := c.applyDump(ctx, ver); err != nil {
 			log.Err(err).Msgf("[dump] failed apply %s: %v", ver.Name, err)
 			return err
 		}
-		fmt.Println("Done.")
+
 	case idx == n:
 		fmt.Println("Continuing without dump.")
+
 	case idx == n+1:
-		// mocks: ask count
-		lenPrompt := promptui.Prompt{Label: "Number of mocks to load", Validate: func(in string) error {
+		numberOfMocksPrompt := promptui.Prompt{Label: "Number of mocks to load", Validate: func(in string) error {
 			if _, err := strconv.Atoi(in); err != nil {
 				return fmt.Errorf("invalid: %v", err)
 			}
 			return nil
 		}}
-		res, _ := lenPrompt.Run()
+		// mocks
+		res, _ := numberOfMocksPrompt.Run()
 		nMocks, _ := strconv.Atoi(res)
 		storage.LoadMocks(ctx, c.cfg, c.backend, c.db, nMocks)
+
 	case idx == n+2:
-		// yaml config: prompt with default, existence check, load with fallback
+		// yaml config
 		for {
-			// initial prompt
-			cfgPrompt := promptui.Prompt{
-				Label:     fmt.Sprintf("Path to YAML config (type 'local' for use '%s' and 'main' for %s) or type 'back' for move to main menu", ConfigPathLocal, ConfigPath),
-				AllowEdit: true,
-			}
-			const (
-				backToMainManu  = "back"
-				useMainCfgFile  = "main"
-				useLocalCfgFile = "local"
-			)
-			path, _ := cfgPrompt.Run()
-			if strings.TrimSpace(path) == "" {
-				fmt.Println("Sorry, empty config path is not allowed, try again.")
+			pathToCfgPrompt := promptui.Prompt{Label: fmt.Sprintf("Path to YAML config (default '%s' or 'main') or 'back'", ConfigPathLocal)}
+			input, _ := pathToCfgPrompt.Run()
+			switch strings.TrimSpace(input) {
+			case "":
+				fmt.Println("Empty input not allowed")
 				continue
-			} else if strings.TrimSpace(path) == backToMainManu {
+			case "back":
 				return c.loadDataInteractive(ctx)
-			} else if useLocalCfgFile == strings.TrimSpace(path) {
-				path = ConfigPathLocal
-			} else if useMainCfgFile == strings.TrimSpace(path) {
-				path = ConfigPath
+			case "local":
+				input = ConfigPathLocal
+			case "main":
+				input = ConfigPath
 			}
-			fmt.Println("Using config: ", path)
-
-			// check file exists
-			info, statErr := os.Stat(path)
-			if statErr != nil {
-				if os.IsNotExist(statErr) {
-					fmt.Println(fmt.Sprintf("Config file %q not found. Please try again.", path))
-					continue
-				}
-				fmt.Println(fmt.Sprintf("Error accessing %q: %v", path, statErr))
-				continue
-			} else if info.IsDir() {
-				fmt.Println(fmt.Sprintf("%q is a directory, not a file. Please try again.", path))
-				continue
-			}
-
-			// attempt to load
-			cfg, err := config.LoadConfig(path)
+			fmt.Printf("Using config: %s\n", input)
+			info, err := os.Stat(input)
 			if err != nil {
-				fmt.Println(fmt.Sprintf("Failed to load selected config: %v", err))
-				if path == ConfigPathLocal {
-					// fallback to system config
-					cfg, err = config.LoadConfig(ConfigPath)
-					if err != nil {
-						fmt.Println(fmt.Sprintf("Failed to load fallback config: %v. Exit.", err))
-						return err
-					}
-				} else {
+				if os.IsNotExist(err) {
+					fmt.Printf("File %q not found\n", input)
 					continue
 				}
+				return err
 			}
-
-			// success: apply new config
+			if info.IsDir() {
+				fmt.Printf("%q is a directory\n", input)
+				continue
+			}
+			cfg, err := config.LoadConfig(input)
+			if err != nil {
+				fmt.Printf("Failed to load config: %v\n", err)
+				continue
+			}
 			c.cfg = cfg
 			return useYamlCfgErr
 		}
+
 	case idx == n+3:
+		// Edit YAML config with fallback editors
 		path, err := c.getCfgPath()
 		if err != nil {
 			return err
 		}
-
+		fmt.Println() // reset prompt
 		editor := os.Getenv("EDITOR")
 		if editor == "" {
-			editor = "vi"
+			editor = "nano"
 		}
-		fmt.Printf("Opening config in %q, edit and save. Exit editor to continue.\n", editor)
-		cmd := exec.Command(editor, path)
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			fmt.Printf("Editor exited with error: %v\n", err)
+		// Try user editor, then fallback to nano and vi
+		for _, ed := range uniqueStrings([]string{editor, "nano", "vi"}) {
+			fmt.Printf("Opening %s in %s...\n", path, ed)
+			cmd := exec.Command(ed, path)
+			cmd.Stdin = os.Stdin
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			if runErr := cmd.Run(); runErr != nil {
+				fmt.Printf("Editor %s error: %v\n", ed, runErr)
+				continue
+			}
+			// success
+			newCfg, loadErr := config.LoadConfig(path)
+			if loadErr != nil {
+				fmt.Printf("Failed to reload config: %v\n", loadErr)
+				return loadErr
+			}
+			c.cfg = newCfg
+			fmt.Printf("Config reloaded from %s\n", path)
+			return nil
 		}
-		// После выхода из редактора перезагружаем cfg
-		newCfg, err := config.LoadConfig(path)
-		if err != nil {
-			fmt.Printf("Failed to reload config: %v\n", err)
-			// остаёмся на том же меню, чтобы пользователь мог попробовать ещё раз
-			return useYamlCfgErr
-		}
-		c.cfg = newCfg
-		fmt.Printf("Config reloaded from %s\n", path)
-		return useYamlCfgErr
+		// all editors failed
+		return c.loadDataInteractive(ctx)
+
 	case idx == n+4:
 		fmt.Println("Exiting.")
 		os.Exit(0)
@@ -392,4 +380,16 @@ func (c *Cache) IsAlive(_ context.Context) bool {
 		return false
 	}
 	return true
+}
+
+func uniqueStrings(input []string) []string {
+	seen := make(map[string]struct{}, len(input))
+	result := make([]string, 0, len(input))
+	for _, s := range input {
+		if _, ok := seen[s]; !ok {
+			seen[s] = struct{}{}
+			result = append(result, s)
+		}
+	}
+	return result
 }

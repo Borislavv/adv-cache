@@ -15,29 +15,28 @@ import (
 )
 
 var (
-	from         = flag.String("from", "http://localhost:8080", "Origin server address to proxy requests from")
-	to           = flag.String("to", ":8020", "Port or address to serve the cache application on")
-	mocks        = flag.Bool("mocks", false, "Enable mocks mode (for dev/testing)")
-	mocksLen     = flag.Int("mockslen", 10000, "Length of mock data to generate if mocks mode is enabled")
-	dump         = flag.Bool("dump", false, "Enable dump loading at startup and writing at shutdown")
-	refresh      = flag.Bool("refresh", false, "Enable background data refresh")
-	eviction     = flag.Bool("eviction", false, "Enable data eviction on overflow")
-	upstreamRate = flag.Int("upstreamrate", 1000, "Maximum rate of upstream requests per second")
-	memoryLimit  = flag.Int("memorylimit", 34359738368, "Maximum amount of bytes that can be used to cache evictions")
-	gomaxprocs   = flag.Int("procs", 3, "Maximum number of CPU cores to use")
-	data         = flag.Bool("data", false, "Enable interactive data load")
+	from          = flag.String("from", "http://localhost:8080", "Origin server address to proxy requests from")
+	to            = flag.String("to", ":8020", "Port or address to serve the cache application on")
+	mocks         = flag.Bool("mocks", false, "Enable mocks mode (for dev/testing)")
+	mocksLen      = flag.Int("mockslen", 10000, "Length of mock data to generate if mocks mode is enabled")
+	dump          = flag.Bool("dump", false, "Enable dump loading at startup and writing at shutdown")
+	refresh       = flag.Bool("refresh", false, "Enable background data refresh")
+	eviction      = flag.Bool("eviction", false, "Enable data eviction on overflow")
+	upstreamRate  = flag.Int("upstreamrate", 1000, "Maximum rate of upstream requests per second")
+	memoryLimit   = flag.Int("memorylimit", 34359738368, "Maximum amount of bytes that can be used to cache evictions")
+	gomaxprocs    = flag.Int("procs", 3, "Maximum number of CPU cores to use")
+	isInteractive = flag.Bool("inter", false, "Enable isInteractive data load")
 
-	fromDefined              = false
-	toDefined                = false
-	mocksDefined             = false
-	mockslenDefined          = false
-	dumpDefined              = false
-	refreshDefined           = false
-	evictionDefined          = false
-	upstreamRateDefined      = false
-	memoryLimitDefined       = false
-	gomaxprocsDefined        = false
-	isInteractiveDataLoading = false
+	fromDefined         = false
+	toDefined           = false
+	mocksDefined        = false
+	mockslenDefined     = false
+	dumpDefined         = false
+	refreshDefined      = false
+	evictionDefined     = false
+	upstreamRateDefined = false
+	memoryLimitDefined  = false
+	gomaxprocsDefined   = false
 )
 
 func init() {
@@ -75,9 +74,6 @@ func init() {
 		} else if f.Name == "procs" {
 			gomaxprocsDefined = true
 			logEvent.Int("procs", *gomaxprocs)
-		} else if f.Name == "data" {
-			isInteractiveDataLoading = true
-			logEvent.Bool("data", *data)
 		}
 	})
 
@@ -176,8 +172,8 @@ func main() {
 		log.Err(err).Msg("[main] failed to init cache app")
 	}
 
-	// Load data manually or interactive, as you wish
-	if err = app.LoadData(ctx, isInteractiveDataLoading); err != nil {
+	// Load data manually or isInteractive, as you wish
+	if err = app.LoadData(ctx, *isInteractive); err != nil {
 		log.Err(err).Msg("[main] failed to load data")
 		return
 	}
