@@ -28,7 +28,7 @@ cache:
       gzip: false
       crc32_control_sum: true
     mock:
-      enabled: false
+      enabled: true
       length: 10000000
 
   logs:
