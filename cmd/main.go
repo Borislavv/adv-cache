@@ -9,13 +9,9 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/k8s/probe/liveness"
 	"github.com/Borislavv/advanced-cache/pkg/shutdown"
 	"github.com/rs/zerolog/log"
+	"go.uber.org/automaxprocs/maxprocs"
 	"runtime"
 	"time"
-)
-
-const (
-	configPath      = "advancedCache.cfg.yaml"
-	configPathLocal = "advancedCache.cfg.local.yaml"
 )
 
 var (
@@ -29,17 +25,19 @@ var (
 	upstreamRate = flag.Int("upstreamrate", 1000, "Maximum rate of upstream requests per second")
 	memoryLimit  = flag.Int("memorylimit", 34359738368, "Maximum amount of bytes that can be used to cache evictions")
 	gomaxprocs   = flag.Int("procs", 3, "Maximum number of CPU cores to use")
+	data         = flag.Bool("data", false, "Enable interactive data load")
 
-	fromDefined         = false
-	toDefined           = false
-	mocksDefined        = false
-	mockslenDefined     = false
-	dumpDefined         = false
-	refreshDefined      = false
-	evictionDefined     = false
-	upstreamRateDefined = false
-	memoryLimitDefined  = false
-	gomaxprocsDefined   = false
+	fromDefined              = false
+	toDefined                = false
+	mocksDefined             = false
+	mockslenDefined          = false
+	dumpDefined              = false
+	refreshDefined           = false
+	evictionDefined          = false
+	upstreamRateDefined      = false
+	memoryLimitDefined       = false
+	gomaxprocsDefined        = false
+	isInteractiveDataLoading = false
 )
 
 func init() {
@@ -77,6 +75,9 @@ func init() {
 		} else if f.Name == "procs" {
 			gomaxprocsDefined = true
 			logEvent.Int("procs", *gomaxprocs)
+		} else if f.Name == "data" {
+			isInteractiveDataLoading = true
+			logEvent.Bool("data", *data)
 		}
 	})
 
@@ -86,24 +87,30 @@ func init() {
 // setMaxProcs automatically sets the optimal GOMAXPROCS value (CPU parallelism)
 // based on the available CPUs and cgroup/docker CPU quotas (uses automaxprocs).
 func setMaxProcs(cfg *config.Cache) {
-	runtime.GOMAXPROCS(cfg.Cache.Runtime.Gomaxprocs)
+	if cfg.Cache.Runtime.Gomaxprocs == 0 {
+		if _, err := maxprocs.Set(); err != nil {
+			log.Err(err).Msg("[main] setting up GOMAXPROCS value failed")
+		}
+	} else {
+		runtime.GOMAXPROCS(cfg.Cache.Runtime.Gomaxprocs)
+	}
 	log.Info().Msgf("[main] GOMAXPROCS=%d was set up", runtime.GOMAXPROCS(0))
 }
 
 // loadCfg loads the configuration struct from environment variables
 // and computes any derived configuration values.
 func loadCfg() (*config.Cache, error) {
-	cfg, err := config.LoadConfig(configPathLocal)
+	cfg, err := config.LoadConfig(cache.ConfigPathLocal)
 	if err != nil {
-		cfg, err = config.LoadConfig(configPath)
+		cfg, err = config.LoadConfig(cache.ConfigPath)
 		if err != nil {
 			log.Err(err).Msg("[config] failed to load")
 			return nil, err
 		} else {
-			log.Info().Msgf("[config] config loaded from '%v'", configPath)
+			log.Info().Msgf("[config] config loaded from '%v'", cache.ConfigPath)
 		}
 	} else {
-		log.Info().Msgf("[config] config loaded from '%v'", configPathLocal)
+		log.Info().Msgf("[config] config loaded from '%v'", cache.ConfigPathLocal)
 	}
 
 	if fromDefined {
@@ -147,9 +154,9 @@ func main() {
 	defer cancel()
 
 	// Load the application configuration from env vars.
-	cfg, cfgError := loadCfg()
-	if cfgError != nil {
-		log.Err(cfgError).Msg("[main] failed to load cache config")
+	cfg, err := loadCfg()
+	if err != nil {
+		log.Err(err).Msg("[main] failed to load cache config")
 		return
 	}
 
@@ -167,6 +174,12 @@ func main() {
 	app, err := cache.NewApp(ctx, cfg, probe)
 	if err != nil {
 		log.Err(err).Msg("[main] failed to init cache app")
+	}
+
+	// Load data manually or interactive, as you wish
+	if err = app.LoadData(ctx, isInteractiveDataLoading); err != nil {
+		log.Err(err).Msg("[main] failed to load data")
+		return
 	}
 
 	// Register app for gracefulShutdown shutdown.

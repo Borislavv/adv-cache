@@ -40,12 +40,15 @@ func NewStorage(ctx context.Context, cfg *config.Cache, backend repository.Backe
 		backend:         backend,
 		tinyLFU:         lfu.NewTinyLFU(ctx),
 		memoryThreshold: int64(float64(cfg.Cache.Storage.Size) * cfg.Cache.Eviction.Threshold),
-	}).init().runLogger()
-
-	NewRefresher(ctx, cfg, db).Run()
-	NewEvictor(ctx, cfg, db, balancer).Run()
+	}).init()
 
 	return db
+}
+
+func (s *InMemoryStorage) Run() {
+	s.runLogger()
+	NewRefresher(s.ctx, s.cfg, s).Run()
+	NewEvictor(s.ctx, s.cfg, s, s.balancer).Run()
 }
 
 func (s *InMemoryStorage) init() *InMemoryStorage {

@@ -9,6 +9,8 @@ import (
 // Storage is a generic interface for cache storages.
 // It supports typical Get/Set operations with reference management.
 type Storage interface {
+	Run()
+
 	// Get attempts to retrieve a cached response for the given request.
 	// Returns the response, a releaser for safe concurrent access, and a hit/miss flag.
 	Get(*model.Entry) (entry *model.Entry, hit bool)

@@ -29,6 +29,7 @@ var errDumpNotEnabled = errors.New("persistence mode is not enabled")
 type Dumper interface {
 	Dump(ctx context.Context) error
 	Load(ctx context.Context) error
+	LoadVersion(ctx context.Context, v string) error
 }
 
 type Dump struct {
@@ -131,15 +132,24 @@ func (d *Dump) Dump(ctx context.Context) error {
 }
 
 func (d *Dump) Load(ctx context.Context) error {
+	cfg := d.cfg.Cache.Persistence.Dump
+	dir := getLatestVersionDir(cfg.Dir)
+	if dir == "" {
+		return fmt.Errorf("no versioned dump dirs found in %s", cfg.Dir)
+	}
+	return d.load(ctx, dir)
+}
+
+func (d *Dump) LoadVersion(ctx context.Context, v string) error {
+	dir := filepath.Join(d.cfg.Cache.Persistence.Dump.Dir, v)
+	return d.load(ctx, dir)
+}
+
+func (d *Dump) load(ctx context.Context, dir string) error {
 	start := time.Now()
 	cfg := d.cfg.Cache.Persistence.Dump
 	if !d.cfg.Cache.Enabled || !cfg.IsEnabled {
 		return errDumpNotEnabled
-	}
-
-	dir := getLatestVersionDir(cfg.Dir)
-	if dir == "" {
-		return fmt.Errorf("no versioned dump dirs found in %s", cfg.Dir)
 	}
 
 	pattern := filepath.Join(dir, fmt.Sprintf("%s-shard-*.dump*", cfg.Name))
