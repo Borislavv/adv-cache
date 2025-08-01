@@ -1,4 +1,5 @@
 .idea
 .env.local
-public/dump
+!public/dump/README.md
+public/dump/*
 *.local.yaml
