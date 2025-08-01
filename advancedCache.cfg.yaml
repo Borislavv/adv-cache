@@ -21,7 +21,7 @@ cache:
 
   persistence:
     dump:
-      enabled: false
+      enabled: true
       dump_dir: "public/dump" # dump dir.
       dump_name: "cache.dump" # dump name
       max_versions: 3
