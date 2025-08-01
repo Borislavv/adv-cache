@@ -3,7 +3,7 @@ cache:
   enabled: true
 
   runtime:
-    gomaxprocs: 3
+    gomaxprocs: 0
 
   proxy:
     name: "star.fast"               # Proxy server name
@@ -21,7 +21,7 @@ cache:
 
   persistence:
     dump:
-      enabled: true
+      enabled: false
       dump_dir: "public/dump" # dump dir.
       dump_name: "cache.dump" # dump name
       max_versions: 3
@@ -67,9 +67,9 @@ cache:
     /api/v2/pagedata:
       refresh:
         enabled: true     # Should this be run?
-        ttl: "12m"        # Will be used be default with 200 status code.
+        ttl: "12h"        # Will be used be default with 200 status code.
         beta: 0.4         # Controls randomness in refresh timing to avoid thundering herd (from 0 to 1).
-        coefficient: 0.1  # Starts attempts to renew data after TTL*coefficient=50% (12h if whole TTL is 24h)
+        coefficient: 0.5  # Starts attempts to renew data after TTL*coefficient=50% (12h if whole TTL is 24h)
       cache_key:
         query: # Match query parameters by prefix.
           - project[id]

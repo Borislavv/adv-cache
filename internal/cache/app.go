@@ -180,11 +180,10 @@ func (c *Cache) loadDataInteractive(ctx context.Context) error {
 	}
 	if len(versions) == 0 {
 		log.Err(err).Msgf("[dump] no versions in %q", c.cfg.Cache.Persistence.Dump.Dir)
-		return err
+	} else {
+		// sort by ModTime descending
+		sort.Slice(versions, func(i, j int) bool { return versions[i].ModTime.After(versions[j].ModTime) })
 	}
-
-	// sort by ModTime descending
-	sort.Slice(versions, func(i, j int) bool { return versions[i].ModTime.After(versions[j].ModTime) })
 
 	// build menu
 	items := make([]string, 0, len(versions)+5)
