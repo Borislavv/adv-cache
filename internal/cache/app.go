@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -134,10 +135,16 @@ func (c *Cache) LoadData(ctx context.Context, interactive bool) error {
 				if err := c.dumper.Load(ctx); err != nil {
 					log.Warn().Err(err).Msg("[dump] failed to load dump")
 				}
+			} else {
+				log.Info().Msg("[app] dump loading is disabled")
 			}
 			if c.cfg.Cache.Persistence.Mock.Enabled {
 				storage.LoadMocks(ctx, c.cfg, c.backend, c.db, c.cfg.Cache.Persistence.Mock.Length)
+			} else {
+				log.Info().Msg("[app] mock loading is disabled")
 			}
+		} else {
+			log.Info().Msg("[app] cache is disabled")
 		}
 	}
 	return nil
@@ -147,14 +154,14 @@ var useYamlCfgErr = errors.New("user choose a yaml config file instead")
 
 // LoadDataInteractive asks user to select dump by size desc, mocks, yaml config or exit.
 func (c *Cache) loadDataInteractive(ctx context.Context) error {
-	entries, err := os.ReadDir(c.cfg.Cache.Persistence.Dump.Dir)
+	versionDirItems, err := os.ReadDir(c.cfg.Cache.Persistence.Dump.Dir)
 	if err != nil {
 		log.Fatal().Err(err).Msgf("[dump] failed to read dumps dir %q: %v", c.cfg.Cache.Persistence.Dump.Dir, err)
 		return err
 	}
 
-	var versions []Version
-	for _, e := range entries {
+	var versions []Version // filter version
+	for _, e := range versionDirItems {
 		if !e.IsDir() {
 			continue
 		}
@@ -177,7 +184,7 @@ func (c *Cache) loadDataInteractive(ctx context.Context) error {
 	}
 
 	// sort by size descending
-	sort.Slice(versions, func(i, j int) bool { return versions[i].Size > versions[j].Size })
+	sort.Slice(versions, func(i, j int) bool { return versions[i].ModTime.UnixNano() > versions[j].ModTime.UnixNano() })
 
 	// build menu: versions then custom actions
 	items := make([]string, 0, len(versions)+4)
@@ -235,15 +242,20 @@ func (c *Cache) loadDataInteractive(ctx context.Context) error {
 				Label:     fmt.Sprintf("Path to YAML config (type 'local' for use '%s' and 'main' for %s) or type 'back' for move to main menu", ConfigPathLocal, ConfigPath),
 				AllowEdit: true,
 			}
+			const (
+				backToMainManu  = "back"
+				useMainCfgFile  = "main"
+				useLocalCfgFile = "local"
+			)
 			path, _ := cfgPrompt.Run()
 			if strings.TrimSpace(path) == "" {
 				fmt.Println("Sorry, empty config path is not allowed, try again.")
 				continue
-			} else if strings.TrimSpace(path) == "back" {
+			} else if strings.TrimSpace(path) == backToMainManu {
 				return c.loadDataInteractive(ctx)
-			} else if "local" == strings.TrimSpace(path) {
+			} else if useLocalCfgFile == strings.TrimSpace(path) {
 				path = ConfigPathLocal
-			} else if "main" == strings.TrimSpace(path) {
+			} else if useMainCfgFile == strings.TrimSpace(path) {
 				path = ConfigPath
 			}
 			fmt.Println("Using config: ", path)
@@ -283,10 +295,51 @@ func (c *Cache) loadDataInteractive(ctx context.Context) error {
 			return useYamlCfgErr
 		}
 	case idx == n+3:
+		path, err := c.getCfgPath()
+		if err != nil {
+			return err
+		}
+
+		editor := os.Getenv("EDITOR")
+		if editor == "" {
+			editor = "vi"
+		}
+		fmt.Printf("Opening config in %q, edit and save. Exit editor to continue.\n", editor)
+		cmd := exec.Command(editor, path)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Printf("Editor exited with error: %v\n", err)
+		}
+		// После выхода из редактора перезагружаем cfg
+		newCfg, err := config.LoadConfig(path)
+		if err != nil {
+			fmt.Printf("Failed to reload config: %v\n", err)
+			// остаёмся на том же меню, чтобы пользователь мог попробовать ещё раз
+			return useYamlCfgErr
+		}
+		c.cfg = newCfg
+		fmt.Printf("Config reloaded from %s\n", path)
+		return useYamlCfgErr
+	case idx == n+4:
 		fmt.Println("Exiting.")
 		os.Exit(0)
 	}
 	return nil
+}
+
+func (c *Cache) getCfgPath() (string, error) {
+	path := ConfigPathLocal
+	_, statErr := os.Stat(path)
+	if statErr != nil {
+		path = ConfigPath
+		_, statErr = os.Stat(path)
+		if statErr != nil {
+			return "", statErr
+		}
+	}
+	return path, nil
 }
 
 func (c *Cache) dirSize(path string) (int64, error) {

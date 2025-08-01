@@ -124,7 +124,7 @@ func StreamEntryPointersConsecutive(ctx context.Context, cfg *config.Cache, back
 	go func() {
 		defer close(outCh)
 
-		i := 0
+		i := 1
 		for {
 			select {
 			case <-ctx.Done():

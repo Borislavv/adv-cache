@@ -148,9 +148,6 @@ func (d *Dump) LoadVersion(ctx context.Context, v string) error {
 func (d *Dump) load(ctx context.Context, dir string) error {
 	start := time.Now()
 	cfg := d.cfg.Cache.Persistence.Dump
-	if !d.cfg.Cache.Enabled || !cfg.IsEnabled {
-		return errDumpNotEnabled
-	}
 
 	pattern := filepath.Join(dir, fmt.Sprintf("%s-shard-*.dump*", cfg.Name))
 	files, _ := filepath.Glob(pattern)
