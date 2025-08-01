@@ -9,7 +9,7 @@ cache:
     name: "star.fast"               # Proxy server name
     from: "http://localhost:8080"   # Backend (example of full qualified url: http://localhost:8080)
     to: ":8020"                     # Current server port
-    rate: 1000                      # Rate limiting reqs to backend per second.
+    rate: 80                        # Rate limiting reqs to backend per second.
     timeout: "5m"                   # Timeout for requests to backend.
 
   metrics:
@@ -58,7 +58,7 @@ cache:
   refresh:
     enabled: true     # Should this be run?
     ttl: "24h"        # Will be used be default with 200 status code.
-    rate: 1000        # Rate limiting reqs to backend per second.
+    rate: 80          # Rate limiting reqs to backend per second.
     scan_rate: 10000  # Rate limiting of num scans items per second.
     beta: 0.4         # Controls randomness in refresh timing to avoid thundering herd (from 0 to 1).
     coefficient: 0.5  # Starts attempts to renew data after TTL*coefficient=50% (12h if whole TTL is 24h)
