@@ -1,22 +1,8 @@
 package metrics
 
 import (
-	"bytes"
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics/keyword"
 	"github.com/VictoriaMetrics/metrics"
-	"sync"
-)
-
-var (
-	bufPool = sync.Pool{
-		New: func() interface{} {
-			return new(bytes.Buffer)
-		},
-	}
-	pathBytes   = []byte(`{path="`)
-	methodBytes = []byte(`",method="`)
-	statusBytes = []byte(`",status="`)
-	closerBytes = []byte(`"}`)
 )
 
 // Meter defines methods for recording application metrics.

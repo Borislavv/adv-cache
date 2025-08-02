@@ -179,7 +179,7 @@ func (c *Cache) loadDataInteractive(ctx context.Context) error {
 		versions = append(versions, Version{e.Name(), sz, info.ModTime()})
 	}
 	if len(versions) == 0 {
-		log.Err(err).Msgf("[dump] no versions in %q", c.cfg.Cache.Persistence.Dump.Dir)
+		log.Err(err).Msgf("[dump] no versions in '%s'", c.cfg.Cache.Persistence.Dump.Dir)
 	} else {
 		// sort by ModTime descending
 		sort.Slice(versions, func(i, j int) bool { return versions[i].ModTime.After(versions[j].ModTime) })

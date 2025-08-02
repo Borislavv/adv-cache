@@ -50,11 +50,12 @@ var (
 
 // CacheController handles cache API requests (read/write-through, error reporting, metrics).
 type CacheController struct {
-	cfg     *config.Cache
-	ctx     context.Context
-	cache   storage.Storage
-	metrics metrics.Meter
-	backend repository.Backender
+	cfg      *config.Cache
+	ctx      context.Context
+	cache    storage.Storage
+	metrics  metrics.Meter
+	backend  repository.Backender
+	errorsCh chan error
 }
 
 // NewCacheController builds a cache API controller with all dependencies.
@@ -67,14 +68,16 @@ func NewCacheController(
 	backend repository.Backender,
 ) *CacheController {
 	c := &CacheController{
-		cfg:     cfg,
-		ctx:     ctx,
-		cache:   cache,
-		metrics: metrics,
-		backend: backend,
+		cfg:      cfg,
+		ctx:      ctx,
+		cache:    cache,
+		metrics:  metrics,
+		backend:  backend,
+		errorsCh: make(chan error, 8196),
 	}
 	enabled.Store(cfg.Cache.Enabled)
 	c.runLoggerMetricsWriter()
+	c.runErrorLogger()
 	return c
 }
 
@@ -207,13 +210,15 @@ func (c *CacheController) handleTroughProxy(r *fasthttp.RequestCtx) {
 	}
 }
 
+var contentType = []byte("application/json")
+
 // respondThatServiceIsTemporaryUnavailable returns 503 and logs the error.
 func (c *CacheController) respondThatServiceIsTemporaryUnavailable(err error, ctx *fasthttp.RequestCtx) {
-	log.Error().Err(err).Msg("[cache-controller] handle request error") // Don't move it down due to error will be rewritten.
-
+	c.errorsCh <- err
+	ctx.Response.Header.SetContentTypeBytes(contentType)
 	ctx.SetStatusCode(fasthttp.StatusServiceUnavailable)
 	if _, err = serverutils.Write(c.resolveMessagePlaceholder(serviceUnavailableResponseBytes, err), ctx); err != nil {
-		log.Err(err).Msg("failed to write into *fasthttp.RequestCtx")
+		c.errorsCh <- err
 	}
 }
 
@@ -243,6 +248,36 @@ func (c *CacheController) queryHeaders(r *fasthttp.RequestCtx) (headers *[][2][]
 		return true
 	})
 	return headers, queryHeadersReleaser
+}
+
+func (c *CacheController) runErrorLogger() {
+	go func() {
+		var prev map[string]int
+		dedupMap := make(map[string]int, 2048)
+		each5Secs := utils.NewTicker(c.ctx, time.Second*5)
+
+		writeTrigger := make(chan struct{}, 1)
+		go func() {
+			for range writeTrigger {
+				for err, count := range prev {
+					log.Error().Msgf("[error-logger] %s (count=%d)", err, count)
+				}
+			}
+		}()
+
+		for {
+			select {
+			case <-c.ctx.Done():
+				return
+			case err := <-c.errorsCh:
+				dedupMap[err.Error()]++
+			case <-each5Secs:
+				prev = dedupMap
+				dedupMap = make(map[string]int, len(prev))
+				writeTrigger <- struct{}{}
+			}
+		}
+	}()
 }
 
 func (c *CacheController) runLoggerMetricsWriter() {
