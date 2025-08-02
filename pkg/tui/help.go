@@ -3,6 +3,7 @@ package dashboard
 import (
 	ui "github.com/gizak/termui/v3"
 	"github.com/gizak/termui/v3/widgets"
+	"time"
 )
 
 type HelpPanel struct {
@@ -46,4 +47,7 @@ func (h *HelpPanel) SetVisible(v bool) {
 
 func (h *HelpPanel) IsVisible() bool {
 	return h.visible
+}
+
+func (h *HelpPanel) SetWindow(window time.Duration) {
 }

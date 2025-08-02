@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/gizak/termui/v3/widgets"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -14,13 +16,13 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics/keyword"
 	metrics2 "github.com/VictoriaMetrics/metrics"
 	ui "github.com/gizak/termui/v3"
-	"github.com/gizak/termui/v3/widgets"
 )
 
 type Panel interface {
 	Update(metrics map[string]*MetricBuffer)
 	Draw() ui.Drawable
 	Name() string
+	SetWindow(time.Duration)
 }
 
 type MetricBuffer struct {
@@ -32,6 +34,24 @@ type dataPoint struct {
 	t time.Time
 	v float64
 }
+
+func NewBottomPanel() Panel {
+	p := widgets.NewParagraph()
+	p.Title = "Legend"
+	p.Text = "[Hits](fg:green)  [Misses](fg:red)  [Errored](fg:yellow)  [Panicked](fg:magenta)  [Proxied](fg:cyan)\n" +
+		"[q] Quit  [h] Help  [1|5|6] Window  [+] Zoom Out  [-] Zoom In"
+	p.Border = false
+	return &bottomPanel{p: p}
+}
+
+type bottomPanel struct {
+	p *widgets.Paragraph
+}
+
+func (l *bottomPanel) SetWindow(window time.Duration)    {}
+func (l *bottomPanel) Update(_ map[string]*MetricBuffer) {}
+func (l *bottomPanel) Draw() ui.Drawable                 { return l.p }
+func (l *bottomPanel) Name() string                      { return "BottomPanel" }
 
 type DashboardState struct {
 	currentWindow time.Duration
@@ -63,15 +83,15 @@ func NewDashboard(ctx context.Context, interval, maxWindow time.Duration, memLim
 		metrics:    make(map[string]*MetricBuffer),
 		memLimitMB: memLimitBytes / 1024 / 1024,
 		state: DashboardState{
-			currentWindow: maxWindow,
+			currentWindow: 5 * time.Minute,
 		},
 		panels: []Panel{
 			NewPlotPanel("RPS", keyword.RPS),
 			NewPlotPanel("Avg Duration (ms)", keyword.AvgDuration),
 			NewPlotPanel("Memory Usage (MB)", keyword.MapMemoryUsageMetricName),
 			NewPlotPanel("Cache Length", keyword.MapLength),
+			NewPlotPanel("CPU Usage (%)", "cpu_usage"),
 			NewMultiPlotPanel("Total Events", []string{keyword.Hits, keyword.Misses, keyword.Errored, keyword.Panicked, keyword.Proxied}),
-			NewInfoPanel(),
 			NewBottomPanel(),
 			NewHelpPanel(),
 		},
@@ -92,6 +112,12 @@ func (d *Dashboard) Run() error {
 	defer ticker.Stop()
 
 	events := ui.PollEvents()
+	go func() {
+		for range time.Tick(time.Second) {
+			curr := getCPUPercent()
+			d.getOrCreateMetric("cpu_usage").Append(time.Now(), curr, d.maxWindow)
+		}
+	}()
 
 	for {
 		select {
@@ -108,6 +134,10 @@ func (d *Dashboard) Run() error {
 	}
 }
 
+func getCPUPercent() float64 {
+	return float64(runtime.NumGoroutine()) * 1.0 // simple placeholder
+}
+
 func (d *Dashboard) Stop() {
 	d.cancel()
 }
@@ -120,12 +150,16 @@ func (d *Dashboard) handleEvent(e ui.Event) error {
 			d.Stop()
 		case "h":
 			d.state.helpVisible = !d.state.helpVisible
-		case "1":
-			d.state.currentWindow = time.Minute
-		case "5":
-			d.state.currentWindow = 5 * time.Minute
-		case "6":
-			d.state.currentWindow = 6 * time.Hour
+		case "+":
+			d.state.currentWindow *= 2
+			if d.state.currentWindow > d.maxWindow {
+				d.state.currentWindow = d.maxWindow
+			}
+		case "-":
+			d.state.currentWindow /= 2
+			if d.state.currentWindow < time.Minute {
+				d.state.currentWindow = time.Minute
+			}
 		}
 	case ui.ResizeEvent:
 		ui.Clear()
@@ -153,7 +187,7 @@ func (d *Dashboard) updateMetrics(now time.Time) {
 			continue
 		}
 		key := f[0]
-		d.getOrCreateMetric(key).Append(now, val, d.state.currentWindow)
+		d.getOrCreateMetric(key).Append(now, val, d.maxWindow)
 	}
 }
 
@@ -176,32 +210,18 @@ func (m *MetricBuffer) Append(t time.Time, v float64, window time.Duration) {
 	}
 }
 
-func (m *MetricBuffer) pts() []float64 {
+func (m *MetricBuffer) GetPoints(window time.Duration) []float64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]float64, len(m.points))
-	for i, p := range m.points {
-		out[i] = p.v
+	tm := time.Now().Add(-window)
+	out := make([]float64, 0, len(m.points))
+	for _, p := range m.points {
+		if p.t.After(tm) {
+			out = append(out, p.v)
+		}
 	}
 	return out
 }
-
-// NewBottomPanel creates a bottom legend panel.
-func NewBottomPanel() Panel {
-	p := widgets.NewParagraph()
-	p.Title = "Legend"
-	p.Text = "[Hits](fg:green)  [Misses](fg:red)  [Errored](fg:yellow)  [Panicked](fg:magenta)  [Proxied](fg:cyan)[q] Quit  [h] Help  [1|5|6] Window  [resize] Layout"
-	p.Border = false
-	return &bottomPanel{p: p}
-}
-
-type bottomPanel struct {
-	p *widgets.Paragraph
-}
-
-func (l *bottomPanel) Update(_ map[string]*MetricBuffer) {}
-func (l *bottomPanel) Draw() ui.Drawable                 { return l.p }
-func (l *bottomPanel) Name() string                      { return "BottomPanel" }
 
 func (d *Dashboard) render() {
 	w, h := ui.TerminalDimensions()
@@ -214,29 +234,31 @@ func (d *Dashboard) render() {
 		if mp, ok := p.(*HelpPanel); ok {
 			mp.SetVisible(d.state.helpVisible)
 		}
+		p.SetWindow(d.state.currentWindow)
 		p.Update(d.metrics)
+
 		switch p.Name() {
-		case "RPS", "Memory Usage (MB)":
-			leftCol = append(leftCol, ui.NewRow(0.5, p.Draw()))
+		case "RPS", "Memory Usage (MB)", "Memory Usage (GB)", "CPU Usage (%)":
+			leftCol = append(leftCol, ui.NewRow(0.33, p.Draw()))
 		case "Avg Duration (ms)", "Cache Length":
 			rightCol = append(rightCol, ui.NewRow(0.5, p.Draw()))
 		case "Total Events":
-			bottom = append(bottom, ui.NewRow(0.85, p.Draw()))
-		case "InfoPanel", "BottomPanel":
-			bottom = append(bottom, ui.NewRow(0.075, p.Draw()))
+			bottom = append(bottom, ui.NewRow(0.8, p.Draw()))
+		case "BottomPanel":
+			bottom = append(bottom, ui.NewRow(0.2, p.Draw()))
 		case "HelpPanel":
 			if d.state.helpVisible {
-				bottom = append(bottom, ui.NewRow(0.075, p.Draw()))
+				bottom = append(bottom, ui.NewRow(0.2, p.Draw()))
 			}
 		}
 	}
 
 	grid.Set(
-		ui.NewRow(0.55,
+		ui.NewRow(0.6,
 			ui.NewCol(0.5, leftCol...),
 			ui.NewCol(0.5, rightCol...),
 		),
-		ui.NewRow(0.45, bottom...),
+		ui.NewRow(0.4, bottom...),
 	)
 	ui.Render(grid)
 }

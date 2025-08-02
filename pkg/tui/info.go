@@ -56,3 +56,6 @@ func (i *InfoPanel) Name() string {
 func joinLines(lines []string) string {
 	return fmt.Sprintf("%s", string([]byte(fmt.Sprint(lines))))[1 : len(fmt.Sprint(lines))-1]
 }
+
+func (i *InfoPanel) SetWindow(window time.Duration) {
+}
