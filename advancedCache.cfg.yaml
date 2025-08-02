@@ -6,11 +6,11 @@ cache:
     gomaxprocs: 0
 
   proxy:
-    name: "star.fast"               # Proxy server name
-    from: "http://localhost:8080"   # Backend (example of full qualified url: http://localhost:8080)
-    to: ":8020"                     # Current server port
-    rate: 80                        # Rate limiting reqs to backend per second.
-    timeout: "5m"                   # Timeout for requests to backend.
+    name: "star.fast"                   # Proxy server name
+    from: "http://seo-master-seo:8080"  # Backend (example of full qualified url: http://localhost:8080)
+    to: ":8020"                         # Current server port
+    rate: 80                            # Rate limiting reqs to backend per second.
+    timeout: "5m"                       # Timeout for requests to backend.
 
   metrics:
     enabled: true
@@ -28,8 +28,8 @@ cache:
       gzip: false
       crc32_control_sum: true
     mock:
-      enabled: false
-      length: 10000000
+      enabled: true
+      length: 1000000
 
   logs:
     level: "info" # Any zerolog.Level.
