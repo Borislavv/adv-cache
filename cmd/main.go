@@ -8,6 +8,7 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/gc"
 	"github.com/Borislavv/advanced-cache/pkg/k8s/probe/liveness"
 	"github.com/Borislavv/advanced-cache/pkg/shutdown"
+//	"github.com/Borislavv/advanced-cache/pkg/tui"
 	"github.com/rs/zerolog/log"
 	"go.uber.org/automaxprocs/maxprocs"
 	"runtime"
@@ -177,6 +178,13 @@ func main() {
 		log.Err(err).Msg("[main] failed to load data")
 		return
 	}
+
+//	go func() {
+//		if err = tui.RunMetricsDashboard(ctx, time.Millisecond*250, float64(cfg.Cache.Storage.Size)); err != nil {
+//			log.Err(err).Msg("[main] failed to run metrics dashboard")
+//			return
+//		}
+//	}()
 
 	// Register app for gracefulShutdown shutdown.
 	gracefulShutdown.Add(1)

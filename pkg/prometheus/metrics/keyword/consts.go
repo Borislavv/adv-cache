@@ -13,3 +13,17 @@ var (
 	MapMemoryUsageMetricName = "cache_memory_usage"
 	MapLength                = "cache_length"
 )
+
+func MetricsCounters() []string {
+	return []string{
+		AvgDuration,
+		RPS,
+		Errored,
+		Panicked,
+		Proxied,
+		Hits,
+		Misses,
+		MapMemoryUsageMetricName,
+		MapLength,
+	}
+}
