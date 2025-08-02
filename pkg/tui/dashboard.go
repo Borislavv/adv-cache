@@ -1,208 +1,242 @@
-// metrics_dashboard.go
-// Full-screen TUI dashboard for in-memory Prometheus metrics
-package tui
+// Package dashboard provides an interactive TUI for Prometheus metrics visualization.
+package dashboard
 
 import (
 	"bufio"
 	"bytes"
 	"context"
 	"fmt"
-	"os"
-	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics/keyword"
 	metrics2 "github.com/VictoriaMetrics/metrics"
 	ui "github.com/gizak/termui/v3"
 	"github.com/gizak/termui/v3/widgets"
-	"github.com/rs/zerolog"
 )
 
-// dataPoint holds a timestamped metric value
+type Panel interface {
+	Update(metrics map[string]*MetricBuffer)
+	Draw() ui.Drawable
+	Name() string
+}
+
+type MetricBuffer struct {
+	points []dataPoint
+	mu     sync.Mutex
+}
+
 type dataPoint struct {
 	t time.Time
 	v float64
 }
 
-// RunMetricsDashboard displays a dashboard of RPS, AvgDuration, and Memory Usage
-// over the last 5 minutes, plus a sorted table of current values. Exit with 'q' or 'Q'.
-func RunMetricsDashboard(ctx context.Context, interval time.Duration, memLimitBytes float64) (err error) {
-	// Handle panic
+type DashboardState struct {
+	currentWindow time.Duration
+	helpVisible   bool
+	collapsed     bool
+}
+
+type Dashboard struct {
+	ctx        context.Context
+	cancel     context.CancelFunc
+	interval   time.Duration
+	maxWindow  time.Duration
+	metrics    map[string]*MetricBuffer
+	memLimitMB float64
+	panels     []Panel
+	state      DashboardState
+}
+
+func NewDashboard(ctx context.Context, interval, maxWindow time.Duration, memLimitBytes float64) *Dashboard {
+	if maxWindow < 5*time.Minute {
+		maxWindow = 5 * time.Minute
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	return &Dashboard{
+		ctx:        ctx,
+		cancel:     cancel,
+		interval:   interval,
+		maxWindow:  maxWindow,
+		metrics:    make(map[string]*MetricBuffer),
+		memLimitMB: memLimitBytes / 1024 / 1024,
+		state: DashboardState{
+			currentWindow: maxWindow,
+		},
+		panels: []Panel{
+			NewPlotPanel("RPS", keyword.RPS),
+			NewPlotPanel("Avg Duration (ms)", keyword.AvgDuration),
+			NewPlotPanel("Memory Usage (MB)", keyword.MapMemoryUsageMetricName),
+			NewPlotPanel("Cache Length", keyword.MapLength),
+			NewMultiPlotPanel("Total Events", []string{keyword.Hits, keyword.Misses, keyword.Errored, keyword.Panicked, keyword.Proxied}),
+			NewInfoPanel(),
+			NewBottomPanel(),
+			NewHelpPanel(),
+		},
+	}
+}
+
+func (d *Dashboard) Run() error {
+	if err := ui.Init(); err != nil {
+		return fmt.Errorf("termui init failed: %w", err)
+	}
 	defer func() {
-		if r := recover(); r != nil {
-			ui.Close()
-			fmt.Fprintf(os.Stderr, "Dashboard panic: %v\n", r)
-			err = fmt.Errorf("dashboard panic: %v", r)
-		}
+		ui.Clear()
+		ui.Close()
+		fmt.Println("[dashboard] released terminal")
 	}()
 
-	// Init UI
-	if err := ui.Init(); err != nil {
-		return fmt.Errorf("termui init: %w", err)
-	}
-	defer ui.Close()
-
-	// suppress logs
-	oldOut, oldErr := os.Stdout, os.Stderr
-	nullF, _ := os.OpenFile(os.DevNull, os.O_RDWR, 0)
-	os.Stdout, os.Stderr = nullF, nullF
-	zerolog.SetGlobalLevel(zerolog.Disabled)
-	defer func() { nullF.Close(); os.Stdout, os.Stderr = oldOut, oldErr }()
-
-	// layout
-	w, h := ui.TerminalDimensions()
-	heightGraph := (h - 2) / 2
-
-	// RPS plot
-	rpsPlot := widgets.NewPlot()
-	rpsPlot.Title = "RPS (last 5m)"
-	rpsPlot.SetRect(0, 0, w, heightGraph)
-	rpsPlot.DataLabels = []string{"RPS"}
-	rpsPlot.MaxVal = 250000
-	rpsPlot.Marker = widgets.MarkerBraille
-
-	// Avg Duration plot
-	avgPlot := widgets.NewPlot()
-	avgPlot.Title = "Avg Duration (ms, last 5m)"
-	avgPlot.SetRect(0, heightGraph, w, 2*heightGraph)
-	avgPlot.DataLabels = []string{"AvgDur"}
-	avgPlot.MaxVal = 25 // ms
-	avgPlot.Marker = widgets.MarkerBraille
-
-	// Memory Usage plot
-	memPlot := widgets.NewPlot()
-	memPlot.Title = fmt.Sprintf("Mem Usage (MB, limit=%.1fGB) (last 5m)", memLimitBytes/1024/1024/1024)
-	memPlot.SetRect(0, 2*heightGraph, w, h-1)
-	memPlot.DataLabels = []string{"Mem"}
-	// convert limit to MB for scale
-	memPlot.MaxVal = memLimitBytes / 1024 / 1024
-	memPlot.Marker = widgets.MarkerBraille
-
-	// Table of current metrics
-	table := widgets.NewTable()
-	table.Title = "Current Metrics"
-	table.SetRect(0, h-1, w, h)
-	table.RowSeparator = true
-
-	// data stores
-	rpsData := []dataPoint{}
-	avgData := []dataPoint{}
-	memData := []dataPoint{}
-
-	// ticker
-	t := time.NewTicker(interval)
-	defer t.Stop()
-
-	// Instruction paragraph
-	instr := widgets.NewParagraph()
-	instr.Text = "Press 'q' or 'Q' to exit dashboard"
-	instr.SetRect(0, h-1, w, h)
-	instr.Border = false
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
 
 	events := ui.PollEvents()
 
 	for {
 		select {
-		case <-ctx.Done():
+		case <-d.ctx.Done():
 			return nil
 		case e := <-events:
-			if e.Type == ui.KeyboardEvent {
-				if e.ID == "q" || e.ID == "Q" || e.ID == "<C-c>" {
-					// Exit dashboard on 'q', 'Q', or Ctrl+C
-					return nil
-				}
+			if err := d.handleEvent(e); err != nil {
+				return err
 			}
-
-		case now := <-t.C:
-			// gather metrics
-			var buf bytes.Buffer
-			metrics2.WritePrometheus(&buf, false)
-			// parse
-			m := map[string]float64{}
-			s := bufio.NewScanner(&buf)
-			for s.Scan() {
-				l := s.Text()
-				if strings.HasPrefix(l, "#") {
-					continue
-				}
-				f := strings.Fields(l)
-				if len(f) != 2 {
-					continue
-				}
-				v, _ := strconv.ParseFloat(f[1], 64)
-				m[f[0]] = v
-			}
-			// current table rows
-			keys := make([]string, 0, len(m))
-			for k := range m {
-				keys = append(keys, k)
-			}
-			sort.Strings(keys)
-			table.Rows = [][]string{{"Metric", "Value"}}
-			for _, k := range keys {
-				val := m[k]
-				if k == keyword.AvgDuration { // ns to ms
-					val = val / 1e6
-				}
-				if k == keyword.MapMemoryUsageMetricName { // bytes to MB
-					val = val / 1024 / 1024
-				}
-				table.Rows = append(table.Rows, []string{k, fmt.Sprintf("%.2f", val)})
-			}
-
-			// append to histories
-			if v, ok := m[keyword.RPS]; ok {
-				rpsData = append(rpsData, dataPoint{now, v})
-			}
-			if v, ok := m[keyword.AvgDuration]; ok {
-				avgData = append(avgData, dataPoint{now, v / 1e6})
-			}
-			if v, ok := m[keyword.MapMemoryUsageMetricName]; ok {
-				memData = append(memData, dataPoint{now, v / 1024 / 1024})
-			}
-			// prune older than 5m
-			cut := now.Add(-5 * time.Minute)
-			rpsData = prune(rpsData, cut)
-			avgData = prune(avgData, cut)
-			memData = prune(memData, cut)
-
-			// build plot arrays
-			rpsArr := pts(rpsData)
-			avgArr := pts(avgData)
-			memArr := pts(memData)
-
-			// assign to plots
-			rpsPlot.Data = [][]float64{rpsArr}
-			avgPlot.Data = [][]float64{avgArr}
-			memPlot.Data = [][]float64{memArr}
-
-			// render all
-			ui.Clear()
-			ui.Render(rpsPlot, avgPlot, memPlot, table)
+		case now := <-ticker.C:
+			d.updateMetrics(now)
+			d.render()
 		}
-		// always render instruction
-		ui.Render(instr)
 	}
 }
 
-// prune removes points older than cutoff
-func prune(data []dataPoint, cutoff time.Time) []dataPoint {
-	i := 0
-	for ; i < len(data); i++ {
-		if data[i].t.After(cutoff) {
-			break
-		}
-	}
-	return data[i:]
+func (d *Dashboard) Stop() {
+	d.cancel()
 }
 
-// pts converts dataPoints to slice of float64
-func pts(data []dataPoint) []float64 {
-	o := make([]float64, len(data))
-	for i, d := range data {
-		o[i] = d.v
+func (d *Dashboard) handleEvent(e ui.Event) error {
+	switch e.Type {
+	case ui.KeyboardEvent:
+		switch e.ID {
+		case "q", "Q", "<C-c>":
+			d.Stop()
+		case "h":
+			d.state.helpVisible = !d.state.helpVisible
+		case "1":
+			d.state.currentWindow = time.Minute
+		case "5":
+			d.state.currentWindow = 5 * time.Minute
+		case "6":
+			d.state.currentWindow = 6 * time.Hour
+		}
+	case ui.ResizeEvent:
+		ui.Clear()
+		d.render()
 	}
-	return o
+	return nil
+}
+
+func (d *Dashboard) updateMetrics(now time.Time) {
+	var buf bytes.Buffer
+	metrics2.WritePrometheus(&buf, false)
+	s := bufio.NewScanner(&buf)
+
+	for s.Scan() {
+		l := s.Text()
+		if strings.HasPrefix(l, "#") {
+			continue
+		}
+		f := strings.Fields(l)
+		if len(f) != 2 {
+			continue
+		}
+		val, err := strconv.ParseFloat(f[1], 64)
+		if err != nil {
+			continue
+		}
+		key := f[0]
+		d.getOrCreateMetric(key).Append(now, val, d.state.currentWindow)
+	}
+}
+
+func (d *Dashboard) getOrCreateMetric(name string) *MetricBuffer {
+	if buf, ok := d.metrics[name]; ok {
+		return buf
+	}
+	buf := &MetricBuffer{}
+	d.metrics[name] = buf
+	return buf
+}
+
+func (m *MetricBuffer) Append(t time.Time, v float64, window time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	tm := t.Add(-window)
+	m.points = append(m.points, dataPoint{t, v})
+	for len(m.points) > 0 && m.points[0].t.Before(tm) {
+		m.points = m.points[1:]
+	}
+}
+
+func (m *MetricBuffer) pts() []float64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]float64, len(m.points))
+	for i, p := range m.points {
+		out[i] = p.v
+	}
+	return out
+}
+
+// NewBottomPanel creates a bottom legend panel.
+func NewBottomPanel() Panel {
+	p := widgets.NewParagraph()
+	p.Title = "Legend"
+	p.Text = "[Hits](fg:green)  [Misses](fg:red)  [Errored](fg:yellow)  [Panicked](fg:magenta)  [Proxied](fg:cyan)[q] Quit  [h] Help  [1|5|6] Window  [resize] Layout"
+	p.Border = false
+	return &bottomPanel{p: p}
+}
+
+type bottomPanel struct {
+	p *widgets.Paragraph
+}
+
+func (l *bottomPanel) Update(_ map[string]*MetricBuffer) {}
+func (l *bottomPanel) Draw() ui.Drawable                 { return l.p }
+func (l *bottomPanel) Name() string                      { return "BottomPanel" }
+
+func (d *Dashboard) render() {
+	w, h := ui.TerminalDimensions()
+	grid := ui.NewGrid()
+	grid.SetRect(0, 0, w, h)
+
+	var leftCol, rightCol, bottom []interface{}
+
+	for _, p := range d.panels {
+		if mp, ok := p.(*HelpPanel); ok {
+			mp.SetVisible(d.state.helpVisible)
+		}
+		p.Update(d.metrics)
+		switch p.Name() {
+		case "RPS", "Memory Usage (MB)":
+			leftCol = append(leftCol, ui.NewRow(0.5, p.Draw()))
+		case "Avg Duration (ms)", "Cache Length":
+			rightCol = append(rightCol, ui.NewRow(0.5, p.Draw()))
+		case "Total Events":
+			bottom = append(bottom, ui.NewRow(0.85, p.Draw()))
+		case "InfoPanel", "BottomPanel":
+			bottom = append(bottom, ui.NewRow(0.075, p.Draw()))
+		case "HelpPanel":
+			if d.state.helpVisible {
+				bottom = append(bottom, ui.NewRow(0.075, p.Draw()))
+			}
+		}
+	}
+
+	grid.Set(
+		ui.NewRow(0.55,
+			ui.NewCol(0.5, leftCol...),
+			ui.NewCol(0.5, rightCol...),
+		),
+		ui.NewRow(0.45, bottom...),
+	)
+	ui.Render(grid)
 }

@@ -8,7 +8,9 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/gc"
 	"github.com/Borislavv/advanced-cache/pkg/k8s/probe/liveness"
 	"github.com/Borislavv/advanced-cache/pkg/shutdown"
-//	"github.com/Borislavv/advanced-cache/pkg/tui"
+	dashboard "github.com/Borislavv/advanced-cache/pkg/tui"
+
+	//	"github.com/Borislavv/advanced-cache/pkg/tui"
 	"github.com/rs/zerolog/log"
 	"go.uber.org/automaxprocs/maxprocs"
 	"runtime"
@@ -26,7 +28,8 @@ var (
 	upstreamRate  = flag.Int("upstreamrate", 1000, "Maximum rate of upstream requests per second")
 	memoryLimit   = flag.Int("memorylimit", 34359738368, "Maximum amount of bytes that can be used to cache evictions")
 	gomaxprocs    = flag.Int("procs", 3, "Maximum number of CPU cores to use")
-	isInteractive = flag.Bool("inter", false, "Enable isInteractive data load")
+	isInteractive = flag.Bool("inter", false, "Enable interactive mode of data loading")
+	isShowMode    = flag.Bool("show", false, "Enable advanced view of metrics after application start")
 
 	fromDefined         = false
 	toDefined           = false
@@ -179,12 +182,17 @@ func main() {
 		return
 	}
 
-//	go func() {
-//		if err = tui.RunMetricsDashboard(ctx, time.Millisecond*250, float64(cfg.Cache.Storage.Size)); err != nil {
-//			log.Err(err).Msg("[main] failed to run metrics dashboard")
-//			return
-//		}
-//	}()
+	if *isShowMode {
+		log.Info().Msg("[dashboard] startup CLI view")
+		board := dashboard.NewDashboard(ctx, time.Millisecond*100, time.Hour*24, float64(cfg.Cache.Storage.Size))
+		defer board.Stop()
+		go func() {
+			defer log.Info().Msg("[dashboard] stopped CLI view")
+			if err = board.Run(); err != nil {
+				log.Err(err).Msg("[main] failed to run CLI dashboard")
+			}
+		}()
+	}
 
 	// Register app for gracefulShutdown shutdown.
 	gracefulShutdown.Add(1)
