@@ -167,7 +167,6 @@ type Gzip struct {
 }
 
 type Rule struct {
-	Gzip       Gzip         `yaml:"gzip"`
 	CacheKey   RuleKey      `yaml:"cache_key"`
 	CacheValue RuleValue    `yaml:"cache_value"`
 	Refresh    *RuleRefresh `yaml:"refresh"`

@@ -42,6 +42,14 @@ func NewDumper(cfg *config.Cache, storage Storage, backend repository.Backender)
 	return &Dump{cfg: cfg, storage: storage, backend: backend}
 }
 
+func StoreDump(ctx context.Context, cfg *config.Cache, storage Storage, backend repository.Backender) error {
+	return NewDumper(cfg, storage, backend).Dump(ctx)
+}
+
+func LoadDump(ctx context.Context, cfg *config.Cache, storage Storage, backend repository.Backender) error {
+	return NewDumper(cfg, storage, backend).Load(ctx)
+}
+
 func (d *Dump) Dump(ctx context.Context) error {
 	start := time.Now()
 	cfg := d.cfg.Cache.Persistence.Dump

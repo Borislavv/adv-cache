@@ -2,176 +2,69 @@ package storage
 
 import (
 	"context"
-	"fmt"
-	"github.com/Borislavv/advanced-cache/pkg/mock"
-	"github.com/Borislavv/advanced-cache/pkg/repository"
-	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/Borislavv/advanced-cache/pkg/config"
-	"github.com/rs/zerolog"
+	"github.com/Borislavv/advanced-cache/pkg/mock"
+	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
+	"github.com/stretchr/testify/assert"
 )
 
-const (
-	maxEntriesNum = 100_000
-	maxRetriesNum = 1_000_000
-)
+type dummyBackend struct{}
 
-var (
-	path = []byte("/api/v2/pagedata")
-)
-
-var cfg *config.Cache
-
-func init() {
-	cfg = &config.Cache{
-		Cache: &config.CacheBox{
-			Enabled: true,
-			LifeTime: config.Lifetime{
-				MaxReqDuration:             time.Millisecond * 100,
-				EscapeMaxReqDurationHeader: "X-Target-Bot",
-			},
-			Proxy: &config.Proxy{
-				FromUrl: []byte("https://google.com"),
-				Rate:    1000,
-				Timeout: time.Second * 5,
-			},
-			Preallocate: config.Preallocation{
-				PerShard: 8,
-			},
-			Eviction: &config.Eviction{
-				Enabled:   true,
-				Threshold: 0.9,
-			},
-			Refresh: &config.Refresh{
-				TTL:  time.Hour,
-				Beta: 0.4,
-			},
-			Storage: &config.Storage{
-				Type: "malloc",
-				Size: 1024 * 500000, // 5 MB
-			},
-			Rules: map[string]*config.Rule{
-				"/api/v2/pagedata": {
-					PathBytes: []byte("/api/v2/pagedata"),
-					Refresh: &config.RuleRefresh{
-						Enabled:     true,
-						TTL:         time.Hour,
-						Beta:        0.5,
-						Coefficient: 0.5,
-					},
-					CacheKey: config.RuleKey{
-						Query:      []string{"project[id]", "domain", "language", "choice"},
-						QueryBytes: [][]byte{[]byte("project[id]"), []byte("domain"), []byte("language"), []byte("choice")},
-						Headers:    []string{"Accept-Encoding", "Accept-Language"},
-						HeadersMap: map[string]struct{}{
-							"Accept-Encoding": {},
-							"Accept-Language": {},
-						},
-					},
-					CacheValue: config.RuleValue{
-						Headers: []string{"Content-Type", "Vary"},
-						HeadersMap: map[string]struct{}{
-							"Content-Type": {},
-							"Vary":         {},
-						},
-					},
-				},
-			},
-		},
-	}
-
-	zerolog.SetGlobalLevel(zerolog.ErrorLevel)
+func (d dummyBackend) Fetch(*config.Rule, []byte, []byte, *[][2][]byte) (int, *[][2][]byte, []byte, func(), error) {
+	return 200, nil, nil, func() {}, nil
 }
 
-func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	backend := repository.NewBackend(ctx, cfg)
-	db := lru.NewStorage(ctx, cfg, backend)
-
-	entries := mock.GenerateEntryPointersConsecutive(cfg, backend, path, maxEntriesNum)
-	for _, entry := range entries {
-		db.Set(entry)
-	}
-	length := len(entries)
-
-	var ok int64
-	var total int64
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		i := 0
-		for pb.Next() {
-			for j := 0; j < 1000; j++ {
-				db.Get(entries[(i*j)%length])
-			}
-			i += 1000
-		}
-	})
-	b.StopTimer()
-
-	if atomic.LoadInt64(&ok) != atomic.LoadInt64(&total) {
-		panic(fmt.Sprintf("BenchmarkReadFromStorage1000TimesPerIter: total[%d] != ok[%d]", atomic.LoadInt64(&total), atomic.LoadInt64(&ok)))
+func (d dummyBackend) RevalidatorMaker() func(*config.Rule, []byte, []byte, *[][2][]byte) (int, *[][2][]byte, []byte, func(), error) {
+	return func(*config.Rule, []byte, []byte, *[][2][]byte) (int, *[][2][]byte, []byte, func(), error) {
+		return 200, nil, nil, func() {}, nil
 	}
 }
 
-func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
-	ctx, cancel := context.WithCancel(b.Context())
-	defer cancel()
-
-	backend := repository.NewBackend(ctx, cfg)
-	db := lru.NewStorage(ctx, cfg, backend)
-
-	entries := mock.GenerateEntryPointersConsecutive(cfg, backend, path, maxEntriesNum)
-	length := len(entries)
-
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		i := 0
-		for pb.Next() {
-			for j := 0; j < 1000; j++ {
-				db.Set(entries[(i*j)%length])
-			}
-			i += 1000
-		}
-	})
-	b.StopTimer()
+func newCfg(tmpDir string) *config.Cache {
+	return &config.Cache{Cache: &config.CacheBox{
+		Enabled:     true,
+		Storage:     &config.Storage{Type: "malloc", Size: 1 << 20},
+		Eviction:    &config.Eviction{Enabled: true, Threshold: 0.9},
+		Preallocate: config.Preallocation{Shards: 1, PerShard: 0},
+		Persistence: &config.Persistence{Dump: &config.Dump{IsEnabled: true, Dir: tmpDir, MaxVersions: 1, Gzip: false, Crc32Control: true}},
+	}}
 }
 
-func BenchmarkGetAllocs(b *testing.B) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+func TestDumpLoad_RoundTrip(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := newCfg(tmpDir)
+	backend := dummyBackend{}
+	ctx := context.Background()
 
-	backend := repository.NewBackend(ctx, cfg)
 	db := lru.NewStorage(ctx, cfg, backend)
+	dumper := NewDumper(cfg, db, backend)
 
-	entry := mock.GenerateRandomEntryPointer(cfg, backend, path)
+	// fill cache
+	entry := mock.GenRndEntry(cfg, backend, []byte("/dump"))
 	db.Set(entry)
 
-	b.StartTimer()
-	allocs := testing.AllocsPerRun(maxRetriesNum, func() {
-		db.Get(entry)
-	})
-	b.StopTimer()
-	b.ReportMetric(allocs, "allocs/op")
+	// dump
+	assert.NoError(t, dumper.Dump(ctx))
+
+	// clear & load
+	db.Clear()
+	assert.Equal(t, int64(0), db.Len())
+	assert.NoError(t, dumper.Load(ctx))
+
+	// verify
+	_, found := db.Get(entry)
+	assert.True(t, found)
 }
 
-func BenchmarkSetAllocs(b *testing.B) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	backend := repository.NewBackend(ctx, cfg)
+func TestDumpDisabled_Error(t *testing.T) {
+	cfg := &config.Cache{Cache: &config.CacheBox{Enabled: true, Persistence: &config.Persistence{Dump: &config.Dump{IsEnabled: false}}}}
+	backend := dummyBackend{}
+	ctx := context.Background()
 	db := lru.NewStorage(ctx, cfg, backend)
+	dumper := NewDumper(cfg, db, backend)
 
-	entry := mock.GenerateRandomEntryPointer(cfg, backend, path)
-
-	b.StartTimer()
-	allocs := testing.AllocsPerRun(maxRetriesNum, func() {
-		db.Set(entry)
-	})
-	b.StopTimer()
-	b.ReportMetric(allocs, "allocs/op")
+	err := dumper.Dump(ctx)
+	assert.ErrorIs(t, err, errDumpNotEnabled)
 }

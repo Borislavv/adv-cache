@@ -35,7 +35,7 @@ var responseBytes = []byte(`{
 }
 `)
 
-func GenerateRandomEntryPointer(cfg *config.Cache, backend repository.Backender, path []byte) *model.Entry {
+func GenRndEntry(cfg *config.Cache, backend repository.Backender, path []byte) *model.Entry {
 	i := rand.Intn(10_000_000)
 
 	query := make([]byte, 0, 512)
