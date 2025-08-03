@@ -129,6 +129,12 @@ func (c *Cache) LoadData(ctx context.Context, interactive bool) error {
 			}
 			return c.LoadData(ctx, false)
 		}
+
+		savePrompt := promptui.Prompt{Label: "Save cache state to new dump version on termination?", IsConfirm: true}
+		// if user confirms, comment: yes -> new dump will be stored
+		if _, spErr := savePrompt.Run(); spErr == nil {
+			c.cfg.Cache.Persistence.Dump.IsEnabled = true
+		}
 	} else {
 		if c.cfg.Cache.Enabled {
 			if c.cfg.Cache.Persistence.Dump.IsEnabled {
