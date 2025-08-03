@@ -237,37 +237,50 @@ func (c *Cache) loadDataInteractive(ctx context.Context) error {
 		storage.LoadMocks(ctx, c.cfg, c.backend, c.db, nMocks)
 
 	case idx == n+2:
-		// yaml config
+		// YAML config selection menu
 		for {
-			pathToCfgPrompt := promptui.Prompt{Label: fmt.Sprintf("Path to YAML config (default '%s' or 'main') or 'back'", ConfigPathLocal)}
-			input, _ := pathToCfgPrompt.Run()
-			switch strings.TrimSpace(input) {
-			case "":
-				fmt.Println("Empty input not allowed")
-				continue
-			case "back":
-				return c.loadDataInteractive(ctx)
-			case "local":
-				input = ConfigPathLocal
-			case "main":
-				input = ConfigPath
+			actions := []string{
+				fmt.Sprintf("Local config (%s)", ConfigPathLocal),
+				fmt.Sprintf("Prod config (%s)", ConfigPath),
+				"Back",
+				"Exit",
 			}
-			fmt.Printf("Using config: %s\n", input)
-			info, err := os.Stat(input)
+			cfgPrompt := promptui.Select{Label: "Select config action", Items: actions}
+			choice, _, err := cfgPrompt.Run()
 			if err != nil {
-				if os.IsNotExist(err) {
-					fmt.Printf("File %q not found\n", input)
-					continue
-				}
+				log.Err(err).Msgf("[dump] config selection aborted: %v", err)
 				return err
 			}
+
+			var path string
+			switch choice {
+			case 0:
+				path = ConfigPathLocal
+			case 1:
+				path = ConfigPath
+			case 2:
+				return c.loadDataInteractive(ctx)
+			case 3:
+				fmt.Println("Exiting.")
+				os.Exit(0)
+			}
+
+			fmt.Printf("Using config: %s\n", path)
+			info, statErr := os.Stat(path)
+			if statErr != nil {
+				if os.IsNotExist(statErr) {
+					fmt.Printf("File %q not found\n", path)
+					continue
+				}
+				return statErr
+			}
 			if info.IsDir() {
-				fmt.Printf("%q is a directory\n", input)
+				fmt.Printf("%q is a directory\n", path)
 				continue
 			}
-			cfg, err := config.LoadConfig(input)
-			if err != nil {
-				fmt.Printf("Failed to load config: %v\n", err)
+			cfg, loadErr := config.LoadConfig(path)
+			if loadErr != nil {
+				fmt.Printf("Failed to load config: %v\n", loadErr)
 				continue
 			}
 			c.cfg = cfg
@@ -304,7 +317,7 @@ func (c *Cache) loadDataInteractive(ctx context.Context) error {
 			}
 			c.cfg = newCfg
 			fmt.Printf("Config reloaded from %s\n", path)
-			return nil
+			return useYamlCfgErr
 		}
 		// all editors failed
 		return c.loadDataInteractive(ctx)
