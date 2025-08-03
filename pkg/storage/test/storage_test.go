@@ -1,4 +1,4 @@
-package storage
+package storage_test
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/mock"
+	"github.com/Borislavv/advanced-cache/pkg/storage"
 	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
 	"github.com/stretchr/testify/assert"
 )
@@ -39,7 +40,7 @@ func TestDumpLoad_RoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	db := lru.NewStorage(ctx, cfg, backend)
-	dumper := NewDumper(cfg, db, backend)
+	dumper := storage.NewDumper(cfg, db, backend)
 
 	// fill cache
 	entry := mock.GenRndEntry(cfg, backend, []byte("/dump"))
@@ -63,8 +64,8 @@ func TestDumpDisabled_Error(t *testing.T) {
 	backend := dummyBackend{}
 	ctx := context.Background()
 	db := lru.NewStorage(ctx, cfg, backend)
-	dumper := NewDumper(cfg, db, backend)
+	dumper := storage.NewDumper(cfg, db, backend)
 
 	err := dumper.Dump(ctx)
-	assert.ErrorIs(t, err, errDumpNotEnabled)
+	assert.ErrorIs(t, err, storage.ErrDumpNotEnabled)
 }

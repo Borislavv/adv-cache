@@ -24,7 +24,7 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-var errDumpNotEnabled = errors.New("persistence mode is not enabled")
+var ErrDumpNotEnabled = errors.New("persistence mode is not enabled")
 
 type Dumper interface {
 	Dump(ctx context.Context) error
@@ -42,19 +42,11 @@ func NewDumper(cfg *config.Cache, storage Storage, backend repository.Backender)
 	return &Dump{cfg: cfg, storage: storage, backend: backend}
 }
 
-func StoreDump(ctx context.Context, cfg *config.Cache, storage Storage, backend repository.Backender) error {
-	return NewDumper(cfg, storage, backend).Dump(ctx)
-}
-
-func LoadDump(ctx context.Context, cfg *config.Cache, storage Storage, backend repository.Backender) error {
-	return NewDumper(cfg, storage, backend).Load(ctx)
-}
-
 func (d *Dump) Dump(ctx context.Context) error {
 	start := time.Now()
 	cfg := d.cfg.Cache.Persistence.Dump
 	if !d.cfg.Cache.Enabled || !cfg.IsEnabled {
-		return errDumpNotEnabled
+		return ErrDumpNotEnabled
 	}
 	if err := os.MkdirAll(cfg.Dir, 0o755); err != nil {
 		return fmt.Errorf("create base dump dir: %w", err)
@@ -157,7 +149,7 @@ func (d *Dump) load(ctx context.Context, dir string) error {
 	start := time.Now()
 	cfg := d.cfg.Cache.Persistence.Dump
 
-	pattern := filepath.Join(dir, fmt.Sprintf("%s-shard-*.dump*", cfg.Name))
+	pattern := filepath.Join(dir, fmt.Sprintf("%s-shard-*-*.dump*", cfg.Name))
 	files, _ := filepath.Glob(pattern)
 	if len(files) == 0 {
 		return fmt.Errorf("no dump files found in %s", dir)

@@ -2,8 +2,6 @@ package lru
 
 import (
 	"context"
-	"github.com/Borislavv/advanced-cache/pkg/list"
-	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/Borislavv/advanced-cache/pkg/rate"
 	"sync/atomic"
 	"time"
@@ -34,8 +32,6 @@ type Refresh struct {
 	ctx     context.Context
 	cfg     *config.Cache
 	storage *InMemoryStorage
-
-	timeWheel *list.List[*model.Entry]
 }
 
 // NewRefresher constructs a Refresh.
