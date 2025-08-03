@@ -18,47 +18,74 @@ import (
 	ui "github.com/gizak/termui/v3"
 )
 
+// Panel defines the interface for all panels in the dashboard.
 type Panel interface {
-	Update(metrics map[string]*MetricBuffer)
-	Draw() ui.Drawable
-	Name() string
-	SetWindow(time.Duration)
+	Update(metrics map[string]*MetricBuffer) // Called to refresh panel data
+	Draw() ui.Drawable                       // Returns the drawable widget
+	Name() string                            // Name identifier of the panel
+	SetWindow(time.Duration)                 // Sets the time window for visualization
 }
 
+// MetricBuffer stores metric points and controls sampling.
 type MetricBuffer struct {
-	points []dataPoint
-	mu     sync.Mutex
+	points         []dataPoint // Historical data points
+	last           dataPoint   // Last appended point
+	lastAppendTime time.Time   // Last time a point was added
+	mu             sync.Mutex  // Mutex for thread-safe access
 }
 
+// Append adds a new data point, maintaining maxWindow retention.
+func (m *MetricBuffer) Append(t time.Time, v float64, currentWindow, maxWindow time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	const targetPoints = 300
+	appendInterval := time.Minute / time.Duration(targetPoints) // Always sample for 1-minute resolution
+
+	if v == m.last.v && t.Sub(m.lastAppendTime) < appendInterval {
+		return // Skip unchanged values at too high frequency
+	}
+
+	m.last = dataPoint{t, v}
+	m.lastAppendTime = t
+	m.points = append(m.points, m.last)
+
+	// Retain only data within maxWindow
+	cutoff := t.Add(-maxWindow)
+	for len(m.points) > 0 && m.points[0].t.Before(cutoff) {
+		m.points = m.points[1:]
+	}
+}
+
+// GetPoints extracts values within the current visible window.
+func (m *MetricBuffer) GetPoints(window time.Duration) []float64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	cutoff := time.Now().Add(-window)
+	out := make([]float64, 0, len(m.points))
+	for _, p := range m.points {
+		if !p.t.Before(cutoff) {
+			out = append(out, p.v)
+		}
+	}
+	return out
+}
+
+// dataPoint represents a single time-series data item.
 type dataPoint struct {
 	t time.Time
 	v float64
 }
 
-func NewBottomPanel() Panel {
-	p := widgets.NewParagraph()
-	p.Title = "Legend"
-	p.Text = "[Hits](fg:green)  [Misses](fg:red)  [Errored](fg:yellow)  [Panicked](fg:magenta)  [Proxied](fg:cyan)\n" +
-		"[q] Quit  [h] Help  [1|5|6] Window  [+] Zoom Out  [-] Zoom In"
-	p.Border = false
-	return &bottomPanel{p: p}
-}
-
-type bottomPanel struct {
-	p *widgets.Paragraph
-}
-
-func (l *bottomPanel) SetWindow(window time.Duration)    {}
-func (l *bottomPanel) Update(_ map[string]*MetricBuffer) {}
-func (l *bottomPanel) Draw() ui.Drawable                 { return l.p }
-func (l *bottomPanel) Name() string                      { return "BottomPanel" }
-
+// DashboardState tracks toggles and active window.
 type DashboardState struct {
 	currentWindow time.Duration
 	helpVisible   bool
 	collapsed     bool
 }
 
+// Dashboard is the main controller for managing panels and data updates.
 type Dashboard struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -70,6 +97,7 @@ type Dashboard struct {
 	state      DashboardState
 }
 
+// NewDashboard initializes a dashboard instance.
 func NewDashboard(ctx context.Context, interval, maxWindow time.Duration, memLimitBytes float64) *Dashboard {
 	if maxWindow < 5*time.Minute {
 		maxWindow = 5 * time.Minute
@@ -91,13 +119,33 @@ func NewDashboard(ctx context.Context, interval, maxWindow time.Duration, memLim
 			NewPlotPanel("Memory Usage (MB)", keyword.MapMemoryUsageMetricName),
 			NewPlotPanel("Cache Length", keyword.MapLength),
 			NewPlotPanel("CPU Usage (%)", "cpu_usage"),
-			NewMultiPlotPanel("Total Events", []string{keyword.Hits, keyword.Misses, keyword.Errored, keyword.Panicked, keyword.Proxied}),
+			NewMultiPlotPanel("Total Events", []string{
+				keyword.Hits, keyword.Misses, keyword.Errored, keyword.Panicked, keyword.Proxied}),
 			NewBottomPanel(),
 			NewHelpPanel(),
 		},
 	}
 }
 
+type bottomPanel struct {
+	p *widgets.Paragraph
+}
+
+func NewBottomPanel() Panel {
+	p := widgets.NewParagraph()
+	p.Title = "Legend"
+	p.Text = "[Hits](fg:green)  [Misses](fg:red)  [Errored](fg:yellow)  [Panicked](fg:magenta)  [Proxied](fg:cyan)\n" +
+		"[q] Quit  [h] Help  [1|5|6] Window  [+] Zoom Out  [-] Zoom In"
+	p.Border = false
+	return &bottomPanel{p: p}
+}
+
+func (l *bottomPanel) SetWindow(window time.Duration)    {}
+func (l *bottomPanel) Update(_ map[string]*MetricBuffer) {}
+func (l *bottomPanel) Draw() ui.Drawable                 { return l.p }
+func (l *bottomPanel) Name() string                      { return "BottomPanel" }
+
+// Run starts the event loop and TUI rendering.
 func (d *Dashboard) Run() error {
 	if err := ui.Init(); err != nil {
 		return fmt.Errorf("termui init failed: %w", err)
@@ -112,10 +160,19 @@ func (d *Dashboard) Run() error {
 	defer ticker.Stop()
 
 	events := ui.PollEvents()
+
+	// CPU simulation (placeholder metric)
 	go func() {
-		for range time.Tick(time.Second) {
-			curr := getCPUPercent()
-			d.getOrCreateMetric("cpu_usage").Append(time.Now(), curr, d.maxWindow)
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-d.ctx.Done():
+				return
+			case now := <-ticker.C:
+				val := getCPUPercent()
+				d.getOrCreateMetric("cpu_usage").Append(now, val, d.state.currentWindow, d.maxWindow)
+			}
 		}
 	}()
 
@@ -134,14 +191,17 @@ func (d *Dashboard) Run() error {
 	}
 }
 
+// getCPUPercent is a placeholder CPU usage function.
 func getCPUPercent() float64 {
-	return float64(runtime.NumGoroutine()) * 1.0 // simple placeholder
+	return float64(runtime.NumGoroutine())
 }
 
+// Stop triggers dashboard cancellation.
 func (d *Dashboard) Stop() {
 	d.cancel()
 }
 
+// handleEvent processes keyboard and resize events.
 func (d *Dashboard) handleEvent(e ui.Event) error {
 	switch e.Type {
 	case ui.KeyboardEvent:
@@ -168,17 +228,18 @@ func (d *Dashboard) handleEvent(e ui.Event) error {
 	return nil
 }
 
+// updateMetrics pulls Prometheus metrics and appends them.
 func (d *Dashboard) updateMetrics(now time.Time) {
 	var buf bytes.Buffer
 	metrics2.WritePrometheus(&buf, false)
-	s := bufio.NewScanner(&buf)
+	sc := bufio.NewScanner(&buf)
 
-	for s.Scan() {
-		l := s.Text()
-		if strings.HasPrefix(l, "#") {
+	for sc.Scan() {
+		line := sc.Text()
+		if strings.HasPrefix(line, "#") {
 			continue
 		}
-		f := strings.Fields(l)
+		f := strings.Fields(line)
 		if len(f) != 2 {
 			continue
 		}
@@ -186,11 +247,11 @@ func (d *Dashboard) updateMetrics(now time.Time) {
 		if err != nil {
 			continue
 		}
-		key := f[0]
-		d.getOrCreateMetric(key).Append(now, val, d.maxWindow)
+		d.getOrCreateMetric(f[0]).Append(now, val, d.state.currentWindow, d.maxWindow)
 	}
 }
 
+// getOrCreateMetric initializes a buffer if it doesn't exist.
 func (d *Dashboard) getOrCreateMetric(name string) *MetricBuffer {
 	if buf, ok := d.metrics[name]; ok {
 		return buf
@@ -200,29 +261,7 @@ func (d *Dashboard) getOrCreateMetric(name string) *MetricBuffer {
 	return buf
 }
 
-func (m *MetricBuffer) Append(t time.Time, v float64, window time.Duration) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	tm := t.Add(-window)
-	m.points = append(m.points, dataPoint{t, v})
-	for len(m.points) > 0 && m.points[0].t.Before(tm) {
-		m.points = m.points[1:]
-	}
-}
-
-func (m *MetricBuffer) GetPoints(window time.Duration) []float64 {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	tm := time.Now().Add(-window)
-	out := make([]float64, 0, len(m.points))
-	for _, p := range m.points {
-		if p.t.After(tm) {
-			out = append(out, p.v)
-		}
-	}
-	return out
-}
-
+// render refreshes the full TUI grid layout.
 func (d *Dashboard) render() {
 	w, h := ui.TerminalDimensions()
 	grid := ui.NewGrid()

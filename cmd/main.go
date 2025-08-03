@@ -184,7 +184,7 @@ func main() {
 
 	if *isShowMode {
 		log.Info().Msg("[dashboard] startup CLI view")
-		board := dashboard.NewDashboard(ctx, time.Millisecond*100, time.Hour*24, float64(cfg.Cache.Storage.Size))
+		board := dashboard.NewDashboard(ctx, time.Millisecond*25, time.Hour*24, float64(cfg.Cache.Storage.Size))
 		defer board.Stop()
 		go func() {
 			defer log.Info().Msg("[dashboard] stopped CLI view")
