@@ -173,7 +173,7 @@ func main() {
 		log.Err(err).Msg("[main] failed to init cache app")
 	}
 
-	// Load data manually or isInteractive, as you wish
+	// Load data manually or interactive, as you wish
 	if err = app.LoadData(ctx, *isInteractive); err != nil {
 		log.Err(err).Msg("[main] failed to load data")
 		return
