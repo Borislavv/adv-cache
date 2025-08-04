@@ -3,12 +3,13 @@ package storage
 import (
 	"context"
 	"fmt"
-	"github.com/Borislavv/advanced-cache/pkg/mock"
-	"github.com/Borislavv/advanced-cache/pkg/repository"
-	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Borislavv/advanced-cache/pkg/mock"
+	"github.com/Borislavv/advanced-cache/pkg/repository"
+	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
 
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/rs/zerolog"
