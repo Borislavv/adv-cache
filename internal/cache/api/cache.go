@@ -313,12 +313,23 @@ func (c *CacheController) runLoggerMetricsWriter() {
 				return
 
 			case <-metricsTicker:
-				totalNumLoc := total.Swap(0)
-				hitsNumLoc := hits.Swap(0)
-				missesNumLoc := misses.Swap(0)
-				proxiedNumLoc := proxies.Swap(0)
-				errorsNumLoc := errors.Swap(0)
-				totalDurationNumLoc := totalDuration.Swap(0)
+				totalNumLoc := total.Load()
+				total.Store(0)
+
+				hitsNumLoc := hits.Load()
+				hits.Store(0)
+
+				missesNumLoc := misses.Load()
+				misses.Store(0)
+
+				proxiedNumLoc := proxies.Load()
+				proxies.Store(0)
+
+				errorsNumLoc := errors.Load()
+				errors.Store(0)
+
+				totalDurationNumLoc := totalDuration.Load()
+				totalDuration.Store(0)
 
 				// metrics export
 				var avgDuration float64
