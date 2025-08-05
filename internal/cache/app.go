@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/Borislavv/advanced-cache/pkg/upstream"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -17,7 +18,6 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/k8s/probe/liveness"
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
-	"github.com/Borislavv/advanced-cache/pkg/repository"
 	"github.com/Borislavv/advanced-cache/pkg/shutdown"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
 	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
@@ -50,7 +50,7 @@ type Cache struct {
 	probe   liveness.Prober
 	dumper  storage.Dumper
 	server  server.Http
-	backend repository.Backender
+	backend upstream.Gateway
 	db      storage.Storage
 }
 
@@ -59,7 +59,7 @@ func NewApp(ctx context.Context, cfg *config.Cache, probe liveness.Prober) (*Cac
 	ctx, cancel := context.WithCancel(ctx)
 
 	meter := metrics.New()
-	backend := repository.NewBackend(ctx, cfg)
+	backend := upstream.NewBackend(ctx, cfg)
 	db := lru.NewStorage(ctx, cfg, backend)
 	dumper := storage.NewDumper(cfg, db, backend)
 

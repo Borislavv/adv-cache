@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/Borislavv/advanced-cache/pkg/upstream"
 	"hash/crc32"
 	"io"
 	"os"
@@ -19,7 +20,6 @@ import (
 
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/model"
-	"github.com/Borislavv/advanced-cache/pkg/repository"
 	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
 	"github.com/rs/zerolog/log"
 )
@@ -35,10 +35,10 @@ type Dumper interface {
 type Dump struct {
 	cfg     *config.Cache
 	storage Storage
-	backend repository.Backender
+	backend upstream.Gateway
 }
 
-func NewDumper(cfg *config.Cache, storage Storage, backend repository.Backender) *Dump {
+func NewDumper(cfg *config.Cache, storage Storage, backend upstream.Gateway) *Dump {
 	return &Dump{cfg: cfg, storage: storage, backend: backend}
 }
 

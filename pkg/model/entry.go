@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/Borislavv/advanced-cache/pkg/upstream"
 	"math"
 	"math/rand/v2"
 	"net/http"
@@ -17,7 +18,6 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/list"
 	"github.com/Borislavv/advanced-cache/pkg/pools"
-	"github.com/Borislavv/advanced-cache/pkg/repository"
 	"github.com/Borislavv/advanced-cache/pkg/sort"
 	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
 	"github.com/rs/zerolog/log"
@@ -904,7 +904,7 @@ func (e *Entry) ToBytes() (data []byte, releaseFn func()) {
 	return buf.Bytes(), releaseFn
 }
 
-func EntryFromBytes(data []byte, cfg *config.Cache, backend repository.Backender) (*Entry, error) {
+func EntryFromBytes(data []byte, cfg *config.Cache, backend upstream.Gateway) (*Entry, error) {
 	var offset int
 
 	// RulePath
@@ -956,13 +956,6 @@ func EntryFromBytes(data []byte, cfg *config.Cache, backend repository.Backender
 
 func MatchRule(cfg *config.Cache, path []byte) *config.Rule {
 	if rule, ok := cfg.Cache.Rules[unsafe.String(unsafe.SliceData(path), len(path))]; ok {
-		return rule
-	}
-	return nil
-}
-
-func MatchRuleStr(cfg *config.Cache, path string) *config.Rule {
-	if rule, ok := cfg.Cache.Rules[path]; ok {
 		return rule
 	}
 	return nil

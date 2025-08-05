@@ -1,4 +1,4 @@
-package repository
+package upstream
 
 import (
 	"bytes"
@@ -46,8 +46,8 @@ var transport = &http.Transport{
 	ExpectContinueTimeout: 1 * time.Second,
 }
 
-// Backender defines the interface for a repository that provides SEO page data.
-type Backender interface {
+// Gateway defines the interface for a repository that provides SEO page data.
+type Gateway interface {
 	Fetch(
 		rule *config.Rule, path []byte, query []byte, queryHeaders *[][2][]byte,
 	) (
@@ -60,6 +60,8 @@ type Backender interface {
 		status int, headers *[][2][]byte, body []byte, releaseFn func(), err error,
 	)
 }
+
+// TODO implements support of cluster backends.
 
 // Backend implements the Backender interface.
 // It fetches and constructs SEO page data responses from an external backend.

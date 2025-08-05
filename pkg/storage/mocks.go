@@ -4,11 +4,11 @@ import (
 	"context"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/mock"
-	"github.com/Borislavv/advanced-cache/pkg/repository"
+	"github.com/Borislavv/advanced-cache/pkg/upstream"
 	"github.com/rs/zerolog/log"
 )
 
-func LoadMocks(ctx context.Context, config *config.Cache, backend repository.Backender, storage Storage, num int) {
+func LoadMocks(ctx context.Context, config *config.Cache, backend upstream.Gateway, storage Storage, num int) {
 	go func() {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithCancel(ctx)

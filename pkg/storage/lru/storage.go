@@ -3,17 +3,57 @@ package lru
 import (
 	"context"
 	"github.com/Borislavv/advanced-cache/pkg/storage/lfu"
+	"github.com/Borislavv/advanced-cache/pkg/upstream"
 	"runtime"
 	"strconv"
 	"time"
 
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/model"
-	"github.com/Borislavv/advanced-cache/pkg/repository"
 	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
 	"github.com/Borislavv/advanced-cache/pkg/utils"
 	"github.com/rs/zerolog/log"
 )
+
+// Storage is a generic interface for cache storages.
+// It supports typical Get/Set operations with reference management.
+type Storage interface {
+	Run()
+
+	// Get attempts to retrieve a cached response for the given request.
+	// Returns the response, a releaser for safe concurrent access, and a hit/miss flag.
+	Get(*model.Entry) (entry *model.Entry, hit bool)
+
+	// Set stores a new response in the cache and returns a releaser for managing resource lifetime.
+	// 1. You definitely cannot use 'inEntry' after use in Set due to it can be removed, you will receive a cache entry on hit!
+	// 2. Use Release and Remove for manage Entry lifetime.
+	Set(inEntry *model.Entry) (persisted bool)
+
+	// Remove is removes one element.
+	Remove(*model.Entry) (freedBytes int64, hit bool)
+
+	// Clear is removes all cache entries from the storage.
+	Clear()
+
+	// Stat returns bytes usage and num of items in storage.
+	Stat() (bytes int64, length int64)
+
+	// Len - return stored value (refreshes every 100ms).
+	Len() int64
+
+	RealLen() int64
+
+	// Mem - return stored value (refreshes every 100ms).
+	Mem() int64
+
+	// RealMem - calculates and return value.
+	RealMem() int64
+
+	// Rand returns a random elem from the map.
+	Rand() (entry *model.Entry, ok bool)
+
+	WalkShards(ctx context.Context, fn func(key uint64, shard *sharded.Shard[*model.Entry]))
+}
 
 // InMemoryStorage is a Weight-aware, sharded InMemoryStorage cache with background eviction and refreshItem support.
 type InMemoryStorage struct {
@@ -21,14 +61,14 @@ type InMemoryStorage struct {
 	cfg             *config.Cache              // CacheBox configuration
 	shardedMap      *sharded.Map[*model.Entry] // Sharded storage for cache entries
 	tinyLFU         *lfu.TinyLFU               // Helps hold more frequency used items in cache while eviction
-	backend         repository.Backender       // Remote backend server.
+	backend         upstream.Gateway           // Remote backend server.
 	balancer        Balancer                   // Helps pick shards to evict from
 	mem             int64                      // Current Weight usage (bytes)
 	memoryThreshold int64                      // Threshold for triggering eviction (bytes)
 }
 
 // NewStorage constructs a new InMemoryStorage cache instance and launches eviction and refreshItem routines.
-func NewStorage(ctx context.Context, cfg *config.Cache, backend repository.Backender) *InMemoryStorage {
+func NewStorage(ctx context.Context, cfg *config.Cache, backend upstream.Gateway) *InMemoryStorage {
 	shardedMap := sharded.NewMap[*model.Entry](ctx, cfg.Cache.Preallocate.PerShard)
 	balancer := NewBalancer(ctx, shardedMap)
 

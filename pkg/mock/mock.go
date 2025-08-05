@@ -5,7 +5,7 @@ import (
 	"context"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/model"
-	"github.com/Borislavv/advanced-cache/pkg/repository"
+	"github.com/Borislavv/advanced-cache/pkg/upstream"
 	"math/rand"
 	"runtime"
 	"strconv"
@@ -35,7 +35,7 @@ var responseBytes = []byte(`{
 }
 `)
 
-func GenerateRandomEntryPointer(cfg *config.Cache, backend repository.Backender, path []byte) *model.Entry {
+func GenerateRandomEntryPointer(cfg *config.Cache, backend upstream.Gateway, path []byte) *model.Entry {
 	i := rand.Intn(10_000_000)
 
 	query := make([]byte, 0, 512)
@@ -72,7 +72,7 @@ func GenerateRandomEntryPointer(cfg *config.Cache, backend repository.Backender,
 	return entry
 }
 
-func GenerateEntryPointersConsecutive(cfg *config.Cache, backend repository.Backender, path []byte, num int) []*model.Entry {
+func GenerateEntryPointersConsecutive(cfg *config.Cache, backend upstream.Gateway, path []byte, num int) []*model.Entry {
 	res := make([]*model.Entry, 0, num)
 
 	i := 0
@@ -119,7 +119,7 @@ func GenerateEntryPointersConsecutive(cfg *config.Cache, backend repository.Back
 	return res
 }
 
-func StreamEntryPointersConsecutive(ctx context.Context, cfg *config.Cache, backend repository.Backender, path []byte, num int) <-chan *model.Entry {
+func StreamEntryPointersConsecutive(ctx context.Context, cfg *config.Cache, backend upstream.Gateway, path []byte, num int) <-chan *model.Entry {
 	outCh := make(chan *model.Entry, runtime.GOMAXPROCS(0)*4)
 	go func() {
 		defer close(outCh)
@@ -172,7 +172,7 @@ func StreamEntryPointersConsecutive(ctx context.Context, cfg *config.Cache, back
 	return outCh
 }
 
-func StreamEntriesConsecutive(ctx context.Context, cfg *config.Cache, backend repository.Backender, path []byte, num int) <-chan *model.Entry {
+func StreamEntriesConsecutive(ctx context.Context, cfg *config.Cache, backend upstream.Gateway, path []byte, num int) <-chan *model.Entry {
 	outCh := make(chan *model.Entry, runtime.GOMAXPROCS(0)*4*10000)
 	go func() {
 		defer close(outCh)

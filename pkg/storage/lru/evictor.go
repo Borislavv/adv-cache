@@ -3,7 +3,6 @@ package lru
 import (
 	"context"
 	"github.com/Borislavv/advanced-cache/pkg/config"
-	"github.com/Borislavv/advanced-cache/pkg/storage"
 	"github.com/rs/zerolog/log"
 	"runtime"
 	"strconv"
@@ -29,13 +28,13 @@ type Evictor interface {
 type Evict struct {
 	ctx                 context.Context
 	cfg                 *config.Cache
-	db                  storage.Storage
+	db                  Storage
 	balancer            Balancer
 	memoryThreshold     int64
 	fatShardsPercentage int
 }
 
-func NewEvictor(ctx context.Context, cfg *config.Cache, db storage.Storage, balancer Balancer) *Evict {
+func NewEvictor(ctx context.Context, cfg *config.Cache, db Storage, balancer Balancer) *Evict {
 	return &Evict{
 		ctx:                 ctx,
 		cfg:                 cfg,

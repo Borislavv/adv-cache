@@ -9,9 +9,9 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/Borislavv/advanced-cache/pkg/pools"
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
-	"github.com/Borislavv/advanced-cache/pkg/repository"
 	serverutils "github.com/Borislavv/advanced-cache/pkg/server/utils"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
+	"github.com/Borislavv/advanced-cache/pkg/upstream"
 	"github.com/Borislavv/advanced-cache/pkg/utils"
 	"github.com/fasthttp/router"
 	"github.com/rs/zerolog/log"
@@ -54,7 +54,7 @@ type CacheController struct {
 	ctx      context.Context
 	cache    storage.Storage
 	metrics  metrics.Meter
-	backend  repository.Backender
+	backend  upstream.Gateway
 	errorsCh chan error
 }
 
@@ -65,7 +65,7 @@ func NewCacheController(
 	cfg *config.Cache,
 	cache storage.Storage,
 	metrics metrics.Meter,
-	backend repository.Backender,
+	backend upstream.Gateway,
 ) *CacheController {
 	c := &CacheController{
 		cfg:      cfg,
