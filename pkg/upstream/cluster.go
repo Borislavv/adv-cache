@@ -1,12 +1,29 @@
 // Package upstream provides a minimal reverse‑proxy cluster with passive and
-// optional active health checks. The hot path is completely lock‑free and
-// allocation‑free; all mutations use copy‑on‑write under a coarse RW lock.
+// optional active health checks. The hot path is lock‑free and allocation‑free;
+// all mutations use copy‑on‑write under a coarse RW lock.
+//
+// Logging
+// -------
+// All non‑hot‑path state transitions are traced with zerolog using the common
+// prefix **[upstream‑cluster]**.  Это даёт чёткую цепочку действий без шума в
+// критическом трафике.
+//
+// Metrics
+// -------
+// * aggregate gauges: Healthy / Sick / Dead
+// * per‑backend gauge  `backend_state{backend="name",state="healthy|sick|dead"}`
+//
+// Helper `SnapshotMetrics()` возвращает payload в формате Prometheus, готовый
+// к push в VictoriaMetrics (`/api/v1/import/prometheus`) или scrape любым
+// Prometheus‑совместимым сборщиком.
 package upstream
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -18,19 +35,18 @@ import (
 )
 
 // -----------------------------------------------------------------------------
-// Errors exposed by the package.
+// Errors.
 // -----------------------------------------------------------------------------
 
 var (
-	ErrNoBackends   = errors.New("no healthy backends in cluster")
-	ErrDuplicate    = errors.New("backend already exists in cluster")
-	ErrNotFound     = errors.New("backend not found in cluster")
-	ErrNilBackend   = errors.New("nil backend")
-	ErrNameMismatch = errors.New("backend name mismatch")
+	ErrNoBackends = errors.New("no healthy backends in cluster")
+	ErrDuplicate  = errors.New("backend already exists in cluster")
+	ErrNotFound   = errors.New("backend not found in cluster")
+	ErrNilBackend = errors.New("nil backend")
 )
 
 // -----------------------------------------------------------------------------
-// Metrics (atomic gauges).
+// Aggregate metrics.
 // -----------------------------------------------------------------------------
 
 var (
@@ -44,7 +60,7 @@ func SickBackends() int64    { return sickGauge.Load() }
 func DeadBackends() int64    { return deadGauge.Load() }
 
 // -----------------------------------------------------------------------------
-// Internal state.
+// Types & internal state.
 // -----------------------------------------------------------------------------
 
 type state uint8
@@ -56,25 +72,38 @@ const (
 	dead
 )
 
+func (s state) String() string {
+	switch s {
+	case healthy:
+		return "healthy"
+	case sick:
+		return "sick"
+	case dead:
+		return "dead"
+	default:
+		return "unknown"
+	}
+}
+
 type backendSlot struct {
 	backend Backend
 	st      state
 }
 
 // -----------------------------------------------------------------------------
-// BackendsCluster – round‑robin balancer.
+// Cluster.
 // -----------------------------------------------------------------------------
 
 type BackendsCluster struct {
 	cfg config.Config
 
 	cursor   atomic.Uint64                  // RR cursor (overflow‑safe)
-	slotsPtr atomic.Pointer[[]*backendSlot] // immutable slice of healthy backends
+	slotsPtr atomic.Pointer[[]*backendSlot] // immutable healthy slice
 
 	mu   sync.RWMutex            // guards maps & slice rebuilds
-	all  map[string]*backendSlot // master registry by name
-	sick map[string]*backendSlot // quarantine set
-	dead map[string]*backendSlot // permanently removed
+	all  map[string]*backendSlot // every backend by name
+	sick map[string]*backendSlot // quarantined
+	dead map[string]*backendSlot // removed
 
 	hcTicker  *time.Ticker
 	hcStopCh  chan struct{}
@@ -82,8 +111,7 @@ type BackendsCluster struct {
 	hcEnabled bool
 }
 
-// NewCluster builds a cluster from cfg. Active HC starts automatically when
-// at least one backend supports Ping()/IsHealthy().
+// NewCluster initialises cluster & launches active HC.
 func NewCluster(ctx context.Context, cfg config.Config) (*BackendsCluster, error) {
 	c := &BackendsCluster{
 		cfg:       cfg,
@@ -111,7 +139,7 @@ func NewCluster(ctx context.Context, cfg config.Config) (*BackendsCluster, error
 			}
 		}
 
-		be := NewBackend(ctx, bcfg, name)
+		be := NewBackend(ctx, bcfg, name) // реализация за пределами кластера
 		slot := &backendSlot{backend: be}
 		if be.IsHealthy() {
 			slot.st = healthy
@@ -124,14 +152,16 @@ func NewCluster(ctx context.Context, cfg config.Config) (*BackendsCluster, error
 	}
 
 	if len(healthySlots) == 0 {
+		log.Error().Msg("[upstream-cluster] init failed: no healthy backends")
 		return nil, ErrNoBackends
 	}
 
 	c.setHealthySlice(healthySlots)
-
 	healthyGauge.Store(int64(len(healthySlots)))
 	sickGauge.Store(int64(len(c.sick)))
-	deadGauge.Store(0)
+
+	log.Info().Int("healthy", int(HealthyBackends())).Int("sick", int(SickBackends())).
+		Msg("[upstream-cluster] cluster initialised")
 
 	if c.hcEnabled {
 		c.startHealthChecker()
@@ -140,7 +170,7 @@ func NewCluster(ctx context.Context, cfg config.Config) (*BackendsCluster, error
 }
 
 // -----------------------------------------------------------------------------
-// Traffic path – lock & alloc free.
+// Hot path (Fetch) – no logs/allocs.
 // -----------------------------------------------------------------------------
 
 func (c *BackendsCluster) Fetch(rule *config.Rule, path, query []byte, qh *[][2][]byte) (int, *[][2][]byte, []byte, func(), error) {
@@ -153,7 +183,6 @@ func (c *BackendsCluster) Fetch(rule *config.Rule, path, query []byte, qh *[][2]
 	slot := (*slots)[idx]
 
 	st, hdr, body, rel, err := slot.backend.Fetch(rule, path, query, qh)
-
 	if err != nil || st >= http.StatusInternalServerError {
 		go c.markSickAsync(slot.backend.Name())
 	}
@@ -164,7 +193,6 @@ func (c *BackendsCluster) Fetch(rule *config.Rule, path, query []byte, qh *[][2]
 // Mutation API.
 // -----------------------------------------------------------------------------
 
-// Add registers a backend at runtime. Sick backends are allowed – they start in quarantine.
 func (c *BackendsCluster) Add(be Backend) error {
 	if be == nil {
 		return ErrNilBackend
@@ -175,6 +203,7 @@ func (c *BackendsCluster) Add(be Backend) error {
 	defer c.mu.Unlock()
 
 	if _, dup := c.all[name]; dup {
+		log.Warn().Str("backend", name).Msg("[upstream-cluster] add ignored: duplicate")
 		return ErrDuplicate
 	}
 
@@ -185,15 +214,16 @@ func (c *BackendsCluster) Add(be Backend) error {
 		slot.st = healthy
 		c.appendHealthySlot(slot)
 		healthyGauge.Add(1)
+		log.Info().Str("backend", name).Msg("[upstream-cluster] backend added as healthy")
 	} else {
 		slot.st = sick
 		c.sick[name] = slot
 		sickGauge.Add(1)
+		log.Info().Str("backend", name).Msg("[upstream-cluster] backend added as sick")
 	}
 	return nil
 }
 
-// Update swaps backend implementation keeping the same logical name.
 func (c *BackendsCluster) Update(ctx context.Context, name string, cfg *config.Backend) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -203,28 +233,23 @@ func (c *BackendsCluster) Update(ctx context.Context, name string, cfg *config.B
 		return ErrNotFound
 	}
 
-	// Build new backend from cfg (if supplied) or refresh existing.
 	var be Backend
 	if cfg != nil {
 		be = NewBackend(ctx, cfg, name)
 	} else {
-		be = slot.backend // keep existing instance
+		be = slot.backend
 	}
 
-	// State transition bookkeeping.
-	prevState := slot.st
-
-	// Remove from healthy slice if it was there
-	if prevState == healthy {
+	prev := slot.st
+	if prev == healthy {
 		c.removeFromHealthySlice(slot)
 		healthyGauge.Add(-1)
-	} else if prevState == sick {
+	} else if prev == sick {
 		delete(c.sick, name)
 		sickGauge.Add(-1)
 	}
 
 	slot.backend = be
-
 	if be.IsHealthy() {
 		slot.st = healthy
 		c.appendHealthySlot(slot)
@@ -235,10 +260,11 @@ func (c *BackendsCluster) Update(ctx context.Context, name string, cfg *config.B
 		sickGauge.Add(1)
 	}
 
+	log.Info().Str("backend", name).Str("from", prev.String()).Str("to", slot.st.String()).
+		Msg("[upstream-cluster] backend updated")
 	return nil
 }
 
-// Resurrect moves a dead backend back to life; cfg may replace the implementation.
 func (c *BackendsCluster) Resurrect(ctx context.Context, name string, cfg *config.Backend) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -247,11 +273,9 @@ func (c *BackendsCluster) Resurrect(ctx context.Context, name string, cfg *confi
 	if !ok {
 		return ErrNotFound
 	}
-
 	delete(c.dead, name)
 	deadGauge.Add(-1)
 
-	// Build new backend if cfg passed.
 	if cfg != nil {
 		slot.backend = NewBackend(ctx, cfg, name)
 	}
@@ -266,24 +290,96 @@ func (c *BackendsCluster) Resurrect(ctx context.Context, name string, cfg *confi
 		sickGauge.Add(1)
 	}
 
-	c.all[name] = slot // ensure back in master map
+	c.all[name] = slot
+	log.Info().Str("backend", name).Msg("[upstream-cluster] backend resurrected")
 	return nil
 }
 
+// wrappers
 func (c *BackendsCluster) Promote(name string) error    { return c.promote(name) }
 func (c *BackendsCluster) Quarantine(name string) error { return c.quarantine(name) }
 func (c *BackendsCluster) Kill(name string) error       { return c.bury(name) }
 
-// Healthy returns true when at least one backend is ready.
-func (c *BackendsCluster) Healthy() bool { return len(*c.slotsPtr.Load()) > 0 }
-func (c *BackendsCluster) Size() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return len(c.all)
+// -----------------------------------------------------------------------------
+// State transitions helpers (with metrics + logs).
+// -----------------------------------------------------------------------------
+
+func (c *BackendsCluster) quarantine(name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	slot, ok := c.all[name]
+	if !ok {
+		return ErrNotFound
+	}
+	if slot.st != healthy {
+		return nil
+	}
+
+	c.removeFromHealthySlice(slot)
+	healthyGauge.Add(-1)
+
+	slot.st = sick
+	c.sick[name] = slot
+	sickGauge.Add(1)
+
+	log.Info().Str("backend", name).Msg("[upstream-cluster] backend quarantined")
+	return nil
+}
+
+func (c *BackendsCluster) promote(name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	slot, ok := c.sick[name]
+	if !ok {
+		return ErrNotFound
+	}
+	delete(c.sick, name)
+	sickGauge.Add(-1)
+
+	slot.st = healthy
+	c.appendHealthySlot(slot)
+	healthyGauge.Add(1)
+
+	log.Info().Str("backend", name).Msg("[upstream-cluster] backend promoted to healthy")
+	return nil
+}
+
+func (c *BackendsCluster) bury(name string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	slot, ok := c.all[name]
+	if !ok {
+		return ErrNotFound
+	}
+
+	switch slot.st {
+	case healthy:
+		c.removeFromHealthySlice(slot)
+		healthyGauge.Add(-1)
+	case sick:
+		delete(c.sick, name)
+		sickGauge.Add(-1)
+	}
+
+	slot.st = dead
+	c.dead[name] = slot
+	deadGauge.Add(1)
+
+	log.Info().Str("backend", name).Msg("[upstream-cluster] backend buried (dead)")
+	return nil
+}
+
+func (c *BackendsCluster) markSickAsync(name string) {
+	if err := c.quarantine(name); err == nil {
+		log.Warn().Str("backend", name).Msg("[upstream-cluster] backend quarantined due to error")
+	}
 }
 
 // -----------------------------------------------------------------------------
-// Internal helpers.
+// Slice helpers (no logging).
 // -----------------------------------------------------------------------------
 
 func (c *BackendsCluster) setHealthySlice(slots []*backendSlot) {
@@ -310,74 +406,6 @@ func (c *BackendsCluster) removeFromHealthySlice(slot *backendSlot) {
 	c.setHealthySlice(newSlice)
 }
 
-func (c *BackendsCluster) quarantine(name string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	slot, ok := c.all[name]
-	if !ok {
-		return ErrNotFound
-	}
-	if slot.st != healthy {
-		return nil // already not healthy
-	}
-
-	c.removeFromHealthySlice(slot)
-	healthyGauge.Add(-1)
-
-	slot.st = sick
-	c.sick[name] = slot
-	sickGauge.Add(1)
-	return nil
-}
-
-func (c *BackendsCluster) promote(name string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	slot, ok := c.sick[name]
-	if !ok {
-		return ErrNotFound
-	}
-	delete(c.sick, name)
-	sickGauge.Add(-1)
-
-	slot.st = healthy
-	c.appendHealthySlot(slot)
-	healthyGauge.Add(1)
-	return nil
-}
-
-func (c *BackendsCluster) bury(name string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	slot, ok := c.all[name]
-	if !ok {
-		return ErrNotFound
-	}
-
-	switch slot.st {
-	case healthy:
-		c.removeFromHealthySlice(slot)
-		healthyGauge.Add(-1)
-	case sick:
-		delete(c.sick, name)
-		sickGauge.Add(-1)
-	}
-
-	slot.st = dead
-	c.dead[name] = slot
-	deadGauge.Add(1)
-	return nil
-}
-
-func (c *BackendsCluster) markSickAsync(name string) {
-	if err := c.quarantine(name); err == nil {
-		log.Warn().Str("backend", name).Msg("upstream: backend quarantined due to error response")
-	}
-}
-
 // -----------------------------------------------------------------------------
 // Active health checker.
 // -----------------------------------------------------------------------------
@@ -386,6 +414,8 @@ func (c *BackendsCluster) startHealthChecker() {
 	const interval = 10 * time.Second
 	c.hcTicker = time.NewTicker(interval)
 	c.hcWG.Add(1)
+
+	log.Info().Dur("interval", interval).Msg("[upstream-cluster] active HC started")
 
 	go func() {
 		defer c.hcWG.Done()
@@ -415,7 +445,6 @@ func (c *BackendsCluster) probeSickBackends() {
 	}
 }
 
-// Close stops background HC goroutine.
 func (c *BackendsCluster) Close() {
 	if !c.hcEnabled {
 		return
@@ -425,4 +454,51 @@ func (c *BackendsCluster) Close() {
 		c.hcTicker.Stop()
 	}
 	c.hcWG.Wait()
+	log.Info().Msg("[upstream-cluster] cluster closed")
+}
+
+// -----------------------------------------------------------------------------
+// Metrics exposition.
+// -----------------------------------------------------------------------------
+
+// SnapshotMetrics builds the text exposition of backend_state metrics.
+func (c *BackendsCluster) SnapshotMetrics() string {
+	var b strings.Builder
+	b.WriteString("# HELP backend_state Backend state: 1=present, 0=absent\n")
+	b.WriteString("# TYPE backend_state gauge\n")
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	for name, slot := range c.all {
+		for _, st := range []state{healthy, sick, dead} {
+			val := 0
+			if slot.st == st {
+				val = 1
+			}
+			fmt.Fprintf(&b, "backend_state{backend=\"%s\",state=\"%s\"} %d\n", name, st, val)
+		}
+	}
+	return b.String()
+}
+
+// PushMetrics POSTs snapshot to VictoriaMetrics (demo helper).
+func (c *BackendsCluster) PushMetrics(client *http.Client, url string) error {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	body := strings.NewReader(c.SnapshotMetrics())
+	req, err := http.NewRequest(http.MethodPost, url, body)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("unexpected status: %s", resp.Status)
+	}
+	return nil
 }
