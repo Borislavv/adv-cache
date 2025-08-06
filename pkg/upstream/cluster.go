@@ -97,7 +97,6 @@ type backendSlot struct {
 	backend   Backend
 	state     State
 	hcRetries atomic.Int32
-	killedAt  atomic.Int64 // unix nano
 }
 
 // -----------------------------------------------------------------------------
@@ -176,7 +175,8 @@ func NewCluster(ctx context.Context, cfg config.Config) (*BackendCluster, error)
 	log.Info().Int("healthy", int(HealthyBackends())).Int("sick", int(SickBackends())).
 		Msg("[upstream-cluster] cluster initialised")
 
-	c.runHealthChecker()
+	// start a lifecycle manager
+	c.runLifeCycle()
 
 	return c, nil
 }
@@ -430,6 +430,7 @@ func (c *BackendCluster) runLifeCycle() {
 func (c *BackendCluster) runKiller() {
 	log.Info().Dur("hcInterval", killerInterval).Msg("[upstream-cluster] killer started")
 
+	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
 		for {
@@ -443,11 +444,12 @@ func (c *BackendCluster) runKiller() {
 	}()
 }
 
-const maxRetries = 7
+const maxRetries = 6
 
 func (c *BackendCluster) runHealthChecker() {
 	log.Info().Dur("hcInterval", hcInterval).Msg("[upstream-cluster] active HC started")
 
+	c.wg.Add(1)
 	go func() {
 		defer c.wg.Done()
 		for {
@@ -488,13 +490,14 @@ func (c *BackendCluster) probeSickBackends() {
 }
 
 func (c *BackendCluster) killDoomedBackends() {
-	c.mu.RLock()
+	forgottenGauge.Add(int64(len(c.dead)))
+
+	c.mu.Lock()
 	for _, slot := range c.dead {
 		delete(c.all, slot.backend.Name())
 		delete(c.dead, slot.backend.Name())
-		forgottenGauge.Add(1)
 	}
-	c.mu.RUnlock()
+	c.mu.Unlock()
 }
 
 func (c *BackendCluster) Close() {
@@ -521,11 +524,11 @@ func (c *BackendCluster) SnapshotMetrics() string {
 			if slot.state == st {
 				val = 1
 			}
-			fmt.Fprintf(&b, "backend_state{backend=\"%s\",State=\"%s\"} %d\n", name, st, val)
+			fmt.Fprintf(&b, "backend_state{backend=\"%s\",state=\"%s\"} %d\n", name, st, val)
 		}
 	}
 
-	fmt.Fprintf(&b, "backend_state{backend=\"%s\",State=\"%s\"} %d\n", "...", forgotten, forgottenGauge.Load())
+	fmt.Fprintf(&b, "backend_state{backend=\"%s\",state=\"%s\"} %d\n", "...", forgotten, forgottenGauge.Load())
 
 	return b.String()
 }
