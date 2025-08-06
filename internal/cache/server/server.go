@@ -33,7 +33,7 @@ type HttpServer struct {
 	ctx           context.Context
 	cfg           *config.Cache
 	db            storage.Storage
-	backend       upstream.Gateway
+	backend       upstream.Upstream
 	probe         liveness.Prober
 	metrics       metrics.Meter
 	server        httpserver.Server
@@ -46,7 +46,7 @@ func New(
 	ctx context.Context,
 	cfg *config.Cache,
 	db storage.Storage,
-	backend upstream.Gateway,
+	backend upstream.Upstream,
 	probe liveness.Prober,
 	meter metrics.Meter,
 ) (*HttpServer, error) {
@@ -120,8 +120,8 @@ func (s *HttpServer) initServer() error {
 func (s *HttpServer) controllers() []controller.HttpController {
 	return []controller.HttpController{
 		liveness.NewController(s.probe),    // Liveness/healthcheck endpoint
-		controller2.NewPrometheusMetrics(), // Metrics endpoint
-		api.NewOnOffController(),           // Cache on-off controller
+		controller2.NewPrometheusMetrics(), // metrics endpoint
+		api.NewOnOffController(),           // AtomicCache on-off controller
 		api.NewClearController(s.cfg, s.db),
 		api.NewCacheController(s.ctx, s.cfg, s.db, s.metrics, s.backend), // Main cache handler
 	}

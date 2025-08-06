@@ -19,18 +19,18 @@ import (
 // By default, Go's GC will only run a full collection if the heap grows by GOGC% (default 100%).
 // This means the next GC cycle could be delayed until the heap doubles again (e.g., 36 GB).
 func Run(ctx context.Context, cfg *config.Cache) {
-	if !cfg.Cache.ForceGC.Enabled {
+	if !cfg.ForceGC.Enabled {
 		return
 	}
 
 	go func() {
-		// Force GC walk-through every cfg.Cache.ForceGC.GCInterval
-		gcTicker := time.NewTicker(cfg.Cache.ForceGC.Interval)
+		// Force GC walk-through every cfg.AtomicCache.forceGC.GCInterval
+		gcTicker := time.NewTicker(cfg.ForceGC.Interval)
 		defer gcTicker.Stop()
 
 		log.Info().Msgf(
 			"[force-GC] has been started with interval=%s",
-			cfg.Cache.ForceGC.Interval,
+			cfg.ForceGC.Interval,
 		)
 
 		var mem runtime.MemStats

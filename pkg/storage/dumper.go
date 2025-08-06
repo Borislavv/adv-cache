@@ -33,19 +33,19 @@ type Dumper interface {
 }
 
 type Dump struct {
-	cfg     *config.Cache
+	cfg     config.Config
 	storage Storage
-	backend upstream.Gateway
+	backend upstream.Upstream
 }
 
-func NewDumper(cfg *config.Cache, storage Storage, backend upstream.Gateway) *Dump {
+func NewDumper(cfg config.Config, storage Storage, backend upstream.Upstream) *Dump {
 	return &Dump{cfg: cfg, storage: storage, backend: backend}
 }
 
 func (d *Dump) Dump(ctx context.Context) error {
 	start := time.Now()
-	cfg := d.cfg.Cache.Persistence.Dump
-	if !d.cfg.Cache.Enabled || !cfg.IsEnabled {
+	cfg := d.cfg.Data().Dump
+	if !d.cfg.IsEnabled() || !cfg.IsEnabled {
 		return errDumpNotEnabled
 	}
 	if err := os.MkdirAll(cfg.Dir, 0o755); err != nil {
@@ -132,7 +132,7 @@ func (d *Dump) Dump(ctx context.Context) error {
 }
 
 func (d *Dump) Load(ctx context.Context) error {
-	cfg := d.cfg.Cache.Persistence.Dump
+	cfg := d.cfg.Data().Dump
 	dir := getLatestVersionDir(cfg.Dir)
 	if dir == "" {
 		return fmt.Errorf("no versioned dump dirs found in %s", cfg.Dir)
@@ -141,13 +141,13 @@ func (d *Dump) Load(ctx context.Context) error {
 }
 
 func (d *Dump) LoadVersion(ctx context.Context, v string) error {
-	dir := filepath.Join(d.cfg.Cache.Persistence.Dump.Dir, v)
+	dir := filepath.Join(d.cfg.Data().Dump.Dir, v)
 	return d.load(ctx, dir)
 }
 
 func (d *Dump) load(ctx context.Context, dir string) error {
 	start := time.Now()
-	cfg := d.cfg.Cache.Persistence.Dump
+	cfg := d.cfg.Data().Dump
 
 	pattern := filepath.Join(dir, fmt.Sprintf("%s-shard-*.dump*", cfg.Name))
 	files, _ := filepath.Glob(pattern)

@@ -5,6 +5,7 @@ import (
 	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 )
 
@@ -13,6 +14,53 @@ const (
 	Dev  = "dev"
 	Test = "test"
 )
+
+type Config interface {
+	IsProd() bool
+	SetAsProd()
+
+	IsDev() bool
+	SetAsDev()
+
+	IsTest() bool
+	SetAsTest()
+
+	IsEnabled() bool
+	SetEnabled(v bool)
+
+	Runtime() *Runtime
+	SetRuntime(v *Runtime)
+
+	Upstream() *Upstream
+	SetUpstream(v *Upstream)
+
+	Data() *Data
+	SetData(v *Data)
+
+	Refresh() *Refresh
+	SetRefresh(v *Refresh)
+
+	Eviction() *Eviction
+	SetEviction(v *Eviction)
+
+	Storage() *Storage
+	SetStorage(v *Storage)
+
+	Logs() *Logs
+	SetLogs(v *Logs)
+
+	K8S() *K8S
+	SetK8S(v *K8S)
+
+	Metrics() *Metrics
+	SetMetrics(v *Metrics)
+
+	ForceGC() *ForceGC
+	SetForceGC(v *ForceGC)
+
+	Rule(path string) (*atomic.Pointer[Rule], bool)
+	SetRule(path string, v *Rule) bool
+}
 
 type TraefikIntermediateConfig struct {
 	ConfigPath string `yaml:"configPath" mapstructure:"configPath"`
@@ -39,21 +87,24 @@ type Env struct {
 }
 
 type CacheBox struct {
-	Env         string           `yaml:"env"`
-	Enabled     bool             `yaml:"enabled"`
-	Runtime     *Runtime         `yaml:"runtime"`
-	Proxy       *Proxy           `yaml:"proxy"`
-	Persistence *Persistence     `yaml:"persistence"`
-	Refresh     *Refresh         `yaml:"refresh"`
-	Eviction    *Eviction        `yaml:"eviction"`
-	Storage     *Storage         `yaml:"storage"`
-	Logs        Logs             `yaml:"logs"`
-	K8S         K8S              `yaml:"k8s"`
-	Metrics     Metrics          `yaml:"metrics"`
-	ForceGC     ForceGC          `yaml:"forceGC"`
-	LifeTime    Lifetime         `yaml:"lifetime"`
-	Preallocate Preallocation    `yaml:"preallocate"`
-	Rules       map[string]*Rule `yaml:"rules"`
+	Env      string           `yaml:"env"`
+	Enabled  bool             `yaml:"enabled"`
+	Logs     *Logs            `yaml:"logs"`
+	Runtime  *Runtime         `yaml:"runtime"`
+	Api      *Api             `yaml:"api"`
+	Upstream *Upstream        `yaml:"upstream"`
+	Data     *Data            `yaml:"data"`
+	Storage  *Storage         `yaml:"storage"`
+	Eviction *Eviction        `yaml:"eviction"`
+	Refresh  *Refresh         `yaml:"refresh"`
+	ForceGC  *ForceGC         `yaml:"forceGC"`
+	Metrics  *Metrics         `yaml:"metrics"`
+	K8S      *K8S             `yaml:"k8s"`
+	Rules    map[string]*Rule `yaml:"rules"`
+}
+
+type Api struct {
+	Where string `yaml:"where"`
 }
 
 type Runtime struct {
@@ -87,19 +138,23 @@ type Logs struct {
 	Stats bool   `yaml:"stats"` // Should the statistic like num evictions, refreshes, rps, memory usage and so on be written in /std/out?
 }
 
-type Lifetime struct {
-	MaxReqDuration                  time.Duration `yaml:"max_req_dur"`               // If a request lifetime is longer than 100ms then request will be canceled by context.
-	EscapeMaxReqDurationHeader      string        `yaml:"escape_max_req_dur_header"` // If the header exists the timeout above will be skipped.
-	EscapeMaxReqDurationHeaderBytes []byte        // The same value but converted into slice bytes.
+type Upstream struct {
+	Cluster *Cluster `yaml:"cluster"`
 }
 
-type Proxy struct {
-	Name    string        `yaml:"name"`
-	FromUrl []byte        // Reverse Proxy url (can be found in Caddyfile). URL to underlying backend.
-	From    string        `yaml:"from"`
-	To      string        `yaml:"to"`
-	Rate    int           `yaml:"rate"`    // Rate limiting reqs to backend per second.
-	Timeout time.Duration `yaml:"timeout"` // Timeout for requests to backend.
+type Cluster struct {
+	Backends []*Backend `yaml:"backends"`
+}
+
+type Backend struct {
+	Name                     string        `yaml:"name"`
+	Url                      string        `yaml:"url"`
+	UrlBytes                 []byte        // virtual field, Url converted to []byte
+	Rate                     int           `yaml:"rate"`                   // Rate limiting reqs to backend per second.
+	Timeout                  time.Duration `yaml:"timeout"`                // Timeout for requests to backend.
+	MaxTimeout               time.Duration `yaml:"max_timeout"`            // MaxTimeout for requests which are escape Timeout through UseMaxTimeoutHeaderBytes.
+	UseMaxTimeoutHeader      string        `yaml:"use_max_timeout_header"` // If the header exists the timeout above will be skipped.
+	UseMaxTimeoutHeaderBytes []byte        // The same value but converted into slice bytes.
 }
 
 type Dump struct {
@@ -111,14 +166,9 @@ type Dump struct {
 	Crc32Control bool   `yaml:"crc32_control_sum"`
 }
 
-type Persistence struct {
+type Data struct {
 	Dump *Dump `yaml:"dump"`
 	Mock *Mock `yaml:"mock"`
-}
-
-type Preallocation struct {
-	Shards   int `yaml:"num_shards"`
-	PerShard int `yaml:"per_shard"`
 }
 
 type Eviction struct {
@@ -127,8 +177,7 @@ type Eviction struct {
 }
 
 type Storage struct {
-	Type string `yaml:"type"` // "malloc"
-	Size uint   `yaml:"size"` // 21474836480=2gb(bytes)
+	Size uint `yaml:"size"`
 }
 
 type Refresh struct {
@@ -161,13 +210,7 @@ type RuleRefresh struct {
 	Coefficient float64 `yaml:"coefficient"` // Starts attempts to renew data after TTL*coefficient=50% (12h if whole TTL is 24h)
 }
 
-type Gzip struct {
-	Enabled   bool `yaml:"enabled"`
-	Threshold int  `yaml:"threshold"`
-}
-
 type Rule struct {
-	Gzip       Gzip         `yaml:"gzip"`
 	CacheKey   RuleKey      `yaml:"cache_key"`
 	CacheValue RuleValue    `yaml:"cache_value"`
 	Refresh    *RuleRefresh `yaml:"refresh"`
@@ -234,9 +277,10 @@ func LoadConfig(path string) (*Cache, error) {
 		rule.CacheValue.HeadersMap = valueHeadersMap
 	}
 
-	cfg.Cache.Proxy.FromUrl = []byte(cfg.Cache.Proxy.From)
-
-	cfg.Cache.LifeTime.EscapeMaxReqDurationHeaderBytes = []byte(cfg.Cache.LifeTime.EscapeMaxReqDurationHeader)
+	for i, _ := range cfg.Cache.Upstream.Cluster.Backends {
+		cfg.Cache.Upstream.Cluster.Backends[i].UrlBytes = []byte(cfg.Cache.Upstream.Cluster.Backends[i].Url)
+		cfg.Cache.Upstream.Cluster.Backends[i].UseMaxTimeoutHeaderBytes = []byte(cfg.Cache.Upstream.Cluster.Backends[i].UseMaxTimeoutHeader)
+	}
 
 	return cfg, nil
 }

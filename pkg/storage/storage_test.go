@@ -29,11 +29,11 @@ func init() {
 	cfg = &config.Cache{
 		Cache: &config.CacheBox{
 			Enabled: true,
-			LifeTime: config.Lifetime{
-				MaxReqDuration:             time.Millisecond * 100,
-				EscapeMaxReqDurationHeader: "X-Target-Bot",
+			LifeTime: config.BOTs{
+				Timeout:                    time.Millisecond * 100,
+				EscapeRequestTimeoutHeader: "X-Target-Bot",
 			},
-			Proxy: &config.Proxy{
+			Upstream: &config.Upstream{
 				FromUrl: []byte("https://google.com"),
 				Rate:    1000,
 				Timeout: time.Second * 5,

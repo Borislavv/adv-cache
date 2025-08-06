@@ -84,12 +84,12 @@ func init() {
 // setMaxProcs automatically sets the optimal GOMAXPROCS value (CPU parallelism)
 // based on the available CPUs and cgroup/docker CPU quotas (uses automaxprocs).
 func setMaxProcs(cfg *config.Cache) {
-	if cfg.Cache.Runtime.Gomaxprocs == 0 {
+	if cfg.Runtime.Gomaxprocs == 0 {
 		if _, err := maxprocs.Set(); err != nil {
 			log.Err(err).Msg("[main] setting up GOMAXPROCS value failed")
 		}
 	} else {
-		runtime.GOMAXPROCS(cfg.Cache.Runtime.Gomaxprocs)
+		runtime.GOMAXPROCS(cfg.Runtime.Gomaxprocs)
 	}
 	log.Info().Msgf("[main] GOMAXPROCS=%d was set up", runtime.GOMAXPROCS(0))
 }
@@ -111,34 +111,34 @@ func loadCfg() (*config.Cache, error) {
 	}
 
 	if fromDefined {
-		cfg.Cache.Proxy.From = *from
+		cfg.Upstream.From = *from
 	}
 	if toDefined {
-		cfg.Cache.Proxy.To = *to
+		cfg.Upstream.To = *to
 	}
 	if mocksDefined {
-		cfg.Cache.Persistence.Mock.Enabled = *mocks
+		cfg.Persistence.Mock.Enabled = *mocks
 	}
 	if mockslenDefined {
-		cfg.Cache.Persistence.Mock.Length = *mocksLen
+		cfg.Persistence.Mock.Length = *mocksLen
 	}
 	if dumpDefined {
-		cfg.Cache.Persistence.Dump.IsEnabled = *dump
+		cfg.Persistence.Dump.IsEnabled = *dump
 	}
 	if refreshDefined {
-		cfg.Cache.Refresh.Enabled = *dump
+		cfg.Refresh.Enabled = *dump
 	}
 	if evictionDefined {
-		cfg.Cache.Eviction.Enabled = *eviction
+		cfg.Eviction.Enabled = *eviction
 	}
 	if upstreamRateDefined {
-		cfg.Cache.Proxy.Rate = *upstreamRate
+		cfg.Upstream.Rate = *upstreamRate
 	}
 	if memoryLimitDefined {
-		cfg.Cache.Storage.Size = uint(*memoryLimit)
+		cfg.Storage.Size = uint(*memoryLimit)
 	}
 	if gomaxprocsDefined {
-		cfg.Cache.Runtime.Gomaxprocs = *gomaxprocs
+		cfg.Runtime.Gomaxprocs = *gomaxprocs
 	}
 
 	return cfg, nil
@@ -165,7 +165,7 @@ func main() {
 	gracefulShutdown.SetGracefulTimeout(time.Minute * 5)
 
 	// Initialize liveness probe for Kubernetes/Cloud health checks.
-	probe := liveness.NewProbe(cfg.Cache.K8S.Probe.Timeout)
+	probe := liveness.NewProbe(cfg.K8S.Probe.Timeout)
 
 	// Initialize and start the cache application.
 	app, err := cache.NewApp(ctx, cfg, probe)

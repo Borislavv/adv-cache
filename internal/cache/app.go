@@ -50,18 +50,30 @@ type Cache struct {
 	probe   liveness.Prober
 	dumper  storage.Dumper
 	server  server.Http
-	backend upstream.Gateway
+	backend upstream.Upstream
 	db      storage.Storage
 }
 
 // NewApp builds a new Cache app.
-func NewApp(ctx context.Context, cfg *config.Cache, probe liveness.Prober) (*Cache, error) {
+func NewApp(ctx context.Context, baseCfg *config.Cache, probe liveness.Prober) (cache *Cache, err error) {
 	ctx, cancel := context.WithCancel(ctx)
+	defer func() {
+		if err != nil {
+			cancel()
+		}
+	}()
 
+	var cfg config.Config
+	cfg = config.MakeConfigAtomic(baseCfg)
+
+	var upstreamCluster upstream.Upstream
+	upstreamCluster, err = upstream.NewBackendsCluster(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	db := lru.NewStorage(ctx, cfg, upstreamCluster)
+	dumper := storage.NewDumper(cfg, db, upstreamCluster)
 	meter := metrics.New()
-	backend := upstream.NewBackend(ctx, cfg)
-	db := lru.NewStorage(ctx, cfg, backend)
-	dumper := storage.NewDumper(cfg, db, backend)
 
 	cacheObj := &Cache{
 		ctx:     ctx,
@@ -112,7 +124,7 @@ func (c *Cache) stop() {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
-	if c.cfg.Cache.Enabled && c.cfg.Cache.Persistence.Dump.IsEnabled {
+	if c.cfg.Enabled && c.cfg.Persistence.Dump.IsEnabled {
 		if err := c.dumper.Dump(ctx); err != nil {
 			log.Err(err).Msg("[dump] failed to store cache dump")
 		}
@@ -133,19 +145,19 @@ func (c *Cache) LoadData(ctx context.Context, interactive bool) error {
 		savePrompt := promptui.Prompt{Label: "Save cache state to new dump version on termination?", IsConfirm: true}
 		// if user confirms, comment: yes -> new dump will be stored
 		if _, spErr := savePrompt.Run(); spErr == nil {
-			c.cfg.Cache.Persistence.Dump.IsEnabled = true
+			c.cfg.Persistence.Dump.IsEnabled = true
 		}
 	} else {
-		if c.cfg.Cache.Enabled {
-			if c.cfg.Cache.Persistence.Dump.IsEnabled {
+		if c.cfg.Enabled {
+			if c.cfg.Persistence.Dump.IsEnabled {
 				if err := c.dumper.Load(ctx); err != nil {
 					log.Warn().Err(err).Msg("[dump] failed to load dump")
 				}
 			} else {
 				log.Info().Msg("[app] dump loading is disabled")
 			}
-			if c.cfg.Cache.Persistence.Mock.Enabled {
-				storage.LoadMocks(ctx, c.cfg, c.backend, c.db, c.cfg.Cache.Persistence.Mock.Length)
+			if c.cfg.Persistence.Mock.Enabled {
+				storage.LoadMocks(ctx, c.cfg, c.backend, c.db, c.cfg.Persistence.Mock.Length)
 			} else {
 				log.Info().Msg("[app] mock loading is disabled")
 			}
@@ -160,9 +172,9 @@ var useYamlCfgErr = errors.New("user choose a yaml config file instead")
 
 // loadDataInteractive asks user to select dump by date desc, mocks, yaml config, edit or exit.
 func (c *Cache) loadDataInteractive(ctx context.Context) error {
-	entries, err := os.ReadDir(c.cfg.Cache.Persistence.Dump.Dir)
+	entries, err := os.ReadDir(c.cfg.Persistence.Dump.Dir)
 	if err != nil {
-		log.Fatal().Err(err).Msgf("[dump] failed to read dumps dir %q: %v", c.cfg.Cache.Persistence.Dump.Dir, err)
+		log.Fatal().Err(err).Msgf("[dump] failed to read dumps dir %q: %v", c.cfg.Persistence.Dump.Dir, err)
 		return err
 	}
 
@@ -171,7 +183,7 @@ func (c *Cache) loadDataInteractive(ctx context.Context) error {
 		if !e.IsDir() {
 			continue
 		}
-		full := filepath.Join(c.cfg.Cache.Persistence.Dump.Dir, e.Name())
+		full := filepath.Join(c.cfg.Persistence.Dump.Dir, e.Name())
 		info, err := os.Stat(full)
 		if err != nil {
 			log.Err(err).Msgf("[dump] warning: cannot stat %q: %v", full, err)
@@ -185,7 +197,7 @@ func (c *Cache) loadDataInteractive(ctx context.Context) error {
 		versions = append(versions, Version{e.Name(), sz, info.ModTime()})
 	}
 	if len(versions) == 0 {
-		log.Err(err).Msgf("[dump] no versions in '%s'", c.cfg.Cache.Persistence.Dump.Dir)
+		log.Err(err).Msgf("[dump] no versions in '%s'", c.cfg.Persistence.Dump.Dir)
 	} else {
 		// sort by ModTime descending
 		sort.Slice(versions, func(i, j int) bool { return versions[i].ModTime.After(versions[j].ModTime) })

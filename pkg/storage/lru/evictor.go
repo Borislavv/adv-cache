@@ -11,7 +11,10 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/utils"
 )
 
-const fatShardsPercent = 0.17
+const (
+	fatShardsPercent = 0.17
+	maxShards        = 2048
+)
 
 var evictionStatCh = make(chan EvictionStat, runtime.GOMAXPROCS(0)*4)
 
@@ -27,28 +30,28 @@ type Evictor interface {
 
 type Evict struct {
 	ctx                 context.Context
-	cfg                 *config.Cache
+	cfg                 config.Config
 	db                  Storage
 	balancer            Balancer
 	memoryThreshold     int64
 	fatShardsPercentage int
 }
 
-func NewEvictor(ctx context.Context, cfg *config.Cache, db Storage, balancer Balancer) *Evict {
+func NewEvictor(ctx context.Context, cfg config.Config, db Storage, balancer Balancer) *Evict {
 	return &Evict{
 		ctx:                 ctx,
 		cfg:                 cfg,
 		db:                  db,
 		balancer:            balancer,
-		fatShardsPercentage: int(float64(cfg.Cache.Preallocate.Shards) * fatShardsPercent),
-		memoryThreshold:     int64(float64(cfg.Cache.Storage.Size) * cfg.Cache.Eviction.Threshold),
+		fatShardsPercentage: int(float64(maxShards) * fatShardsPercent),
+		memoryThreshold:     int64(float64(cfg.Storage().Size) * cfg.Eviction().Threshold),
 	}
 }
 
 // Run is the main background eviction loop for one worker.
 // Each worker tries to bring Weight usage under the threshold by evicting from most loaded shards.
 func (e *Evict) Run() *Evict {
-	if e.cfg.Cache.Enabled && e.cfg.Cache.Eviction.Enabled {
+	if e.cfg.IsEnabled() && e.cfg.Eviction().Enabled {
 		e.runLogger()
 		e.runEvictor()
 	}

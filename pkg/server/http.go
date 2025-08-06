@@ -44,8 +44,8 @@ func (s *HTTP) ListenAndServe() {
 func (s *HTTP) serve(wg *sync.WaitGroup) {
 	defer wg.Done()
 
-	name := s.config.Cache.Proxy.Name
-	port := s.config.Cache.Proxy.To
+	name := s.config.Upstream.Name
+	port := s.config.Upstream.To
 
 	log.Info().Msgf("[server] %v was started (port: %v)", name, port)
 	defer log.Info().Msgf("[server] %v was stopped (port: %v)", name, port)
@@ -65,7 +65,7 @@ func (s *HTTP) shutdown(wg *sync.WaitGroup) {
 
 	if err := s.server.ShutdownWithContext(ctx); err != nil {
 		if !errors.Is(err, context.Canceled) {
-			log.Warn().Msgf("[server] %v shutdown failed: %v", s.config.Cache.Proxy.Name, err.Error())
+			log.Warn().Msgf("[server] %v shutdown failed: %v", s.config.Upstream.Name, err.Error())
 		}
 		return
 	}

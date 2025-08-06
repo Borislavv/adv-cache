@@ -11,9 +11,12 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 )
+
+var healthCheckPath = []byte("/k8s/probe")
 
 var transport = &http.Transport{
 	// Max idle (keep-alive) connections across ALL hosts
@@ -46,38 +49,24 @@ var transport = &http.Transport{
 	ExpectContinueTimeout: 1 * time.Second,
 }
 
-// Gateway defines the interface for a repository that provides SEO page data.
-type Gateway interface {
-	Fetch(
-		rule *config.Rule, path []byte, query []byte, queryHeaders *[][2][]byte,
-	) (
-		status int, headers *[][2][]byte, body []byte, releaseFn func(), err error,
-	)
-
-	RevalidatorMaker() func(
-		rule *config.Rule, path []byte, query []byte, queryHeaders *[][2][]byte,
-	) (
-		status int, headers *[][2][]byte, body []byte, releaseFn func(), err error,
-	)
-}
-
-// TODO implements support of cluster backends.
-
-// Backend implements the Backender interface.
-// It fetches and constructs SEO page data responses from an external backend.
 type Backend struct {
 	ctx         context.Context
-	cfg         *config.Cache // Global configuration (backend URL, etc)
+	cfg         *atomic.Pointer[config.Backend]
 	transport   *http.Transport
 	clientsPool *sync.Pool
 	rateLimiter *rate.Limiter
 }
 
 // NewBackend creates a new instance of Backend.
-func NewBackend(ctx context.Context, cfg *config.Cache) *Backend {
-	return &Backend{
+func NewBackend(ctx context.Context, cfg *config.Backend) *Backend {
+	backendRate := cfg.Rate
+	backendRateBurst := backendRate / 30
+	if backendRateBurst <= 1 {
+		backendRateBurst = 1
+	}
+
+	backend := &Backend{
 		ctx: ctx,
-		cfg: cfg,
 		clientsPool: &sync.Pool{
 			New: func() interface{} {
 				return &http.Client{
@@ -87,10 +76,14 @@ func NewBackend(ctx context.Context, cfg *config.Cache) *Backend {
 			},
 		},
 		rateLimiter: rate.NewLimiter(
-			rate.Limit(cfg.Cache.Proxy.Rate),
-			cfg.Cache.Proxy.Rate/10,
+			rate.Limit(backendRate),
+			backendRateBurst,
 		),
 	}
+
+	backend.cfg.Store(cfg)
+
+	return backend
 }
 
 func (s *Backend) Fetch(
@@ -105,8 +98,8 @@ func (s *Backend) Fetch(
 	return s.requestExternalBackend(rule, path, query, queryHeaders)
 }
 
-// RevalidatorMaker builds a new revalidator for model.Response by catching a request into closure for be able to call backend later.
-func (s *Backend) RevalidatorMaker() func(
+// MakeRevalidator builds a new revalidator for model.Response by catching a request into closure for be able to call backend later.
+func (s *Backend) MakeRevalidator() func(
 	rule *config.Rule, path []byte, query []byte, queryHeaders *[][2][]byte,
 ) (
 	status int, headers *[][2][]byte, body []byte, releaseFn func(), err error,
@@ -140,10 +133,12 @@ func (s *Backend) requestExternalBackend(
 	urlBuf := urlBufPool.Get().(*bytes.Buffer)
 	defer func() { urlBuf.Reset(); urlBufPool.Put(urlBuf) }()
 
-	req.Header.SetMethod(fasthttp.MethodGet)
-	urlBuf.Grow(len(s.cfg.Cache.Proxy.FromUrl) + len(path) + len(query) + 1)
+	cfg := s.cfg.Load()
 
-	if _, err = urlBuf.Write(s.cfg.Cache.Proxy.FromUrl); err != nil {
+	req.Header.SetMethod(fasthttp.MethodGet)
+	urlBuf.Grow(len(cfg.UrlBytes) + len(path) + len(query) + 1)
+
+	if _, err = urlBuf.Write(cfg.UrlBytes); err != nil {
 		return 0, nil, nil, emptyReleaseFn, err
 	}
 	if _, err = urlBuf.Write(path); err != nil {
@@ -157,19 +152,19 @@ func (s *Backend) requestExternalBackend(
 	}
 	req.SetRequestURIBytes(urlBuf.Bytes())
 
-	var isBot bool
+	var isMaxTimeoutUsageAllowed bool
 	for _, kv := range *queryHeaders {
 		req.Header.SetBytesKV(kv[0], kv[1])
-		if bytes.Equal(kv[0], s.cfg.Cache.LifeTime.EscapeMaxReqDurationHeaderBytes) {
-			isBot = true
+		if bytes.Equal(kv[0], cfg.UseMaxTimeoutHeaderBytes) {
+			isMaxTimeoutUsageAllowed = true
 		}
 	}
 
 	var timeout time.Duration
-	if isBot {
-		timeout = s.cfg.Cache.Proxy.Timeout
+	if isMaxTimeoutUsageAllowed {
+		timeout = cfg.MaxTimeout
 	} else {
-		timeout = s.cfg.Cache.LifeTime.MaxReqDuration
+		timeout = cfg.Timeout
 	}
 
 	resp := fasthttp.AcquireResponse()
@@ -212,4 +207,35 @@ func (s *Backend) requestExternalBackend(
 	}
 
 	return resp.StatusCode(), headers, buf.Bytes(), releaseFn, nil
+}
+
+func (s *Backend) IsHealthy() bool {
+	cfg := s.cfg.Load()
+
+	req := fasthttp.AcquireRequest()
+	defer fasthttp.ReleaseRequest(req)
+
+	urlBuf := urlBufPool.Get().(*bytes.Buffer)
+	defer func() { urlBuf.Reset(); urlBufPool.Put(urlBuf) }()
+
+	req.Header.SetMethod(fasthttp.MethodGet)
+	urlBuf.Grow(len(cfg.UrlBytes) + len(healthCheckPath))
+
+	if _, err := urlBuf.Write(cfg.UrlBytes); err != nil {
+		return false
+	}
+	if _, err := urlBuf.Write(healthCheckPath); err != nil {
+		return false
+	}
+	req.SetRequestURIBytes(urlBuf.Bytes())
+
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+
+	if err := pools.BackendHttpClientPool.DoTimeout(req, resp, cfg.Timeout); err != nil {
+		return false
+	}
+	statusCode := resp.StatusCode()
+
+	return statusCode != fasthttp.StatusOK
 }

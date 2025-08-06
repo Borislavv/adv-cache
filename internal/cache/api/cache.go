@@ -54,7 +54,7 @@ type CacheController struct {
 	ctx      context.Context
 	cache    storage.Storage
 	metrics  metrics.Meter
-	backend  upstream.Gateway
+	backend  upstream.Upstream
 	errorsCh chan error
 }
 
@@ -65,7 +65,7 @@ func NewCacheController(
 	cfg *config.Cache,
 	cache storage.Storage,
 	metrics metrics.Meter,
-	backend upstream.Gateway,
+	backend upstream.Upstream,
 ) *CacheController {
 	c := &CacheController{
 		cfg:      cfg,
@@ -75,7 +75,7 @@ func NewCacheController(
 		backend:  backend,
 		errorsCh: make(chan error, 8196),
 	}
-	enabled.Store(cfg.Cache.Enabled)
+	enabled.Store(cfg.Enabled)
 	c.runLoggerMetricsWriter()
 	c.runErrorLogger()
 	return c
@@ -113,7 +113,7 @@ func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) {
 		payloadLastModified int64
 	)
 
-	foundEntry, found := c.cache.Get(newEntry)
+	foundEntry, found := c.Get(newEntry)
 	if !found {
 		misses.Add(1)
 
@@ -139,9 +139,9 @@ func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) {
 			payloadLastModified = time.Now().UnixNano()
 		} else {
 			newEntry.SetPayload(path, queryString, queryHeaders, payloadHeaders, payloadBody, payloadStatus)
-			newEntry.SetRevalidator(c.backend.RevalidatorMaker())
+			newEntry.SetRevalidator(c.backend.MakeRevalidator())
 
-			c.cache.Set(newEntry)
+			c.Set(newEntry)
 
 			payloadLastModified = newEntry.UpdateAt()
 		}
@@ -336,7 +336,7 @@ func (c *CacheController) runLoggerMetricsWriter() {
 				if totalNumLoc > 0 {
 					avgDuration = float64(totalDurationNumLoc) / float64(totalNumLoc)
 				}
-				memUsage, length := c.cache.Stat()
+				memUsage, length := c.Stat()
 				c.metrics.SetCacheLength(uint64(length))
 				c.metrics.SetCacheMemory(uint64(memUsage))
 				c.metrics.SetHits(uint64(hitsNumLoc))

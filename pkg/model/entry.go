@@ -36,7 +36,7 @@ type Entry struct {
 	key          uint64   // 64  bit xxh
 	shard        uint64   // 64  bit xxh % NumOfShards
 	fingerprint  [16]byte // 128 bit xxh
-	rule         *config.Rule
+	rule         *atomic.Pointer[config.Rule]
 	payload      *atomic.Pointer[[]byte]
 	lruListElem  *atomic.Pointer[list.Element[*Entry]]
 	revalidator  Revalidator
@@ -54,7 +54,7 @@ func (e *Entry) Init() *Entry {
 // NewEntryNetHttp accepts path, query and request headers as bytes slices.
 func NewEntryNetHttp(rule *config.Rule, r *http.Request) *Entry {
 	entry := new(Entry).Init()
-	entry.rule = rule
+	entry.rule.Store(rule)
 
 	filteredQueries, filteredQueriesReleaser := entry.GetFilteredAndSortedKeyQueriesNetHttp(r)
 	defer filteredQueriesReleaser(filteredQueries)
@@ -68,14 +68,14 @@ func NewEntryNetHttp(rule *config.Rule, r *http.Request) *Entry {
 }
 
 // NewEntryFastHttp accepts path, query and request headers as bytes slices.
-func NewEntryFastHttp(cfg *config.Cache, r *fasthttp.RequestCtx) (*Entry, error) {
+func NewEntryFastHttp(cfg config.Config, r *fasthttp.RequestCtx) (*Entry, error) {
 	rule := MatchRule(cfg, r.Path())
 	if rule == nil {
 		return nil, ruleNotFoundError
 	}
 
 	entry := new(Entry).Init()
-	entry.rule = rule
+	entry.rule.Store(rule)
 
 	filteredQueries, filteredQueriesReleaser := entry.getFilteredAndSortedKeyQueriesFastHttp(r)
 	defer filteredQueriesReleaser(filteredQueries)
@@ -92,14 +92,14 @@ func IsRouteWasNotFound(err error) bool {
 	return errors.Is(err, ruleNotFoundError)
 }
 
-func NewEntryManual(cfg *config.Cache, path, query []byte, headers *[][2][]byte, revalidator Revalidator) (*Entry, error) {
+func NewEntryManual(cfg config.Config, path, query []byte, headers *[][2][]byte, revalidator Revalidator) (*Entry, error) {
 	rule := MatchRule(cfg, path)
 	if rule == nil {
 		return nil, ruleNotFoundError
 	}
 
 	entry := new(Entry).Init()
-	entry.rule = rule
+	entry.rule.Store(rule)
 	entry.revalidator = revalidator
 
 	filteredQueries, filteredQueriesReleaser := entry.parseFilterAndSortQuery(query) // here, we are referring to the same query buffer which used in payload which have been mentioned before
@@ -126,7 +126,7 @@ func NewEntryFromField(
 	entry.key = key
 	entry.shard = shard
 	entry.fingerprint = fingerprint
-	entry.rule = rule
+	entry.rule.Store(rule)
 	entry.payload.Store(&payload)
 	entry.revalidator = revalidator
 	entry.isCompressed = isCompressed
@@ -457,7 +457,7 @@ func (e *Entry) Payload() (
 }
 
 func (e *Entry) Rule() *config.Rule {
-	return e.rule
+	return e.rule.Load()
 }
 
 func (e *Entry) PayloadBytes() []byte {
@@ -564,7 +564,7 @@ func (e *Entry) parseFilterAndSortQuery(b []byte) (queries *[][2][]byte, release
 	*out = (*out)[:n]
 
 	filtered := (*out)[:0]
-	allowed := e.rule.CacheKey.QueryBytes
+	allowed := e.rule.Load().CacheKey.QueryBytes
 
 	for i := 0; i < n; i++ {
 		kv := (*out)[i]
@@ -605,7 +605,7 @@ func (e *Entry) getFilteredAndSortedKeyQueriesFastHttp(r *fasthttp.RequestCtx) (
 	out := kvPool.Get().(*[][2][]byte)
 	*out = (*out)[:0]
 
-	allowedKeys := e.rule.CacheKey.QueryBytes
+	allowedKeys := e.rule.Load().CacheKey.QueryBytes
 
 	r.QueryArgs().VisitAll(func(key, value []byte) {
 		for _, ak := range allowedKeys {
@@ -643,7 +643,7 @@ var headersReleaser = func(headers *[][2][]byte) {
 func (e *Entry) getFilteredAndSortedKeyHeadersFastHttp(r *fasthttp.RequestCtx) (kvPairs *[][2][]byte, releaseFn func(*[][2][]byte)) {
 	out := hKvPool.Get().(*[][2][]byte)
 	*out = (*out)[:0]
-	allowed := e.rule.CacheKey.HeadersMap
+	allowed := e.rule.Load().CacheKey.HeadersMap
 
 	n := 0
 	r.Request.Header.VisitAll(func(k, v []byte) {
@@ -678,7 +678,7 @@ func (e *Entry) GetFilteredAndSortedKeyHeadersNetHttp(r *http.Request) (kvPairs 
 	out := hKvPool.Get().(*[][2][]byte)
 	*out = (*out)[:0] // reuse
 
-	allowed := e.rule.CacheKey.HeadersMap
+	allowed := e.rule.Load().CacheKey.HeadersMap
 	n := 0
 
 	for k, vv := range r.Header {
@@ -719,7 +719,7 @@ func (e *Entry) GetFilteredAndSortedKeyHeadersNetHttp(r *http.Request) (kvPairs 
 func (e *Entry) filteredAndSortedKeyQueriesInPlace(queries *[][2][]byte) *[][2][]byte {
 	q := *queries
 	n := 0
-	allowed := e.rule.CacheKey.QueryBytes
+	allowed := e.rule.Load().CacheKey.QueryBytes
 
 	for i := 0; i < len(q); i++ {
 		key := q[i][0]
@@ -747,7 +747,7 @@ func (e *Entry) filteredAndSortedKeyQueriesInPlace(queries *[][2][]byte) *[][2][
 // filteredAndSortedKeyHeadersInPlace - filters an input slice, be careful!
 func (e *Entry) filteredAndSortedKeyHeadersInPlace(headers *[][2][]byte) *[][2][]byte {
 	h := *headers
-	allowedMap := e.rule.CacheKey.HeadersMap
+	allowedMap := e.rule.Load().CacheKey.HeadersMap
 
 	// in-place write index
 	n := 0
@@ -779,30 +779,30 @@ func (e *Entry) LruListElement() *list.Element[*Entry] {
 
 // ShouldBeRefreshed implements probabilistic refresh logic ("beta" algorithm).
 // Returns true if the entry is stale and, with a probability proportional to its staleness, should be refreshed now.
-func (e *Entry) ShouldBeRefreshed(cfg *config.Cache) bool {
+func (e *Entry) ShouldBeRefreshed(cfg config.Config) bool {
 	if e == nil {
 		return false
 	}
 
 	var (
-		ttl         = cfg.Cache.Refresh.TTL.Nanoseconds()
-		beta        = cfg.Cache.Refresh.Beta
-		coefficient = cfg.Cache.Refresh.Coefficient
+		ttl         = cfg.Refresh().TTL.Nanoseconds()
+		beta        = cfg.Refresh().Beta
+		coefficient = cfg.Refresh().Coefficient
 	)
 
-	if e.rule.Refresh != nil {
-		if !e.rule.Refresh.Enabled {
+	if e.rule.Load().Refresh != nil {
+		if !e.rule.Load().Refresh.Enabled {
 			return false
 		}
 
-		if e.rule.Refresh.TTL.Nanoseconds() > 0 {
-			ttl = e.rule.Refresh.TTL.Nanoseconds()
+		if e.rule.Load().Refresh.TTL.Nanoseconds() > 0 {
+			ttl = e.rule.Load().Refresh.TTL.Nanoseconds()
 		}
-		if e.rule.Refresh.Beta > 0 {
-			beta = e.rule.Refresh.Beta
+		if e.rule.Load().Refresh.Beta > 0 {
+			beta = e.rule.Load().Refresh.Beta
 		}
-		if e.rule.Refresh.Coefficient > 0 {
-			coefficient = e.rule.Refresh.Coefficient
+		if e.rule.Load().Refresh.Coefficient > 0 {
+			coefficient = e.rule.Load().Refresh.Coefficient
 		}
 	}
 
@@ -837,7 +837,7 @@ func (e *Entry) Revalidate() error {
 		return err
 	}
 
-	statusCode, respHeaders, body, releaser, err := e.revalidator(e.rule, path, query, headers)
+	statusCode, respHeaders, body, releaser, err := e.revalidator(e.rule.Load(), path, query, headers)
 	defer releaser()
 	if err != nil {
 		return err
@@ -904,7 +904,7 @@ func (e *Entry) ToBytes() (data []byte, releaseFn func()) {
 	return buf.Bytes(), releaseFn
 }
 
-func EntryFromBytes(data []byte, cfg *config.Cache, backend upstream.Gateway) (*Entry, error) {
+func EntryFromBytes(data []byte, cfg config.Config, backend upstream.Upstream) (*Entry, error) {
 	var offset int
 
 	// RulePath
@@ -950,13 +950,14 @@ func EntryFromBytes(data []byte, cfg *config.Cache, backend upstream.Gateway) (*
 
 	return NewEntryFromField(
 		key, shard, fp, payload, rule,
-		backend.RevalidatorMaker(), isCompressed, updatedAt,
+		backend.MakeRevalidator(), isCompressed, updatedAt,
 	), nil
 }
 
-func MatchRule(cfg *config.Cache, path []byte) *config.Rule {
-	if rule, ok := cfg.Cache.Rules[unsafe.String(unsafe.SliceData(path), len(path))]; ok {
-		return rule
+func MatchRule(cfg config.Config, path []byte) *config.Rule {
+	pathStr := unsafe.String(unsafe.SliceData(path), len(path))
+	if rule, ok := cfg.Rule(pathStr); ok {
+		return rule.Load()
 	}
 	return nil
 }

@@ -30,12 +30,12 @@ type Refresher interface {
 // Communication: provider->consumer (MPSC).
 type Refresh struct {
 	ctx     context.Context
-	cfg     *config.Cache
+	cfg     config.Config
 	storage *InMemoryStorage
 }
 
 // NewRefresher constructs a Refresh.
-func NewRefresher(ctx context.Context, cfg *config.Cache, storage *InMemoryStorage) *Refresh {
+func NewRefresher(ctx context.Context, cfg config.Config, storage *InMemoryStorage) *Refresh {
 	return &Refresh{
 		ctx:     ctx,
 		cfg:     cfg,
@@ -47,7 +47,7 @@ func NewRefresher(ctx context.Context, cfg *config.Cache, storage *InMemoryStora
 // It runs a logger (if debugging is enabled), spawns a provider for sampling shards,
 // and continuously processes shard samples for candidate responses to refreshItem.
 func (r *Refresh) Run() *Refresh {
-	if r.cfg.Cache.Enabled && r.cfg.Cache.Refresh.Enabled {
+	if r.cfg.IsEnabled() && r.cfg.Refresh().Enabled {
 		r.runLogger() // handle consumer stats and print logs
 		r.run()       // run workers (N=workersNum) which scan the storage and run async refresh tasks
 	}
@@ -55,8 +55,8 @@ func (r *Refresh) Run() *Refresh {
 }
 
 func (r *Refresh) run() {
-	scanRateCh := rate.NewLimiter(r.ctx, r.cfg.Cache.Refresh.ScanRate, r.cfg.Cache.Refresh.ScanRate/10).Chan()
-	upstreamRateCh := rate.NewLimiter(r.ctx, r.cfg.Cache.Refresh.Rate, r.cfg.Cache.Refresh.Rate/10).Chan()
+	scanRateCh := rate.NewLimiter(r.ctx, r.cfg.Refresh().ScanRate, r.cfg.Refresh().ScanRate/10).Chan()
+	upstreamRateCh := rate.NewLimiter(r.ctx, r.cfg.Refresh().Rate, r.cfg.Refresh().Rate/10).Chan()
 
 	for i := 0; i < workersNum; i++ {
 		go func() {

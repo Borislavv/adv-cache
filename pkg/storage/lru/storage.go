@@ -58,18 +58,18 @@ type Storage interface {
 // InMemoryStorage is a Weight-aware, sharded InMemoryStorage cache with background eviction and refreshItem support.
 type InMemoryStorage struct {
 	ctx             context.Context            // Main context for lifecycle control
-	cfg             *config.Cache              // CacheBox configuration
+	cfg             config.Config              // AtomicCacheBox configuration
 	shardedMap      *sharded.Map[*model.Entry] // Sharded storage for cache entries
 	tinyLFU         *lfu.TinyLFU               // Helps hold more frequency used items in cache while eviction
-	backend         upstream.Gateway           // Remote backend server.
+	upstream        upstream.Upstream          // Remote upstream server.
 	balancer        Balancer                   // Helps pick shards to evict from
 	mem             int64                      // Current Weight usage (bytes)
 	memoryThreshold int64                      // Threshold for triggering eviction (bytes)
 }
 
 // NewStorage constructs a new InMemoryStorage cache instance and launches eviction and refreshItem routines.
-func NewStorage(ctx context.Context, cfg *config.Cache, backend upstream.Gateway) *InMemoryStorage {
-	shardedMap := sharded.NewMap[*model.Entry](ctx, cfg.Cache.Preallocate.PerShard)
+func NewStorage(ctx context.Context, cfg config.Config, upstream upstream.Upstream) *InMemoryStorage {
+	shardedMap := sharded.NewMap[*model.Entry](ctx)
 	balancer := NewBalancer(ctx, shardedMap)
 
 	db := (&InMemoryStorage{
@@ -77,9 +77,9 @@ func NewStorage(ctx context.Context, cfg *config.Cache, backend upstream.Gateway
 		cfg:             cfg,
 		shardedMap:      shardedMap,
 		balancer:        balancer,
-		backend:         backend,
+		upstream:        upstream,
 		tinyLFU:         lfu.NewTinyLFU(ctx),
-		memoryThreshold: int64(float64(cfg.Cache.Storage.Size) * cfg.Cache.Eviction.Threshold),
+		memoryThreshold: int64(float64(cfg.Storage().Size) * cfg.Eviction().Threshold),
 	}).init()
 
 	return db
@@ -227,7 +227,7 @@ func (s *InMemoryStorage) runLogger() *InMemoryStorage {
 					mem        = utils.FmtMem(realMem)
 					length     = strconv.Itoa(int(s.shardedMap.Len()))
 					gc         = strconv.Itoa(int(m.NumGC))
-					limit      = utils.FmtMem(int64(s.cfg.Cache.Storage.Size))
+					limit      = utils.FmtMem(int64(s.cfg.Storage().Size))
 					goroutines = strconv.Itoa(runtime.NumGoroutine())
 					alloc      = utils.FmtMem(int64(m.Alloc))
 				)
@@ -241,7 +241,7 @@ func (s *InMemoryStorage) runLogger() *InMemoryStorage {
 						Str("memStr", mem).
 						Str("len", length).
 						Str("gc", gc).
-						Str("memLimit", strconv.Itoa(int(s.cfg.Cache.Storage.Size))).
+						Str("memLimit", strconv.Itoa(int(s.cfg.Storage().Size))).
 						Str("memLimitStr", limit).
 						Str("goroutines", goroutines).
 						Str("alloc", strconv.Itoa(int(m.Alloc))).
