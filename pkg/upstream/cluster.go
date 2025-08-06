@@ -1,42 +1,41 @@
-// Package upstream implements a light‑weight reverse‑proxy cluster aware of
-// backend health.  The implementation is intended for production use:
-//   - lock‑free traffic path (only atomics on hot path);
-//   - thread‑safe backend registration / state changes;
-//   - passive failure detection (>=500  or network error ⇒ quarantine);
-//   - optional active health‑checks with exponential back‑off;
-//   - round‑robin balancing with overflow‑safe atomic counter.
+// Package upstream provides a minimal reverse‑proxy cluster with passive and
+// optional active health checks. It is designed for production: the data path
+// is lock‑free (only atomic ops on the hot path) and all mutations are
+// performed with copy‑on‑write under coarse locks.
 //
-// NOTE: real BackendNode and config types are assumed to live in the same module.
-// Only interfaces needed here are re‑declared to avoid circular imports.
+// The implementation relies only on the limited Backend interface declared
+// below to avoid circular dependencies with actual backend code.
 package upstream
 
 import (
 	"context"
 	"errors"
-	"github.com/brianvoe/gofakeit/v6"
 	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/Borislavv/advanced-cache/pkg/config"
+	"github.com/brianvoe/gofakeit/v6"
 	"github.com/rs/zerolog/log"
+
+	"github.com/Borislavv/advanced-cache/pkg/config"
 )
 
-// ---- minimal contracts ----------------------------------------------------
+// -----------------------------------------------------------------------------
+// Backend contract (only what the cluster really needs).
+// -----------------------------------------------------------------------------
 
 type fetchFn = func(rule *config.Rule, path, query []byte, queryHeaders *[][2][]byte) (
 	status int, headers *[][2][]byte, body []byte, releaseFn func(), err error,
 )
 
-// Backend is the subset of methods used by the cluster.
-// Real implementation normally provides Name(), IsHealthy() and Fetch().
+// Backend is the subset of methods the balancer depends on. Methods must be
+// thread‑safe.
 //
-// All methods must be thread‑safe!
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
+// Imposing a very small surface keeps the cluster independent from the concrete
+// backend implementation.
 //
-//nolint:interfacebloat // keep it explicit
+//nolint:interfacebloat // explicit on purpose
 type Backend interface {
 	Name() string
 	IsHealthy() bool
@@ -45,7 +44,9 @@ type Backend interface {
 	)
 }
 
-// ---- errors ----------------------------------------------------------------
+// -----------------------------------------------------------------------------
+// Errors exposed by the package.
+// -----------------------------------------------------------------------------
 
 var (
 	ErrNoBackends = errors.New("no healthy backends in cluster")
@@ -53,7 +54,9 @@ var (
 	ErrNotFound   = errors.New("backend not found in cluster")
 )
 
-// ---- internal state --------------------------------------------------------
+// -----------------------------------------------------------------------------
+// Internal state.
+// -----------------------------------------------------------------------------
 
 type state uint8
 
@@ -67,37 +70,37 @@ const (
 type backendSlot struct {
 	be   Backend
 	st   state
-	next int // index of next healthy slot (singly‑linked list) – avoids reallocs
+	next int // index of next healthy slot – avoids reallocs when rebuilding list
 }
 
-// ---- BackendsCluster -------------------------------------------------------
-
-// BackendsCluster is a thread‑safe round‑robin balancer with passive/active HC.
-// The hot‑path (Fetch) is lock‑free: only an atomic cursor & an immutable slice
-// of *backendSlot*.  All mutating operations rebuild this slice atomically.
+// -----------------------------------------------------------------------------
+// BackendsCluster – round‑robin balancer.
+// -----------------------------------------------------------------------------
 //
-//                           +-------------------+
-//                    +----▶ |   slot0  healthy | ─┐
-//                    │      +-------------------+  │ next
-//   cursor ---RR----─┼─────▶ |   slot3  healthy | ─┤
-//                    │      +-------------------+  │
-//                    │      |   slot5  healthy | ─┘
-//                    │      +-------------------+
-//           (removed slots remain addressable via map[name])
+// * Lock‑free Fetch path (atomic cursor + immutable slice)
+// * Passive health checks (5xx or transport error ⇒ quarantine)
+// * Optional active health checker with exponential back‑off
+// * Copy‑on‑write mutations under a single RW lock
 //
-// Active health‑checker runs in separate goroutine, periodically probing "sick"
-// backends and resurrecting those that respond OK.
-// ---------------------------------------------------------------------------
+//            cursor (RR) ─────────┐
+//                                ▼
+//          +---------+   +---------+   +---------+
+// slotsPtr | slot 0 ▶ |─▶| slot 3 ▶ |─▶| slot 5 ▶|─▶ nil
+//          +---------+   +---------+   +---------+
+//
+// Removed backends remain addressable via maps; only healthy ones live in the
+// slots slice.
+// -----------------------------------------------------------------------------
 
 type BackendsCluster struct {
-	cfg config.Config // only for HC intervals; unused on hot path
+	cfg config.Config // only HC intervals; never accessed on hot path
 
-	cursor   atomic.Uint64                  // RR cursor; overflow‑safe
-	slotsPtr atomic.Pointer[[]*backendSlot] // immutable slice of healthy slots
+	cursor   atomic.Uint64                  // RR cursor (overflow‑safe)
+	slotsPtr atomic.Pointer[[]*backendSlot] // immutable slice of healthy backends
 
-	mu   sync.RWMutex            // guards maps below & HC lists rebuild
+	mu   sync.RWMutex            // guards maps below & slice rebuilds
 	all  map[string]*backendSlot // master registry by name
-	sick map[string]*backendSlot // quarantine set  (weak ref to *backendSlot)
+	sick map[string]*backendSlot // quarantine set
 	dead map[string]*backendSlot // permanently removed
 
 	hcTicker  *time.Ticker
@@ -106,7 +109,9 @@ type BackendsCluster struct {
 	hcEnabled bool
 }
 
-// NewCluster builds cluster from config and starts active HC (if possible).
+// NewCluster builds a cluster from cfg and starts active HC if at least one
+// backend supports Ping(). Returns ErrNoBackends when nothing is healthy at
+// startup.
 func NewCluster(ctx context.Context, cfg config.Config) (*BackendsCluster, error) {
 	c := &BackendsCluster{
 		cfg:       cfg,
@@ -117,20 +122,26 @@ func NewCluster(ctx context.Context, cfg config.Config) (*BackendsCluster, error
 		hcEnabled: true,
 	}
 
-	gofakeit.Seed(0)
-	reservedNames := make(map[string]struct{}, 4)
+	gofakeit.Seed(time.Now().UnixNano())
+	reserved := make(map[string]struct{}, len(cfg.Upstream().Cluster.Backends))
 
-	// populate
+	// bootstrap registry
 	var healthySlots []*backendSlot
 	for _, bcfg := range cfg.Upstream().Cluster.Backends {
-		threshold := 1_000_000
-		name := gofakeit.FirstName()
-		for i := 0; i < threshold; i++ {
-			if _, exists := reservedNames[name]; exists {
-				continue
+		// Generate a unique in‑process name when none provided.
+		name := bcfg.Name
+		if name == "" {
+			// Retry a few times – collisions are extremely unlikely in practice.
+			for i := 0; i < 3; i++ {
+				candidate := gofakeit.FirstName()
+				if _, dup := reserved[candidate]; !dup {
+					name = candidate
+					reserved[name] = struct{}{}
+					break
+				}
 			}
-			reservedNames[name] = struct{}{}
 		}
+
 		be := NewBackend(ctx, bcfg, name)
 		slot := &backendSlot{be: be}
 		if be.IsHealthy() {
@@ -148,16 +159,18 @@ func NewCluster(ctx context.Context, cfg config.Config) (*BackendsCluster, error
 
 	c.setHealthySlice(healthySlots)
 
-	// start HC if at least one backend supports Ping()
 	if c.hcEnabled {
 		c.startHealthChecker()
 	}
 	return c, nil
 }
 
-// ---------------- traffic path ---------------------------------------------
+// -----------------------------------------------------------------------------
+// Traffic path.
+// -----------------------------------------------------------------------------
 
-// Fetch delegates call to next healthy backend.
+// Fetch proxies the request to the next healthy backend. It is completely
+// lock‑free: a single atomic add + array index.
 func (c *BackendsCluster) Fetch(rule *config.Rule, path, query []byte, qh *[][2][]byte) (
 	int, *[][2][]byte, []byte, func(), error,
 ) {
@@ -171,21 +184,23 @@ func (c *BackendsCluster) Fetch(rule *config.Rule, path, query []byte, qh *[][2]
 
 	st, hdr, body, rel, err := slot.be.Fetch(rule, path, query, qh)
 
-	// passive HC: mark sick if 5xx or transport error
+	// passive HC – quarantine on 5xx or transport error
 	if err != nil || st >= http.StatusInternalServerError {
 		go c.markSickAsync(slot.be.Name())
 	}
 	return st, hdr, body, rel, err
 }
 
-// ---------------- mutation API ---------------------------------------------
+// -----------------------------------------------------------------------------
+// Mutation API.
+// -----------------------------------------------------------------------------
 
-func (c *BackendsCluster) AddNew(be *Backend) error {
-	b := *be // just to ensure ptr cannot be nil
-	if &b == nil {
+// AddNew registers a backend at runtime.
+func (c *BackendsCluster) AddNew(be Backend) error {
+	if be == nil {
 		return errors.New("nil backend")
 	}
-	name := (*be).Name()
+	name := be.Name()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -194,8 +209,8 @@ func (c *BackendsCluster) AddNew(be *Backend) error {
 		return ErrDuplicate
 	}
 
-	slot := &backendSlot{be: *be}
-	if (*be).IsHealthy() {
+	slot := &backendSlot{be: be}
+	if be.IsHealthy() {
 		slot.st = healthy
 		c.appendHealthySlot(slot)
 	} else {
@@ -206,23 +221,24 @@ func (c *BackendsCluster) AddNew(be *Backend) error {
 	return nil
 }
 
-func (c *BackendsCluster) MakeFine(name string) error { return c.promote(name) }
-func (c *BackendsCluster) MakeSick(name string) error { return c.quarantine(name) }
-func (c *BackendsCluster) Kill(name string) error     { return c.bury(name) }
+func (c *BackendsCluster) Promote(name string) error    { return c.promote(name) }
+func (c *BackendsCluster) Quarantine(name string) error { return c.quarantine(name) }
+func (c *BackendsCluster) Kill(name string) error       { return c.bury(name) }
 
-func (c *BackendsCluster) ImFine() bool { return len(*c.slotsPtr.Load()) > 0 }
+// Healthy reports whether the cluster still has at least one healthy backend.
+func (c *BackendsCluster) Healthy() bool { return len(*c.slotsPtr.Load()) > 0 }
 func (c *BackendsCluster) Size() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return len(c.all)
 }
 
-// ---------------- internal helpers  ----------------------------------------
+// -----------------------------------------------------------------------------
+// Internal helpers.
+// -----------------------------------------------------------------------------
 
 func (c *BackendsCluster) setHealthySlice(slots []*backendSlot) {
-	// rebuild immutable slice atomically
-	c.slotsPtr.Store(&slots)
-	// reset cursor when slice shrinks to avoid large modulo with zero
+	c.slotsPtr.Store(&slots) // copy‑on‑write; slice header escapes to heap
 	if len(slots) == 0 {
 		c.cursor.Store(0)
 	}
@@ -230,11 +246,10 @@ func (c *BackendsCluster) setHealthySlice(slots []*backendSlot) {
 
 func (c *BackendsCluster) appendHealthySlot(slot *backendSlot) {
 	old := c.slotsPtr.Load()
-	newSlice := append(append([]*backendSlot(nil), (*old)...), slot) // copy‑on‑write
+	newSlice := append(append([]*backendSlot(nil), *old...), slot)
 	c.setHealthySlice(newSlice)
 }
 
-// quarantine moves backend from healthy → sick.
 func (c *BackendsCluster) quarantine(name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -244,12 +259,12 @@ func (c *BackendsCluster) quarantine(name string) error {
 		return ErrNotFound
 	}
 	if slot.st != healthy {
-		return nil // already not healthy
+		return nil // already quarantined or dead
 	}
 
-	// rebuild healthy slice without this slot
+	// rebuild healthy slice without the slot
 	old := c.slotsPtr.Load()
-	var newSlice []*backendSlot
+	newSlice := make([]*backendSlot, 0, len(*old)-1)
 	for _, s := range *old {
 		if s != slot {
 			newSlice = append(newSlice, s)
@@ -262,7 +277,6 @@ func (c *BackendsCluster) quarantine(name string) error {
 	return nil
 }
 
-// promote moves backend from sick → healthy.
 func (c *BackendsCluster) promote(name string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -286,31 +300,36 @@ func (c *BackendsCluster) bury(name string) error {
 	if !ok {
 		return ErrNotFound
 	}
-	// remove from whichever set it resides in
-	if slot.st == healthy {
+
+	// remove from whichever set it currently resides in
+	switch slot.st {
+	case healthy:
 		old := c.slotsPtr.Load()
-		var newSlice []*backendSlot
+		newSlice := make([]*backendSlot, 0, len(*old)-1)
 		for _, s := range *old {
 			if s != slot {
 				newSlice = append(newSlice, s)
 			}
 		}
 		c.setHealthySlice(newSlice)
+	case sick:
+		delete(c.sick, name)
 	}
-	delete(c.sick, name)
+
 	slot.st = dead
 	c.dead[name] = slot
 	return nil
 }
 
-// markSickAsync is a helper for passive HC path (runs in its own goroutine).
 func (c *BackendsCluster) markSickAsync(name string) {
 	if err := c.quarantine(name); err == nil {
-		log.Warn().Str("backend", name).Msg("[cluster] backend quarantined due to error response")
+		log.Warn().Str("backend", name).Msg("cluster: backend quarantined due to error response")
 	}
 }
 
-// ---------------- active HC -------------------------------------------------
+// -----------------------------------------------------------------------------
+// Active health checker.
+// -----------------------------------------------------------------------------
 
 func (c *BackendsCluster) startHealthChecker() {
 	interval := time.Second * 10
@@ -345,7 +364,7 @@ func (c *BackendsCluster) probeSickBackends() {
 	}
 }
 
-// Close stops background HC goroutine (idempotent).
+// Close stops the active HC goroutine. It is idempotent.
 func (c *BackendsCluster) Close() {
 	if !c.hcEnabled {
 		return
