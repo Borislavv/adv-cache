@@ -49,6 +49,30 @@ var transport = &http.Transport{
 	ExpectContinueTimeout: 1 * time.Second,
 }
 
+// -----------------------------------------------------------------------------
+// Backend contract (only what the cluster really needs).
+// -----------------------------------------------------------------------------
+
+type fetchFn = func(rule *config.Rule, path, query []byte, queryHeaders *[][2][]byte) (
+	status int, headers *[][2][]byte, body []byte, releaseFn func(), err error,
+)
+
+// Backend is the subset of methods the balancer depends on. Methods must backend
+// thread‑safe.
+//
+// Imposing a very small surface keeps the cluster independent from the concrete
+// backend implementation.
+//
+//nolint:interfacebloat // explicit on purpose
+type Backend interface {
+	Name() string
+	IsHealthy() bool
+	Update(cfg *config.Backend) error
+	Fetch(rule *config.Rule, path, query []byte, queryHeaders *[][2][]byte) (
+		status int, headers *[][2][]byte, body []byte, releaseFn func(), err error,
+	)
+}
+
 type BackendNode struct {
 	name        string
 	ctx         context.Context
@@ -88,20 +112,25 @@ func NewBackend(ctx context.Context, cfg *config.Backend, name string) *BackendN
 	return backend
 }
 
-func (s *BackendNode) Fetch(
+func (b *BackendNode) Update(cfg *config.Backend) error {
+	b.cfg.Store(cfg)
+	return nil
+}
+
+func (b *BackendNode) Fetch(
 	rule *config.Rule, path []byte, query []byte, queryHeaders *[][2][]byte,
 ) (
 	status int, headers *[][2][]byte, body []byte, releaseFn func(), err error,
 ) {
-	if err = s.rateLimiter.Wait(s.ctx); err != nil {
+	if err = b.rateLimiter.Wait(b.ctx); err != nil {
 		return 0, nil, nil, emptyReleaseFn, err
 	}
 
-	return s.requestExternalBackend(rule, path, query, queryHeaders)
+	return b.requestExternalBackend(rule, path, query, queryHeaders)
 }
 
-// MakeRevalidator builds a new revalidator for model.Response by catching a request into closure for be able to call backend later.
-func (s *BackendNode) MakeRevalidator() func(
+// MakeRevalidator builds a new revalidator for model.Response by catching a request into closure for backend able to call backend later.
+func (b *BackendNode) MakeRevalidator() func(
 	rule *config.Rule, path []byte, query []byte, queryHeaders *[][2][]byte,
 ) (
 	status int, headers *[][2][]byte, body []byte, releaseFn func(), err error,
@@ -111,7 +140,7 @@ func (s *BackendNode) MakeRevalidator() func(
 	) (
 		status int, headers *[][2][]byte, body []byte, releaseFn func(), err error,
 	) {
-		return s.requestExternalBackend(rule, path, query, queryHeaders)
+		return b.requestExternalBackend(rule, path, query, queryHeaders)
 	}
 }
 
@@ -126,7 +155,7 @@ var (
 )
 
 // requestExternalBackend actually performs the HTTP request to backend and parses the response.
-func (s *BackendNode) requestExternalBackend(
+func (b *BackendNode) requestExternalBackend(
 	rule *config.Rule, path []byte, query []byte, queryHeaders *[][2][]byte,
 ) (status int, headers *[][2][]byte, body []byte, releaseFn func(), err error) {
 	req := fasthttp.AcquireRequest()
@@ -135,7 +164,7 @@ func (s *BackendNode) requestExternalBackend(
 	urlBuf := urlBufPool.Get().(*bytes.Buffer)
 	defer func() { urlBuf.Reset(); urlBufPool.Put(urlBuf) }()
 
-	cfg := s.cfg.Load()
+	cfg := b.cfg.Load()
 
 	req.Header.SetMethod(fasthttp.MethodGet)
 	urlBuf.Grow(len(cfg.UrlBytes) + len(path) + len(query) + 1)
@@ -211,12 +240,12 @@ func (s *BackendNode) requestExternalBackend(
 	return resp.StatusCode(), headers, buf.Bytes(), releaseFn, nil
 }
 
-func (s *BackendNode) Name() string {
-	return s.name
+func (b *BackendNode) Name() string {
+	return b.name
 }
 
-func (s *BackendNode) IsHealthy() bool {
-	cfg := s.cfg.Load()
+func (b *BackendNode) IsHealthy() bool {
+	cfg := b.cfg.Load()
 
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)
