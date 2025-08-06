@@ -195,8 +195,8 @@ func (c *BackendsCluster) Fetch(rule *config.Rule, path, query []byte, qh *[][2]
 // Mutation API.
 // -----------------------------------------------------------------------------
 
-// AddNew registers a backend at runtime.
-func (c *BackendsCluster) AddNew(be Backend) error {
+// Add registers a backend at runtime.
+func (c *BackendsCluster) Add(be Backend) error {
 	if be == nil {
 		return errors.New("nil backend")
 	}
