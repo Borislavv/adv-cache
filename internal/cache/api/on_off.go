@@ -2,16 +2,19 @@ package api
 
 import (
 	"encoding/json"
+	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/fasthttp/router"
 	"github.com/valyala/fasthttp"
 )
 
 // OnOffController provides endpoints to switch the advanced cache on and off.
-type OnOffController struct{}
+type OnOffController struct {
+	cfg config.Config
+}
 
 // NewOnOffController creates a new OnOffController instance.
-func NewOnOffController() *OnOffController {
-	return &OnOffController{}
+func NewOnOffController(cfg config.Config) *OnOffController {
+	return &OnOffController{cfg: cfg}
 }
 
 // clearStatusResponse is the JSON payload returned by On and Off handlers.
@@ -22,7 +25,7 @@ type onOffStatusResponse struct {
 
 // On handles POST /adv-cache/on and enables the advanced cache, returning JSON.
 func (c *OnOffController) On(ctx *fasthttp.RequestCtx) {
-	enabled.Store(true)
+	c.cfg.SetEnabled(true)
 	resp := onOffStatusResponse{Enabled: true, Message: "cache enabled"}
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetContentType("application/json; charset=utf-8")
@@ -31,7 +34,7 @@ func (c *OnOffController) On(ctx *fasthttp.RequestCtx) {
 
 // Off handles POST /adv-cache/off and disables the advanced cache, returning JSON.
 func (c *OnOffController) Off(ctx *fasthttp.RequestCtx) {
-	enabled.Store(false)
+	c.cfg.SetEnabled(false)
 	resp := onOffStatusResponse{Enabled: false, Message: "cache disabled"}
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	ctx.SetContentType("application/json; charset=utf-8")

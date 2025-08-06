@@ -31,6 +31,9 @@ type Config interface {
 	Runtime() *Runtime
 	SetRuntime(v *Runtime)
 
+	Api() *Api
+	SetApi(v *Api)
+
 	Upstream() *Upstream
 	SetUpstream(v *Upstream)
 
@@ -104,7 +107,8 @@ type CacheBox struct {
 }
 
 type Api struct {
-	Where string `yaml:"where"`
+	Name string `yaml:"name"` // api server name
+	Port string `yaml:"port"` // port of api server
 }
 
 type Runtime struct {
@@ -229,7 +233,7 @@ type RuleValue struct {
 	HeadersMap map[string]struct{} // Virtual field
 }
 
-func LoadConfig(path string) (*Cache, error) {
+func LoadConfig(path string) (*AtomicCache, error) {
 	dir, err := os.Getwd()
 	if err != nil {
 		return nil, err
@@ -282,5 +286,5 @@ func LoadConfig(path string) (*Cache, error) {
 		cfg.Cache.Upstream.Cluster.Backends[i].UseMaxTimeoutHeaderBytes = []byte(cfg.Cache.Upstream.Cluster.Backends[i].UseMaxTimeoutHeader)
 	}
 
-	return cfg, nil
+	return makeConfigAtomic(cfg), nil
 }

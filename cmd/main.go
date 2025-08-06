@@ -83,20 +83,20 @@ func init() {
 
 // setMaxProcs automatically sets the optimal GOMAXPROCS value (CPU parallelism)
 // based on the available CPUs and cgroup/docker CPU quotas (uses automaxprocs).
-func setMaxProcs(cfg *config.Cache) {
-	if cfg.Runtime.Gomaxprocs == 0 {
+func setMaxProcs(cfg config.Config) {
+	if cfg.Runtime().Gomaxprocs == 0 {
 		if _, err := maxprocs.Set(); err != nil {
 			log.Err(err).Msg("[main] setting up GOMAXPROCS value failed")
 		}
 	} else {
-		runtime.GOMAXPROCS(cfg.Runtime.Gomaxprocs)
+		runtime.GOMAXPROCS(cfg.Runtime().Gomaxprocs)
 	}
 	log.Info().Msgf("[main] GOMAXPROCS=%d was set up", runtime.GOMAXPROCS(0))
 }
 
 // loadCfg loads the configuration struct from environment variables
 // and computes any derived configuration values.
-func loadCfg() (*config.Cache, error) {
+func loadCfg() (config.Config, error) {
 	cfg, err := config.LoadConfig(cache.ConfigPathLocal)
 	if err != nil {
 		cfg, err = config.LoadConfig(cache.ConfigPath)
@@ -111,34 +111,34 @@ func loadCfg() (*config.Cache, error) {
 	}
 
 	if fromDefined {
-		cfg.Upstream.From = *from
+		cfg.Upstream().From = *from
 	}
 	if toDefined {
-		cfg.Upstream.To = *to
+		cfg.Upstream().To = *to
 	}
 	if mocksDefined {
-		cfg.Persistence.Mock.Enabled = *mocks
+		cfg.Data().Mock.Enabled = *mocks
 	}
 	if mockslenDefined {
-		cfg.Persistence.Mock.Length = *mocksLen
+		cfg.Data().Mock.Length = *mocksLen
 	}
 	if dumpDefined {
-		cfg.Persistence.Dump.IsEnabled = *dump
+		cfg.Data().Dump.IsEnabled = *dump
 	}
 	if refreshDefined {
-		cfg.Refresh.Enabled = *dump
+		cfg.Refresh().Enabled = *dump
 	}
 	if evictionDefined {
-		cfg.Eviction.Enabled = *eviction
+		cfg.Eviction().Enabled = *eviction
 	}
 	if upstreamRateDefined {
-		cfg.Upstream.Rate = *upstreamRate
+		cfg.Upstream().Rate = *upstreamRate
 	}
 	if memoryLimitDefined {
-		cfg.Storage.Size = uint(*memoryLimit)
+		cfg.Storage().Size = uint(*memoryLimit)
 	}
 	if gomaxprocsDefined {
-		cfg.Runtime.Gomaxprocs = *gomaxprocs
+		cfg.Runtime().Gomaxprocs = *gomaxprocs
 	}
 
 	return cfg, nil
@@ -165,7 +165,7 @@ func main() {
 	gracefulShutdown.SetGracefulTimeout(time.Minute * 5)
 
 	// Initialize liveness probe for Kubernetes/Cloud health checks.
-	probe := liveness.NewProbe(cfg.K8S.Probe.Timeout)
+	probe := liveness.NewProbe(cfg.K8S().Probe.Timeout)
 
 	// Initialize and start the cache application.
 	app, err := cache.NewApp(ctx, cfg, probe)

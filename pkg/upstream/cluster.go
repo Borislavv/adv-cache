@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/Borislavv/advanced-cache/pkg/utils"
+	"github.com/valyala/fasthttp"
 	"net/http"
 	"strings"
 	"sync"
@@ -118,8 +119,6 @@ type BackendCluster struct {
 
 	hcTicker     <-chan time.Time
 	killerTicker <-chan time.Time
-
-	wg sync.WaitGroup
 }
 
 // NewCluster initialises cluster & launches active HC.
@@ -185,20 +184,23 @@ func NewCluster(ctx context.Context, cfg config.Config) (*BackendCluster, error)
 // Hot path (Fetch) – no logs/allocs.
 // -----------------------------------------------------------------------------
 
-func (c *BackendCluster) Fetch(rule *config.Rule, path, query []byte, qh *[][2][]byte) (int, *[][2][]byte, []byte, func(), error) {
+func (c *BackendCluster) FetchFH(rule *config.Rule, ctx *fasthttp.RequestCtx) (
+	path, query []byte, qHeaders, rHeaders *[][2][]byte,
+	status int, body []byte, releaseFn func(), err error,
+) {
 	slots := c.slotsPtr.Load()
 	if len(*slots) == 0 {
-		return 0, nil, nil, emptyReleaseFn, ErrNoBackends
+		return nil, nil, nil, nil, 0, nil, emptyReleaseFn, ErrNoBackends
 	}
 
 	idx := int(c.cursor.Add(1) % uint64(len(*slots)))
 	slot := (*slots)[idx]
 
-	st, hdr, body, rel, err := slot.backend.Fetch(rule, path, query, qh)
-	if err != nil || st >= http.StatusInternalServerError {
+	path, query, qHeaders, rHeaders, status, body, rel, err := slot.backend.Fetch(rule, ctx)
+	if err != nil || status >= http.StatusInternalServerError {
 		go c.markSickAsync(slot.backend.Name())
 	}
-	return st, hdr, body, rel, err
+	return path, query, qHeaders, rHeaders, status, body, rel, err
 }
 
 // -----------------------------------------------------------------------------
@@ -430,9 +432,7 @@ func (c *BackendCluster) runLifeCycle() {
 func (c *BackendCluster) runKiller() {
 	log.Info().Dur("hcInterval", killerInterval).Msg("[upstream-cluster] killer started")
 
-	c.wg.Add(1)
 	go func() {
-		defer c.wg.Done()
 		for {
 			select {
 			case <-c.ctx.Done():
@@ -449,9 +449,7 @@ const maxRetries = 6
 func (c *BackendCluster) runHealthChecker() {
 	log.Info().Dur("hcInterval", hcInterval).Msg("[upstream-cluster] active HC started")
 
-	c.wg.Add(1)
 	go func() {
-		defer c.wg.Done()
 		for {
 			select {
 			case <-c.ctx.Done():
@@ -466,10 +464,7 @@ func (c *BackendCluster) runHealthChecker() {
 func (c *BackendCluster) probeSickBackends() {
 	c.mu.RLock()
 	for _, slot := range c.sick {
-		c.wg.Add(1)
 		go func(slot *backendSlot) {
-			defer c.wg.Done()
-
 			if slot.backend.IsHealthy() {
 				if err := c.promote(slot.backend.Name()); err != nil {
 					log.Error().Err(err).Msgf("[upstream-cluster] failed to promote backend '%s' to healthy", slot.backend.Name())
@@ -498,11 +493,6 @@ func (c *BackendCluster) killDoomedBackends() {
 		delete(c.dead, slot.backend.Name())
 	}
 	c.mu.Unlock()
-}
-
-func (c *BackendCluster) Close() {
-	c.wg.Wait()
-	log.Info().Msg("[upstream-cluster] closed")
 }
 
 // -----------------------------------------------------------------------------

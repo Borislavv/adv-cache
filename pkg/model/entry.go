@@ -39,7 +39,6 @@ type Entry struct {
 	rule         *atomic.Pointer[config.Rule]
 	payload      *atomic.Pointer[[]byte]
 	lruListElem  *atomic.Pointer[list.Element[*Entry]]
-	revalidator  Revalidator
 	updatedAt    int64 // atomic: unix nano (last update was at)
 	isCompressed int64 // atomic: bool as int64
 }
@@ -88,11 +87,7 @@ func NewEntryFastHttp(cfg config.Config, r *fasthttp.RequestCtx) (*Entry, error)
 	return entry, nil
 }
 
-func IsRouteWasNotFound(err error) bool {
-	return errors.Is(err, ruleNotFoundError)
-}
-
-func NewEntryManual(cfg config.Config, path, query []byte, headers *[][2][]byte, revalidator Revalidator) (*Entry, error) {
+func NewEntryManual(cfg config.Config, path, query []byte, headers *[][2][]byte) (*Entry, error) {
 	rule := MatchRule(cfg, path)
 	if rule == nil {
 		return nil, ruleNotFoundError
@@ -100,7 +95,6 @@ func NewEntryManual(cfg config.Config, path, query []byte, headers *[][2][]byte,
 
 	entry := new(Entry).Init()
 	entry.rule.Store(rule)
-	entry.revalidator = revalidator
 
 	filteredQueries, filteredQueriesReleaser := entry.parseFilterAndSortQuery(query) // here, we are referring to the same query buffer which used in payload which have been mentioned before
 	defer filteredQueriesReleaser(filteredQueries)                                   // this is really reduce memory usage and GC pressure
@@ -118,7 +112,6 @@ func NewEntryFromField(
 	fingerprint [16]byte,
 	payload []byte,
 	rule *config.Rule,
-	revalidator Revalidator,
 	isCompressed int64,
 	updatedAt int64,
 ) *Entry {
@@ -128,14 +121,16 @@ func NewEntryFromField(
 	entry.fingerprint = fingerprint
 	entry.rule.Store(rule)
 	entry.payload.Store(&payload)
-	entry.revalidator = revalidator
 	entry.isCompressed = isCompressed
 	entry.updatedAt = updatedAt
 	return entry
 }
-
-func (e *Entry) MapKey() uint64   { return e.key }
-func (e *Entry) ShardKey() uint64 { return e.shard }
+func IsRouteWasNotFound(err error) bool {
+	return errors.Is(err, ruleNotFoundError)
+}
+func (e *Entry) MapKey() uint64     { return e.key }
+func (e *Entry) ShardKey() uint64   { return e.shard }
+func (e *Entry) Rule() *config.Rule { return e.rule.Load() }
 
 var keyBufPool = sync.Pool{
 	New: func() interface{} {
@@ -246,15 +241,11 @@ func (e *Entry) IsSameEntry(another *Entry) bool {
 
 func (e *Entry) SwapPayloads(another *Entry) {
 	another.payload.Store(e.payload.Swap(another.payload.Load()))
+	e.touch()
 }
 
-func (e *Entry) TouchUpdatedAt() {
+func (e *Entry) touch() {
 	atomic.StoreInt64(&e.updatedAt, time.Now().Unix())
-}
-
-func (e *Entry) SetRevalidator(revalidator Revalidator) *Entry {
-	e.revalidator = revalidator
-	return e
 }
 
 func (e *Entry) isPayloadsAreEquals(a, b []byte) bool {
@@ -277,7 +268,7 @@ func (e *Entry) SetPayload(
 	headers *[][2][]byte,
 	body []byte,
 	status int,
-) {
+) *Entry {
 	queryHeadersDeref := *queryHeaders
 	responseHeadersDeref := *headers
 
@@ -365,6 +356,11 @@ func (e *Entry) SetPayload(
 	payloadBuf = payloadBuf[:]
 	e.payload.Store(&payloadBuf)
 	atomic.StoreInt64(&e.isCompressed, 0)
+
+	// Tell everyone that entry already updated
+	e.touch()
+
+	return e
 }
 
 var payloadReleaser = func(queryHeaders *[][2][]byte, responseHeaders *[][2][]byte) {
@@ -373,6 +369,8 @@ var payloadReleaser = func(queryHeaders *[][2][]byte, responseHeaders *[][2][]by
 	*responseHeaders = (*responseHeaders)[:0]
 	pools.KeyValueSlicePool.Put(responseHeaders)
 }
+
+var ErrPayloadIsEmpty = fmt.Errorf("payload is empty")
 
 // Payload decompresses the entire payload and unpacks it into fields.
 func (e *Entry) Payload() (
@@ -387,7 +385,7 @@ func (e *Entry) Payload() (
 ) {
 	payload := e.PayloadBytes()
 	if len(payload) == 0 {
-		return nil, nil, nil, nil, nil, 0, emptyReleaser, fmt.Errorf("payload is empty")
+		return nil, nil, nil, nil, nil, 0, emptyReleaser, ErrPayloadIsEmpty
 	}
 
 	offset := 0
@@ -454,10 +452,6 @@ func (e *Entry) Payload() (
 	releaseFn = payloadReleaser
 
 	return
-}
-
-func (e *Entry) Rule() *config.Rule {
-	return e.rule.Load()
 }
 
 func (e *Entry) PayloadBytes() []byte {
@@ -827,33 +821,6 @@ func (e *Entry) ShouldBeRefreshed(cfg config.Config) bool {
 	return rand.Float64() < prob
 }
 
-var invalidUpstreamStatusCodeReceivedError = errors.New("invalid upstream status code")
-
-// Revalidate calls the revalidator closure to fetch fresh data and updates the timestamp.
-func (e *Entry) Revalidate() error {
-	path, query, headers, respHeaders, _, _, release, err := e.Payload()
-	defer release(headers, respHeaders)
-	if err != nil {
-		return err
-	}
-
-	statusCode, respHeaders, body, releaser, err := e.revalidator(e.rule.Load(), path, query, headers)
-	defer releaser()
-	if err != nil {
-		return err
-	}
-	if statusCode != http.StatusOK {
-		return invalidUpstreamStatusCodeReceivedError
-	}
-
-	e.SetPayload(path, query, headers, respHeaders, body, statusCode)
-
-	// successful refresh, set up current timestamp as last update point
-	atomic.StoreInt64(&e.updatedAt, time.Now().UnixNano())
-
-	return nil
-}
-
 func (e *Entry) ToBytes() (data []byte, releaseFn func()) {
 	var scratch8 [8]byte
 	var scratch4 [4]byte
@@ -948,10 +915,7 @@ func EntryFromBytes(data []byte, cfg config.Config, backend upstream.Upstream) (
 	offset += 4
 	payload := data[offset : offset+int(payloadLen)]
 
-	return NewEntryFromField(
-		key, shard, fp, payload, rule,
-		backend.MakeRevalidator(), isCompressed, updatedAt,
-	), nil
+	return NewEntryFromField(key, shard, fp, payload, rule, isCompressed, updatedAt), nil
 }
 
 func MatchRule(cfg config.Config, path []byte) *config.Rule {

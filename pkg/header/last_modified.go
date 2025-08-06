@@ -42,7 +42,13 @@ func SetLastModifiedNetHttp(w http.ResponseWriter, entry *model.Entry) {
 }
 
 func SetLastModifiedFastHttp(r *fasthttp.RequestCtx, entry *model.Entry) {
-	SetLastModifiedValueFastHttp(r, entry.UpdateAt())
+	buf := bufPool.Get().(*[]byte)
+	*buf = (*buf)[:0]
+
+	*buf = appendLastModifiedHeader(buf, entry.UpdateAt())
+	r.Response.Header.SetBytesKV(lastModifiedBytesKey, *buf)
+
+	bufPool.Put(buf)
 }
 
 func SetLastModifiedValueFastHttp(r *fasthttp.RequestCtx, v int64) {

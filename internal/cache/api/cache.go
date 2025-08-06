@@ -1,16 +1,15 @@
 package api
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
+	"errors"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/header"
 	"github.com/Borislavv/advanced-cache/pkg/model"
-	"github.com/Borislavv/advanced-cache/pkg/pools"
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
 	serverutils "github.com/Borislavv/advanced-cache/pkg/server/utils"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
+	"github.com/Borislavv/advanced-cache/pkg/template"
 	"github.com/Borislavv/advanced-cache/pkg/upstream"
 	"github.com/Borislavv/advanced-cache/pkg/utils"
 	"github.com/fasthttp/router"
@@ -25,36 +24,24 @@ import (
 // CacheGetPath for getting pagedata from cache via HTTP.
 const CacheGetPath = "/{any:*}"
 
-// enabled indicates whether the advanced cache is turned on or off.
-// It can be safely accessed and modified concurrently.
-var enabled atomic.Bool
-
-// Predefined HTTP response templates for error handling (400/503)
 var (
-	serviceUnavailableResponseBytes = []byte(`{
-	  "status": 503,
-	  "error": "Service Unavailable",
-	  "message": "` + string(messagePlaceholder) + `"
-	}`)
-	messagePlaceholder = []byte("${message}")
+	total    = &atomic.Int64{}
+	hits     = &atomic.Int64{}
+	misses   = &atomic.Int64{}
+	proxied  = &atomic.Int64{}
+	errered  = &atomic.Int64{}
+	duration = &atomic.Int64{} // UnixNano
 )
 
-var (
-	total         = &atomic.Int64{}
-	hits          = &atomic.Int64{}
-	misses        = &atomic.Int64{}
-	proxies       = &atomic.Int64{}
-	errors        = &atomic.Int64{}
-	totalDuration = &atomic.Int64{} // UnixNano
-)
+var retryThroughProxyErr = errors.New("need to retry through proxy")
 
 // CacheController handles cache API requests (read/write-through, error reporting, metrics).
 type CacheController struct {
-	cfg      *config.Cache
+	cfg      config.Config
 	ctx      context.Context
 	cache    storage.Storage
 	metrics  metrics.Meter
-	backend  upstream.Upstream
+	upstream upstream.Upstream
 	errorsCh chan error
 }
 
@@ -62,7 +49,7 @@ type CacheController struct {
 // If debug is enabled, launches internal stats logger goroutine.
 func NewCacheController(
 	ctx context.Context,
-	cfg *config.Cache,
+	cfg config.Config,
 	cache storage.Storage,
 	metrics metrics.Meter,
 	backend upstream.Upstream,
@@ -72,10 +59,9 @@ func NewCacheController(
 		ctx:      ctx,
 		cache:    cache,
 		metrics:  metrics,
-		backend:  backend,
+		upstream: backend,
 		errorsCh: make(chan error, 8196),
 	}
-	enabled.Store(cfg.Enabled)
 	c.runLoggerMetricsWriter()
 	c.runErrorLogger()
 	return c
@@ -84,83 +70,84 @@ func NewCacheController(
 // Index is the main HTTP handler.
 func (c *CacheController) Index(r *fasthttp.RequestCtx) {
 	var from = time.Now()
-	defer func() { totalDuration.Add(time.Since(from).Nanoseconds()) }()
+	defer func() { duration.Add(time.Since(from).Nanoseconds()) }()
 
 	total.Add(1)
-	if enabled.Load() {
-		c.handleTroughCache(r)
-	} else {
-		c.handleTroughProxy(r)
-	}
-}
-
-func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) {
-	// make a lightweight request Entry (contains only key, shardKey and fingerprint)
-	newEntry, err := model.NewEntryFastHttp(c.cfg, r) // must be removed on hit and release on miss
-	if err != nil {
-		if model.IsRouteWasNotFound(err) {
-			c.handleTroughProxy(r)
+	if c.cfg.IsEnabled() {
+		if err := c.handleTroughCache(r); err != nil {
+			c.respondThatServiceIsTemporaryUnavailable(err, r)
+			errered.Add(1)
 			return
 		}
-		c.respondThatServiceIsTemporaryUnavailable(err, r)
-		return
+	}
+
+	proxied.Add(1)
+	c.handleTroughProxy(r)
+}
+
+func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) error {
+	// make a lightweight request Entry (contains only key, shardKey and fingerprint)
+	request, err := model.NewEntryFastHttp(c.cfg, r) // must be removed on hit and release on miss
+	if err != nil {
+		return err
 	}
 
 	var (
-		payloadStatus       int
-		payloadHeaders      *[][2][]byte
-		payloadBody         []byte
-		payloadLastModified int64
+		// response vars.
+		payloadHeaders *[][2][]byte
+		payloadBody    []byte
+		payloadStatus  int
+		// search vars.
+		entry *model.Entry
+		found bool
 	)
 
-	foundEntry, found := c.Get(newEntry)
-	if !found {
+	if entry, found = c.cache.Get(request); found {
+		hits.Add(1)
+		// unpack found Entry data
+		var queryHeaders *[][2][]byte
+		var payloadReleaser func(q, h *[][2][]byte)
+		_, _, queryHeaders, payloadHeaders, payloadBody, payloadStatus, payloadReleaser, err = entry.Payload()
+		defer payloadReleaser(queryHeaders, payloadHeaders)
+		if err != nil {
+			return retryThroughProxyErr
+		}
+	} else {
 		misses.Add(1)
-
 		// extract request data
 		path := r.Path()
-		rule := newEntry.Rule()
+		rule := request.Rule()
 		queryString := r.QueryArgs().QueryString()
-		queryHeaders, queryReleaser := c.queryHeaders(r)
+		queryHeaders, queryReleaser := model.ParseQueryHeaders(r)
 		defer queryReleaser(queryHeaders)
 
 		// fetch data from upstream
 		var payloadReleaser func()
-		payloadStatus, payloadHeaders, payloadBody, payloadReleaser, err = c.backend.Fetch(rule, path, queryString, queryHeaders)
+		payloadStatus, payloadHeaders, payloadBody, payloadReleaser, err = c.upstream.Fetch(rule, path, queryString, queryHeaders)
 		defer payloadReleaser()
 		if err != nil {
-			errors.Add(1)
-			c.respondThatServiceIsTemporaryUnavailable(err, r)
-			return
+			return err
 		}
 
-		if payloadStatus != http.StatusOK {
-			// bad status code received, process request and don't store in cache, removed after use of course
-			payloadLastModified = time.Now().UnixNano()
-		} else {
-			newEntry.SetPayload(path, queryString, queryHeaders, payloadHeaders, payloadBody, payloadStatus)
-			newEntry.SetRevalidator(c.backend.MakeRevalidator())
+		if payloadStatus == http.StatusOK {
+			entry = request.SetPayload(path, queryString, queryHeaders, payloadHeaders, payloadBody, payloadStatus)
+			// persist new entry (make it available other threads)
+			if persisted := c.cache.Set(request); !persisted {
 
-			c.Set(newEntry)
-
-			payloadLastModified = newEntry.UpdateAt()
-		}
-	} else {
-		hits.Add(1)
-
-		payloadLastModified = foundEntry.UpdateAt()
-
-		// unpack found Entry data
-		var queryHeaders *[][2][]byte
-		var payloadReleaser func(q *[][2][]byte, h *[][2][]byte)
-		_, _, queryHeaders, payloadHeaders, payloadBody, payloadStatus, payloadReleaser, err = foundEntry.Payload()
-		defer payloadReleaser(queryHeaders, payloadHeaders)
-		if err != nil {
-			c.respondThatServiceIsTemporaryUnavailable(err, r)
-			return
+			}
 		}
 	}
 
+	return c.respond(r, payloadStatus, payloadHeaders, payloadBody, entry)
+}
+
+func (c *CacheController) respond(
+	r *fasthttp.RequestCtx,
+	payloadStatus int,
+	payloadHeaders *[][2][]byte,
+	payloadBody []byte,
+	cacheEntry *model.Entry,
+) error {
 	// Write payloadStatus, payloadHeaders, and payloadBody from the cached (or fetched) response.
 	r.Response.SetStatusCode(payloadStatus)
 	for _, kv := range *payloadHeaders {
@@ -168,26 +155,25 @@ func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) {
 	}
 
 	// Set up Last-Modified header
-	header.SetLastModifiedValueFastHttp(r, payloadLastModified)
+	header.SetLastModifiedFastHttp(r, cacheEntry)
 
 	// Write payloadBody
-	if _, err = serverutils.Write(payloadBody, r); err != nil {
-		c.respondThatServiceIsTemporaryUnavailable(err, r)
-		return
+	if _, err := serverutils.Write(payloadBody, r); err != nil {
+		return err
 	}
+
+	return nil
 }
 
 func (c *CacheController) handleTroughProxy(r *fasthttp.RequestCtx) {
-	proxies.Add(1)
-
 	// extract request data
 	path := r.Path()
 	queryString := r.QueryArgs().QueryString()
-	queryHeaders, queryReleaser := c.queryHeaders(r)
+	queryHeaders, queryReleaser := model.ParseQueryHeaders(r)
 	defer queryReleaser(queryHeaders)
 
 	// fetch data from upstream
-	payloadStatus, payloadHeaders, payloadBody, payloadReleaser, err := c.backend.Fetch(nil, path, queryString, queryHeaders)
+	payloadStatus, payloadHeaders, payloadBody, payloadReleaser, err := c.upstream.Fetch(nil, path, queryString, queryHeaders)
 	defer payloadReleaser()
 	if err != nil {
 		c.respondThatServiceIsTemporaryUnavailable(err, r)
@@ -217,37 +203,14 @@ func (c *CacheController) respondThatServiceIsTemporaryUnavailable(err error, ct
 	c.errorsCh <- err
 	ctx.Response.Header.SetContentTypeBytes(contentType)
 	ctx.SetStatusCode(fasthttp.StatusServiceUnavailable)
-	if _, err = serverutils.Write(c.resolveMessagePlaceholder(serviceUnavailableResponseBytes, err), ctx); err != nil {
+	if _, err = serverutils.Write(template.RespondUnavailable(err), ctx); err != nil {
 		c.errorsCh <- err
 	}
-}
-
-// resolveMessagePlaceholder substitutes ${message} in template with escaped error message.
-func (c *CacheController) resolveMessagePlaceholder(msg []byte, err error) []byte {
-	escaped, _ := json.Marshal(err.Error())
-	return bytes.ReplaceAll(msg, messagePlaceholder, escaped[1:len(escaped)-1])
 }
 
 // AddRoute attaches controller's route(s) to the provided router.
 func (c *CacheController) AddRoute(router *router.Router) {
 	router.GET(CacheGetPath, c.Index)
-}
-
-var (
-	// if you return a releaser as an outer variable it will not allocate closure each time on call function
-	queryHeadersReleaser = func(headers *[][2][]byte) {
-		*headers = (*headers)[:0]
-		pools.KeyValueSlicePool.Put(headers)
-	}
-)
-
-func (c *CacheController) queryHeaders(r *fasthttp.RequestCtx) (headers *[][2][]byte, releaseFn func(*[][2][]byte)) {
-	headers = pools.KeyValueSlicePool.Get().(*[][2][]byte)
-	r.Request.Header.All()(func(key []byte, value []byte) bool {
-		*headers = append(*headers, [2][]byte{key, value})
-		return true
-	})
-	return headers, queryHeadersReleaser
 }
 
 func (c *CacheController) runErrorLogger() {
@@ -257,6 +220,8 @@ func (c *CacheController) runErrorLogger() {
 		each5Secs := utils.NewTicker(c.ctx, time.Second*5)
 
 		writeTrigger := make(chan struct{}, 1)
+		defer close(writeTrigger)
+
 		go func() {
 			for range writeTrigger {
 				for err, count := range prev {
@@ -322,21 +287,21 @@ func (c *CacheController) runLoggerMetricsWriter() {
 				missesNumLoc := misses.Load()
 				misses.Store(0)
 
-				proxiedNumLoc := proxies.Load()
-				proxies.Store(0)
+				proxiedNumLoc := proxied.Load()
+				proxied.Store(0)
 
-				errorsNumLoc := errors.Load()
-				errors.Store(0)
+				errorsNumLoc := errered.Load()
+				errered.Store(0)
 
-				totalDurationNumLoc := totalDuration.Load()
-				totalDuration.Store(0)
+				totalDurationNumLoc := duration.Load()
+				duration.Store(0)
 
 				// metrics export
 				var avgDuration float64
 				if totalNumLoc > 0 {
 					avgDuration = float64(totalDurationNumLoc) / float64(totalNumLoc)
 				}
-				memUsage, length := c.Stat()
+				memUsage, length := c.cache.Stat()
 				c.metrics.SetCacheLength(uint64(length))
 				c.metrics.SetCacheMemory(uint64(memUsage))
 				c.metrics.SetHits(uint64(hitsNumLoc))
@@ -368,7 +333,7 @@ func (c *CacheController) runLoggerMetricsWriter() {
 
 					logEvent := log.Info()
 					var target string
-					if enabled.Load() {
+					if c.cfg.IsEnabled() {
 						target = "cache-controller"
 					} else {
 						target = "proxy-controller"
@@ -384,14 +349,14 @@ func (c *CacheController) runLoggerMetricsWriter() {
 							Str("elapsed", elapsed.String())
 					}
 
-					if enabled.Load() {
+					if c.cfg.IsEnabled() {
 						logEvent.Msgf(
-							"[%s][%s] served %d requests (rps: %.f, avg.dur.: %s hits: %d, misses: %d, errors: %d)",
+							"[%s][%s] served %d requests (rps: %.f, avg.dur.: %s hits: %d, misses: %d, errered: %d)",
 							target, elapsed.String(), totalNum, rps, duration.String(), hitsNum, missesNum, errorsNum,
 						)
 					} else {
 						logEvent.Msgf(
-							"[%s][%s] served %d requests (rps: %.f, avg.dur.: %s total: %d, proxied: %d, errors: %d)",
+							"[%s][%s] served %d requests (rps: %.f, avg.dur.: %s total: %d, proxied: %d, errered: %d)",
 							target, elapsed.String(), totalNum, rps, duration.String(), totalNum, proxiedNum, errorsNum,
 						)
 					}
@@ -445,7 +410,7 @@ func (c *counters) reset() {
 	c.total, c.hits, c.misses, c.errors, c.proxied, c.duration = 0, 0, 0, 0, 0, 0
 }
 
-func logLong(label string, c counters, cfg *config.Cache) {
+func logLong(label string, c counters, cfg config.Config) {
 	if c.total == 0 {
 		return
 	}
@@ -476,12 +441,12 @@ func logLong(label string, c counters, cfg *config.Cache) {
 			Int64("total", c.total).
 			Int64("hits", c.hits).
 			Int64("misses", c.misses).
-			Int64("errors", c.errors).
+			Int64("errered", c.errors).
 			Int64("proxied", c.proxied).
 			Float64("avgRPS", avgRPS).
 			Str("avgDuration", avgDur.String())
 	}
 
-	logEvent.Msgf("[cache][%s] total=%d hits=%d misses=%d errors=%d proxied=%d avgRPS=%.2f avgDur=%s",
+	logEvent.Msgf("[cache][%s] total=%d hits=%d misses=%d errered=%d proxied=%d avgRPS=%.2f avgDur=%s",
 		label, c.total, c.hits, c.misses, c.errors, c.proxied, avgRPS, avgDur.String())
 }

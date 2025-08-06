@@ -44,18 +44,18 @@ type App interface {
 
 // Cache encapsulates the entire cache application state.
 type Cache struct {
-	cfg     *config.Cache
-	ctx     context.Context
-	cancel  context.CancelFunc
-	probe   liveness.Prober
-	dumper  storage.Dumper
-	server  server.Http
-	backend upstream.Upstream
-	db      storage.Storage
+	cfg      config.Config
+	ctx      context.Context
+	cancel   context.CancelFunc
+	probe    liveness.Prober
+	dumper   storage.Dumper
+	server   server.Http
+	upstream upstream.Upstream
+	db       storage.Storage
 }
 
 // NewApp builds a new Cache app.
-func NewApp(ctx context.Context, baseCfg *config.Cache, probe liveness.Prober) (cache *Cache, err error) {
+func NewApp(ctx context.Context, cfg config.Config, probe liveness.Prober) (cache *Cache, err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer func() {
 		if err != nil {
@@ -63,36 +63,33 @@ func NewApp(ctx context.Context, baseCfg *config.Cache, probe liveness.Prober) (
 		}
 	}()
 
-	var cfg config.Config
-	cfg = config.MakeConfigAtomic(baseCfg)
-
-	var upstreamCluster upstream.Upstream
-	upstreamCluster, err = upstream.NewBackendsCluster(ctx, cfg)
+	var cluster upstream.Upstream
+	cluster, err = upstream.NewCluster(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
-	db := lru.NewStorage(ctx, cfg, upstreamCluster)
-	dumper := storage.NewDumper(cfg, db, upstreamCluster)
-	meter := metrics.New()
 
-	cacheObj := &Cache{
-		ctx:     ctx,
-		cancel:  cancel,
-		cfg:     cfg,
-		db:      db,
-		backend: backend,
-		probe:   probe,
-		dumper:  dumper,
+	db := lru.NewStorage(ctx, cfg, cluster)
+	dumper := storage.NewDumper(cfg, db, cluster)
+
+	app := &Cache{
+		ctx:      ctx,
+		cancel:   cancel,
+		cfg:      cfg,
+		db:       db,
+		upstream: cluster,
+		probe:    probe,
+		dumper:   dumper,
 	}
 
-	srv, err := server.New(ctx, cfg, db, backend, probe, meter)
+	srv, err := server.New(ctx, cfg, db, cluster, probe, metrics.New())
 	if err != nil {
 		cancel()
 		return nil, err
 	}
-	cacheObj.server = srv
+	app.server = srv
 
-	return cacheObj, nil
+	return app, nil
 }
 
 // Start runs the cache server and probes, handles shutdown.
@@ -102,35 +99,34 @@ func (c *Cache) Start(gc shutdown.Gracefuller) {
 		gc.Done()
 	}()
 
-	log.Info().Msg("[app] starting cache")
+	log.Info().Msg("[app] starting")
 
 	waitCh := make(chan struct{})
 	go func() {
 		defer close(waitCh)
-		c.db.Run()
 		c.probe.Watch(c)
 		c.server.Start()
 	}()
 
-	log.Info().Msg("[app] cache has been started")
+	log.Info().Msg("[app] has been started")
 	<-waitCh
 }
 
 // stop cancels context and dumps cache on shutdown.
 func (c *Cache) stop() {
-	log.Info().Msg("[app] stopping cache")
+	log.Info().Msg("[app] stopping")
 	defer c.cancel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 
-	if c.cfg.Enabled && c.cfg.Persistence.Dump.IsEnabled {
+	if c.cfg.IsEnabled() && c.cfg.Data().Dump.IsEnabled {
 		if err := c.dumper.Dump(ctx); err != nil {
 			log.Err(err).Msg("[dump] failed to store cache dump")
 		}
 	}
 
-	log.Info().Msg("[app] cache has been stopped")
+	log.Info().Msg("[app] has been stopped")
 }
 
 func (c *Cache) LoadData(ctx context.Context, interactive bool) error {
@@ -145,19 +141,19 @@ func (c *Cache) LoadData(ctx context.Context, interactive bool) error {
 		savePrompt := promptui.Prompt{Label: "Save cache state to new dump version on termination?", IsConfirm: true}
 		// if user confirms, comment: yes -> new dump will be stored
 		if _, spErr := savePrompt.Run(); spErr == nil {
-			c.cfg.Persistence.Dump.IsEnabled = true
+			c.cfg.Data().Dump.IsEnabled = true
 		}
 	} else {
-		if c.cfg.Enabled {
-			if c.cfg.Persistence.Dump.IsEnabled {
+		if c.cfg.IsEnabled() {
+			if c.cfg.Data().Dump.IsEnabled {
 				if err := c.dumper.Load(ctx); err != nil {
 					log.Warn().Err(err).Msg("[dump] failed to load dump")
 				}
 			} else {
 				log.Info().Msg("[app] dump loading is disabled")
 			}
-			if c.cfg.Persistence.Mock.Enabled {
-				storage.LoadMocks(ctx, c.cfg, c.backend, c.db, c.cfg.Persistence.Mock.Length)
+			if c.cfg.Data().Mock.Enabled {
+				storage.LoadMocks(ctx, c.cfg, c.upstream, c.db, c.cfg.Data().Mock.Length)
 			} else {
 				log.Info().Msg("[app] mock loading is disabled")
 			}
@@ -172,9 +168,9 @@ var useYamlCfgErr = errors.New("user choose a yaml config file instead")
 
 // loadDataInteractive asks user to select dump by date desc, mocks, yaml config, edit or exit.
 func (c *Cache) loadDataInteractive(ctx context.Context) error {
-	entries, err := os.ReadDir(c.cfg.Persistence.Dump.Dir)
+	entries, err := os.ReadDir(c.cfg.Data().Dump.Dir)
 	if err != nil {
-		log.Fatal().Err(err).Msgf("[dump] failed to read dumps dir %q: %v", c.cfg.Persistence.Dump.Dir, err)
+		log.Fatal().Err(err).Msgf("[dump] failed to read dumps dir %q: %v", c.cfg.Data().Dump.Dir, err)
 		return err
 	}
 
@@ -183,7 +179,7 @@ func (c *Cache) loadDataInteractive(ctx context.Context) error {
 		if !e.IsDir() {
 			continue
 		}
-		full := filepath.Join(c.cfg.Persistence.Dump.Dir, e.Name())
+		full := filepath.Join(c.cfg.Data().Dump.Dir, e.Name())
 		info, err := os.Stat(full)
 		if err != nil {
 			log.Err(err).Msgf("[dump] warning: cannot stat %q: %v", full, err)
@@ -197,7 +193,7 @@ func (c *Cache) loadDataInteractive(ctx context.Context) error {
 		versions = append(versions, Version{e.Name(), sz, info.ModTime()})
 	}
 	if len(versions) == 0 {
-		log.Err(err).Msgf("[dump] no versions in '%s'", c.cfg.Persistence.Dump.Dir)
+		log.Err(err).Msgf("[dump] no versions in '%s'", c.cfg.Data().Dump.Dir)
 	} else {
 		// sort by ModTime descending
 		sort.Slice(versions, func(i, j int) bool { return versions[i].ModTime.After(versions[j].ModTime) })
@@ -252,7 +248,7 @@ func (c *Cache) loadDataInteractive(ctx context.Context) error {
 		// mocks
 		res, _ := numberOfMocksPrompt.Run()
 		nMocks, _ := strconv.Atoi(res)
-		storage.LoadMocks(ctx, c.cfg, c.backend, c.db, nMocks)
+		storage.LoadMocks(ctx, c.cfg, c.upstream, c.db, nMocks)
 
 	case idx == n+2:
 		// YAML config selection menu

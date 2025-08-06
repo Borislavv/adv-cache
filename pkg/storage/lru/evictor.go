@@ -25,7 +25,7 @@ type EvictionStat struct {
 }
 
 type Evictor interface {
-	run()
+	runInstances()
 }
 
 type Evict struct {

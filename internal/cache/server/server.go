@@ -31,7 +31,7 @@ type Http interface {
 // HttpServer implements Http, wraps all dependencies required for running the HTTP server.
 type HttpServer struct {
 	ctx           context.Context
-	cfg           *config.Cache
+	cfg           config.Config
 	db            storage.Storage
 	backend       upstream.Upstream
 	probe         liveness.Prober
@@ -44,7 +44,7 @@ type HttpServer struct {
 // If any step fails, returns an error and performs cleanup.
 func New(
 	ctx context.Context,
-	cfg *config.Cache,
+	cfg config.Config,
 	db storage.Storage,
 	backend upstream.Upstream,
 	probe liveness.Prober,

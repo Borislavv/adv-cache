@@ -68,8 +68,9 @@ type Backend interface {
 	Name() string
 	IsHealthy() bool
 	Update(cfg *config.Backend) error
-	Fetch(rule *config.Rule, path, query []byte, queryHeaders *[][2][]byte) (
-		status int, headers *[][2][]byte, body []byte, releaseFn func(), err error,
+	Fetch(rule *config.Rule, ctx *fasthttp.RequestCtx) (
+		path, query []byte, qHeaders, rHeaders *[][2][]byte,
+		status int, body []byte, releaseFn func(), err error,
 	)
 }
 
@@ -117,16 +118,14 @@ func (b *BackendNode) Update(cfg *config.Backend) error {
 	return nil
 }
 
-func (b *BackendNode) Fetch(
-	rule *config.Rule, path []byte, query []byte, queryHeaders *[][2][]byte,
-) (
-	status int, headers *[][2][]byte, body []byte, releaseFn func(), err error,
+func (b *BackendNode) FetchFasthttp(rule *config.Rule, ctx *fasthttp.RequestCtx) (
+	path, query []byte, qHeaders, rHeaders *[][2][]byte,
+	status int, body []byte, releaseFn func(), err error,
 ) {
 	if err = b.rateLimiter.Wait(b.ctx); err != nil {
-		return 0, nil, nil, emptyReleaseFn, err
+		return nil, nil, nil, nil, 0, nil, emptyReleaseFn, err
 	}
-
-	return b.requestExternalBackend(rule, path, query, queryHeaders)
+	return b.requestExternalBackend(rule, ctx)
 }
 
 // MakeRevalidator builds a new revalidator for model.Response by catching a request into closure for backend able to call backend later.
@@ -156,88 +155,109 @@ var (
 
 // requestExternalBackend actually performs the HTTP request to backend and parses the response.
 func (b *BackendNode) requestExternalBackend(
-	rule *config.Rule, path []byte, query []byte, queryHeaders *[][2][]byte,
-) (status int, headers *[][2][]byte, body []byte, releaseFn func(), err error) {
+	rule *config.Rule, ctx *fasthttp.RequestCtx,
+) (
+	path, query []byte, qHeaders, rHeaders *[][2][]byte,
+	status int, body []byte, releaser func(q, h *[][2][]byte), err error, TODO stopped here -> (q, h
+) {
+	cfg := b.cfg.Load()
+	path = ctx.Path()
+	query = ctx.QueryArgs().QueryString()
+
+	/**
+	 * Acquire request.
+	 */
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)
-
-	urlBuf := urlBufPool.Get().(*bytes.Buffer)
-	defer func() { urlBuf.Reset(); urlBufPool.Put(urlBuf) }()
-
-	cfg := b.cfg.Load()
-
 	req.Header.SetMethod(fasthttp.MethodGet)
-	urlBuf.Grow(len(cfg.UrlBytes) + len(path) + len(query) + 1)
 
-	if _, err = urlBuf.Write(cfg.UrlBytes); err != nil {
-		return 0, nil, nil, emptyReleaseFn, err
+	/**
+	 * Builds URL and return it in pool immediately due to it already set upped into request.
+	 */
+	urlLen := len(cfg.UrlBytes) + len(path) + len(query) + 1
+	urlBuf := urlBufPool.Get().(*[]byte)
+	if len(*urlBuf) < urlLen {
+		*urlBuf = make([]byte, 0, urlLen)
 	}
-	if _, err = urlBuf.Write(path); err != nil {
-		return 0, nil, nil, emptyReleaseFn, err
-	}
-	if _, err = urlBuf.Write(queryPrefix); err != nil {
-		return 0, nil, nil, emptyReleaseFn, err
-	}
-	if _, err = urlBuf.Write(query); err != nil {
-		return 0, nil, nil, emptyReleaseFn, err
-	}
-	req.SetRequestURIBytes(urlBuf.Bytes())
+	*urlBuf = append(*urlBuf, cfg.UrlBytes...)
+	*urlBuf = append(*urlBuf, path...)
+	*urlBuf = append(*urlBuf, queryPrefix...)
+	*urlBuf = append(*urlBuf, query...)
+	req.SetRequestURIBytes(req.URI().FullURI())
+	urlBufPool.Put((*urlBuf)[:0])
 
-	var isMaxTimeoutUsageAllowed bool
-	for _, kv := range *queryHeaders {
-		req.Header.SetBytesKV(kv[0], kv[1])
-		if bytes.Equal(kv[0], cfg.UseMaxTimeoutHeaderBytes) {
-			isMaxTimeoutUsageAllowed = true
+	/**
+	 * 1. Acquire and parse query headers.
+	 * 2. Determines, should he use a regular timeout or the maximum value.
+	 * 3. Sets query headers to new request.
+	 */
+	var timeout = cfg.Timeout
+	*qHeaders = (*(pools.KeyValueSlicePool.Get().(*[][2][]byte)))[:0]
+	ctx.Request.Header.All()(func(key []byte, value []byte) bool {
+		req.Header.SetBytesKV(key, value)
+		*qHeaders = append(*qHeaders, [2][]byte{key, value})
+		if bytes.Equal(key, cfg.UseMaxTimeoutHeaderBytes) {
+			timeout = cfg.MaxTimeout
 		}
-	}
+		return true
+	})
 
-	var timeout time.Duration
-	if isMaxTimeoutUsageAllowed {
-		timeout = cfg.MaxTimeout
-	} else {
-		timeout = cfg.Timeout
-	}
-
+	/**
+	 * Acquire and execute request, set status code value.
+	 */
 	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
 	if err = pools.BackendHttpClientPool.DoTimeout(req, resp, timeout); err != nil {
-		fasthttp.ReleaseResponse(resp)
-		return 0, nil, nil, emptyReleaseFn, err
+		pools.KeyValueSlicePool.Put((*qHeaders)[:0])
+		status = resp.StatusCode()
+		return
+	} else {
+		status = resp.StatusCode()
 	}
 
-	headers = pools.KeyValueSlicePool.Get().(*[][2][]byte)
-
+	/**
+	 * Parse response headers and store only available.
+	 */
+	*rHeaders = (*(pools.KeyValueSlicePool.Get().(*[][2][]byte)))[:0]
 	if rule != nil {
 		allowedHeadersMap := rule.CacheValue.HeadersMap
-		resp.Header.VisitAll(func(k, v []byte) {
+		resp.Header.All()(func(k, v []byte) bool {
 			if _, ok := allowedHeadersMap[unsafe.String(unsafe.SliceData(k), len(k))]; ok {
-				*headers = append(*headers, [2][]byte{k, v})
+				*rHeaders = append(*rHeaders, [2][]byte{k, v})
 			}
+			return true
 		})
 	} else {
-		resp.Header.VisitAll(func(k, v []byte) {
-			*headers = append(*headers, [2][]byte{k, v})
+		resp.Header.All()(func(k, v []byte) bool {
+			*rHeaders = append(*rHeaders, [2][]byte{k, v})
+			return true
 		})
 	}
 
+	/**
+	 * Acquire buffer for read body into.
+	 */
 	buf := pools.BackendBodyBufferPool.Get().(*bytes.Buffer)
 
-	// make a final releaser func
-	releaseFn = func() {
-		*headers = (*headers)[:0]
-		pools.KeyValueSlicePool.Put(headers)
-
+	/**
+	 * Sets upped releaser func.
+	 * If you don't know why it is here, read more about sync.Pool, memory management and 'use after free' error.
+	 */
+	releaser = func(qHeaders, rHeaders *[][2][]byte) {
 		buf.Reset()
 		pools.BackendBodyBufferPool.Put(buf)
-
-		fasthttp.ReleaseResponse(resp)
+		pools.KeyValueSlicePool.Put((*qHeaders)[:0])
+		pools.KeyValueSlicePool.Put((*rHeaders)[:0])
 	}
 
 	if err = resp.BodyWriteTo(buf); err != nil {
-		releaseFn() // release on error
-		return 0, nil, nil, emptyReleaseFn, err
+		releaser()
+		return
+	} else {
+		body = buf.Bytes()
 	}
 
-	return resp.StatusCode(), headers, buf.Bytes(), releaseFn, nil
+	return
 }
 
 func (b *BackendNode) Name() string {
@@ -273,4 +293,16 @@ func (b *BackendNode) IsHealthy() bool {
 	statusCode := resp.StatusCode()
 
 	return statusCode != fasthttp.StatusOK
+}
+
+var (
+	// if you return a releaser as an outer variable it will not allocate closure each time on call function
+	queryHeadersReleaser = func(headers *[][2][]byte) {
+		*headers = (*headers)[:0]
+		pools.KeyValueSlicePool.Put(headers)
+	}
+)
+
+func parseQueryHeaders(r *fasthttp.RequestCtx) (headers *[][2][]byte, releaseFn func(*[][2][]byte)) {
+
 }

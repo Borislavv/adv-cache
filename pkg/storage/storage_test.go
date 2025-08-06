@@ -23,7 +23,7 @@ var (
 	path = []byte("/api/v2/pagedata")
 )
 
-var cfg *config.Cache
+var cfg config.Config
 
 func init() {
 	cfg = &config.Cache{

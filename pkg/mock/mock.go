@@ -5,7 +5,6 @@ import (
 	"context"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/model"
-	"github.com/Borislavv/advanced-cache/pkg/upstream"
 	"math/rand"
 	"runtime"
 	"strconv"
@@ -35,7 +34,7 @@ var responseBytes = []byte(`{
 }
 `)
 
-func GenerateRandomEntryPointer(cfg *config.Cache, backend upstream.Upstream, path []byte) *model.Entry {
+func GenerateRandomEntryPointer(cfg config.Config, path []byte) *model.Entry {
 	i := rand.Intn(10_000_000)
 
 	query := make([]byte, 0, 512)
@@ -63,7 +62,7 @@ func GenerateRandomEntryPointer(cfg *config.Cache, backend upstream.Upstream, pa
 	}
 
 	// releaser is unnecessary due to all entries will escape to heap
-	entry, err := model.NewEntryManual(cfg, path, query, &queryHeaders, backend.MakeRevalidator())
+	entry, err := model.NewEntryManual(cfg, path, query, &queryHeaders)
 	if err != nil {
 		panic(err)
 	}
@@ -72,7 +71,7 @@ func GenerateRandomEntryPointer(cfg *config.Cache, backend upstream.Upstream, pa
 	return entry
 }
 
-func GenerateEntryPointersConsecutive(cfg *config.Cache, backend upstream.Upstream, path []byte, num int) []*model.Entry {
+func GenerateEntryPointersConsecutive(cfg config.Config, path []byte, num int) []*model.Entry {
 	res := make([]*model.Entry, 0, num)
 
 	i := 0
@@ -105,7 +104,7 @@ func GenerateEntryPointersConsecutive(cfg *config.Cache, backend upstream.Upstre
 		}
 
 		// releaser is unnecessary due to all entries will escape to heap
-		entry, err := model.NewEntryManual(cfg, path, query, &queryHeaders, backend.MakeRevalidator())
+		entry, err := model.NewEntryManual(cfg, path, query, &queryHeaders)
 		if err != nil {
 			panic(err)
 		}
@@ -119,7 +118,7 @@ func GenerateEntryPointersConsecutive(cfg *config.Cache, backend upstream.Upstre
 	return res
 }
 
-func StreamEntryPointersConsecutive(ctx context.Context, cfg *config.Cache, backend upstream.Upstream, path []byte, num int) <-chan *model.Entry {
+func StreamEntryPointersConsecutive(ctx context.Context, config config.Config, path []byte, num int) <-chan *model.Entry {
 	outCh := make(chan *model.Entry, runtime.GOMAXPROCS(0)*4)
 	go func() {
 		defer close(outCh)
@@ -158,7 +157,7 @@ func StreamEntryPointersConsecutive(ctx context.Context, cfg *config.Cache, back
 				}
 
 				// releaser is unnecessary due to all entries will escape to heap
-				entry, err := model.NewEntryManual(cfg, path, query, &queryHeaders, backend.MakeRevalidator())
+				entry, err := model.NewEntryManual(config, path, query, &queryHeaders)
 				if err != nil {
 					panic(err)
 				}
@@ -172,7 +171,7 @@ func StreamEntryPointersConsecutive(ctx context.Context, cfg *config.Cache, back
 	return outCh
 }
 
-func StreamEntriesConsecutive(ctx context.Context, cfg *config.Cache, backend upstream.Upstream, path []byte, num int) <-chan *model.Entry {
+func StreamEntriesConsecutive(ctx context.Context, cfg config.Config, path []byte, num int) <-chan *model.Entry {
 	outCh := make(chan *model.Entry, runtime.GOMAXPROCS(0)*4*10000)
 	go func() {
 		defer close(outCh)
@@ -210,7 +209,7 @@ func StreamEntriesConsecutive(ctx context.Context, cfg *config.Cache, backend up
 				}
 
 				// releaser is unnecessary due to all entries will escape to heap
-				entry, err := model.NewEntryManual(cfg, path, query, &queryHeaders, backend.MakeRevalidator())
+				entry, err := model.NewEntryManual(cfg, path, query, &queryHeaders)
 				if err != nil {
 					panic(err)
 				}

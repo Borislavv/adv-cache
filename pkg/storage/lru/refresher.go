@@ -2,7 +2,11 @@ package lru
 
 import (
 	"context"
+	"errors"
+	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/Borislavv/advanced-cache/pkg/rate"
+	"github.com/Borislavv/advanced-cache/pkg/upstream"
+	"net/http"
 	"sync/atomic"
 	"time"
 
@@ -20,8 +24,10 @@ var (
 	failedRefreshesNumCounter  = atomic.Int64{}
 )
 
+var ErrRefreshUpstreamBadStatusCode = errors.New("invalid upstream status code")
+
 type Refresher interface {
-	run()
+	runInstances()
 }
 
 // Refresh is responsible for background refreshing of cache entries.
@@ -29,17 +35,21 @@ type Refresher interface {
 // (from the end of each shard's InMemoryStorage list) to refreshItem if necessary.
 // Communication: provider->consumer (MPSC).
 type Refresh struct {
-	ctx     context.Context
-	cfg     config.Config
-	storage *InMemoryStorage
+	ctx      context.Context
+	cfg      config.Config
+	storage  Storage
+	upstream upstream.Upstream
+	errorsCh chan error
 }
 
 // NewRefresher constructs a Refresh.
-func NewRefresher(ctx context.Context, cfg config.Config, storage *InMemoryStorage) *Refresh {
+func NewRefresher(ctx context.Context, cfg config.Config, storage Storage, upstream upstream.Upstream) *Refresh {
 	return &Refresh{
-		ctx:     ctx,
-		cfg:     cfg,
-		storage: storage,
+		ctx:      ctx,
+		cfg:      cfg,
+		storage:  storage,
+		upstream: upstream,
+		errorsCh: make(chan error, 2048),
 	}
 }
 
@@ -48,18 +58,19 @@ func NewRefresher(ctx context.Context, cfg config.Config, storage *InMemoryStora
 // and continuously processes shard samples for candidate responses to refreshItem.
 func (r *Refresh) Run() *Refresh {
 	if r.cfg.IsEnabled() && r.cfg.Refresh().Enabled {
-		r.runLogger() // handle consumer stats and print logs
-		r.run()       // run workers (N=workersNum) which scan the storage and run async refresh tasks
+		r.runLogger()           // handle consumer stats and print logs
+		r.runDedupErrorLogger() // deduplicates errors
+		r.runInstances()        // runInstances workers (N=workersNum) which scan the storage and runInstances async refresh tasks
 	}
 	return r
 }
 
-func (r *Refresh) run() {
+func (r *Refresh) runInstances() {
 	scanRateCh := rate.NewLimiter(r.ctx, r.cfg.Refresh().ScanRate, r.cfg.Refresh().ScanRate/10).Chan()
 	upstreamRateCh := rate.NewLimiter(r.ctx, r.cfg.Refresh().Rate, r.cfg.Refresh().Rate/10).Chan()
 
-	for i := 0; i < workersNum; i++ {
-		go func() {
+	for id := 0; id < workersNum; id++ {
+		go func(id int) {
 			for {
 				select {
 				case <-r.ctx.Done():
@@ -72,19 +83,73 @@ func (r *Refresh) run() {
 						case <-r.ctx.Done():
 							return
 						case <-upstreamRateCh:
-							go func() {
-								if err := entry.Revalidate(); err != nil {
+							go func(refresherID int) {
+								if err := r.refresh(entry); err != nil {
+									r.errorsCh <- err
 									failedRefreshesNumCounter.Add(1)
 								} else {
 									successRefreshesNumCounter.Add(1)
 								}
-							}()
+							}(id)
 						}
 					}
 				}
 			}
-		}()
+		}(id)
 	}
+}
+
+func (r *Refresh) refresh(e *model.Entry) error {
+	path, query, headers, respHeaders, _, _, release, err := e.Payload()
+	defer release(headers, respHeaders)
+	if err != nil {
+		return err
+	}
+
+	statusCode, respHeaders, body, releaser, err := r.upstream.Fetch(e.Rule(), path, query, headers)
+	defer releaser()
+	if err != nil {
+		return err
+	}
+	if statusCode != http.StatusOK {
+		return ErrRefreshUpstreamBadStatusCode
+	}
+
+	e.SetPayload(path, query, headers, respHeaders, body, statusCode)
+
+	return nil
+}
+
+func (r *Refresh) runDedupErrorLogger() {
+	go func() {
+		var prev map[string]int
+		dedupMap := make(map[string]int, 2048)
+		each5Secs := utils.NewTicker(r.ctx, time.Second*5)
+
+		writeTrigger := make(chan struct{}, 1)
+		defer close(writeTrigger)
+
+		go func() {
+			for range writeTrigger {
+				for err, count := range prev {
+					log.Error().Msgf("[refresher][error] %s (count=%d)", err, count)
+				}
+			}
+		}()
+
+		for {
+			select {
+			case <-r.ctx.Done():
+				return
+			case err := <-r.errorsCh:
+				dedupMap[err.Error()]++
+			case <-each5Secs:
+				prev = dedupMap
+				dedupMap = make(map[string]int, len(prev))
+				writeTrigger <- struct{}{}
+			}
+		}
+	}()
 }
 
 // runLogger periodically logs the number of successful and failed refreshItem attempts.
@@ -134,22 +199,22 @@ func (r *Refresh) runLogger() {
 
 			case <-each5Secs:
 				success := successRefreshesNumCounter.Swap(0)
-				errors := failedRefreshesNumCounter.Swap(0)
+				errs := failedRefreshesNumCounter.Swap(0)
 				scans := scansNumCounter.Swap(0)
 				found := scansFoundNumCounter.Swap(0)
 
 				accHourly.success += success
-				accHourly.errors += errors
+				accHourly.errors += errs
 				accHourly.scans += scans
 				accHourly.found += found
 
 				acc12Hourly.success += success
-				acc12Hourly.errors += errors
+				acc12Hourly.errors += errs
 				acc12Hourly.scans += scans
 				acc12Hourly.found += found
 
 				acc24Hourly.success += success
-				acc24Hourly.errors += errors
+				acc24Hourly.errors += errs
 				acc24Hourly.scans += scans
 				acc24Hourly.found += found
 
@@ -158,12 +223,12 @@ func (r *Refresh) runLogger() {
 					logEvent = logEvent.
 						Str("target", "refresher").
 						Int64("refreshes", success).
-						Int64("errors", errors).
+						Int64("errors", errs).
 						Int64("scans", scans).
 						Int64("scans_found", found)
 				}
 				logEvent.Msgf("[refresher][5s] refreshes=%d, errors=%d, scans=%d, found=%d",
-					success, errors, scans, found)
+					success, errs, scans, found)
 
 			case <-eachHour:
 				logCounters("1h", accHourly)

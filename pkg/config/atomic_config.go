@@ -21,7 +21,7 @@ type AtomicCache struct {
 	rules    map[string]*atomic.Pointer[Rule]
 }
 
-func MakeConfigAtomic(config *Cache) *AtomicCache {
+func makeConfigAtomic(config *Cache) *AtomicCache {
 	atomicCfg := &AtomicCache{}
 
 	atomicCfg.env.Store(&config.Cache.Env)
@@ -90,6 +90,13 @@ func (c *AtomicCache) Runtime() *Runtime {
 }
 func (c *AtomicCache) SetRuntime(v *Runtime) {
 	c.runtime.Store(v)
+}
+
+func (c *AtomicCache) Api() *Api {
+	return c.api.Load()
+}
+func (c *AtomicCache) SetApi(v *Api) {
+	c.api.Store(v)
 }
 
 func (c *AtomicCache) Upstream() *Upstream {

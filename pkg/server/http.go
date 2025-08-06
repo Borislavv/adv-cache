@@ -9,19 +9,20 @@ import (
 	"github.com/fasthttp/router"
 	"github.com/rs/zerolog/log"
 	"github.com/valyala/fasthttp"
+	"strings"
 	"sync"
 	"time"
 )
 
 type HTTP struct {
 	ctx    context.Context
-	config *config.Cache
+	config config.Config
 	server *fasthttp.Server
 }
 
 func New(
 	ctx context.Context,
-	config *config.Cache,
+	config config.Config,
 	controllers []controller.HttpController,
 	middlewares []middleware.HttpMiddleware,
 ) (*HTTP, error) {
@@ -44,11 +45,15 @@ func (s *HTTP) ListenAndServe() {
 func (s *HTTP) serve(wg *sync.WaitGroup) {
 	defer wg.Done()
 
-	name := s.config.Upstream.Name
-	port := s.config.Upstream.To
+	apiCfg := s.config.Api()
+	name := apiCfg.Name
+	port := apiCfg.Port
+	if !strings.HasPrefix(port, ":") {
+		port = ":" + port
+	}
 
-	log.Info().Msgf("[server] %v was started (port: %v)", name, port)
-	defer log.Info().Msgf("[server] %v was stopped (port: %v)", name, port)
+	log.Info().Msgf("[server] %v was started on %v", name, port)
+	defer log.Info().Msgf("[server] %v was stopped on %v", name, port)
 
 	if err := s.server.ListenAndServe(port); err != nil {
 		log.Error().Err(err).Msgf("[server] %v failed to listen and serve port %v: %v", name, port, err.Error())
@@ -65,7 +70,7 @@ func (s *HTTP) shutdown(wg *sync.WaitGroup) {
 
 	if err := s.server.ShutdownWithContext(ctx); err != nil {
 		if !errors.Is(err, context.Canceled) {
-			log.Warn().Msgf("[server] %v shutdown failed: %v", s.config.Upstream.Name, err.Error())
+			log.Warn().Msgf("[server] %v shutdown failed: %v", s.config.Api().Name, err.Error())
 		}
 		return
 	}

@@ -18,8 +18,6 @@ import (
 // Storage is a generic interface for cache storages.
 // It supports typical Get/Set operations with reference management.
 type Storage interface {
-	Run()
-
 	// Get attempts to retrieve a cached response for the given request.
 	// Returns the response, a releaser for safe concurrent access, and a hit/miss flag.
 	Get(*model.Entry) (entry *model.Entry, hit bool)
@@ -72,7 +70,7 @@ func NewStorage(ctx context.Context, cfg config.Config, upstream upstream.Upstre
 	shardedMap := sharded.NewMap[*model.Entry](ctx)
 	balancer := NewBalancer(ctx, shardedMap)
 
-	db := (&InMemoryStorage{
+	db := &InMemoryStorage{
 		ctx:             ctx,
 		cfg:             cfg,
 		shardedMap:      shardedMap,
@@ -80,15 +78,14 @@ func NewStorage(ctx context.Context, cfg config.Config, upstream upstream.Upstre
 		upstream:        upstream,
 		tinyLFU:         lfu.NewTinyLFU(ctx),
 		memoryThreshold: int64(float64(cfg.Storage().Size) * cfg.Eviction().Threshold),
-	}).init()
+	}
+
+	db.init()
+	db.runLogger()
+	NewRefresher(ctx, cfg, db, upstream).Run()
+	NewEvictor(ctx, cfg, db, db.balancer).Run()
 
 	return db
-}
-
-func (s *InMemoryStorage) Run() {
-	s.runLogger()
-	NewRefresher(s.ctx, s.cfg, s).Run()
-	NewEvictor(s.ctx, s.cfg, s, s.balancer).Run()
 }
 
 func (s *InMemoryStorage) init() *InMemoryStorage {
@@ -205,7 +202,6 @@ func (s *InMemoryStorage) touch(existing *model.Entry) {
 // update refreshes Weight accounting and InMemoryStorage position for an updated entry.
 func (s *InMemoryStorage) update(existing, new *model.Entry) {
 	existing.SwapPayloads(new)
-	existing.TouchUpdatedAt()
 	s.balancer.Update(existing)
 }
 
