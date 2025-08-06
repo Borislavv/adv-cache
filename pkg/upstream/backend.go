@@ -49,7 +49,8 @@ var transport = &http.Transport{
 	ExpectContinueTimeout: 1 * time.Second,
 }
 
-type Backend struct {
+type BackendNode struct {
+	name        string
 	ctx         context.Context
 	cfg         *atomic.Pointer[config.Backend]
 	transport   *http.Transport
@@ -57,16 +58,17 @@ type Backend struct {
 	rateLimiter *rate.Limiter
 }
 
-// NewBackend creates a new instance of Backend.
-func NewBackend(ctx context.Context, cfg *config.Backend) *Backend {
+// NewBackend creates a new instance of BackendNode.
+func NewBackend(ctx context.Context, cfg *config.Backend, name string) *BackendNode {
 	backendRate := cfg.Rate
 	backendRateBurst := backendRate / 30
 	if backendRateBurst <= 1 {
 		backendRateBurst = 1
 	}
 
-	backend := &Backend{
-		ctx: ctx,
+	backend := &BackendNode{
+		ctx:  ctx,
+		name: name,
 		clientsPool: &sync.Pool{
 			New: func() interface{} {
 				return &http.Client{
@@ -86,7 +88,7 @@ func NewBackend(ctx context.Context, cfg *config.Backend) *Backend {
 	return backend
 }
 
-func (s *Backend) Fetch(
+func (s *BackendNode) Fetch(
 	rule *config.Rule, path []byte, query []byte, queryHeaders *[][2][]byte,
 ) (
 	status int, headers *[][2][]byte, body []byte, releaseFn func(), err error,
@@ -99,7 +101,7 @@ func (s *Backend) Fetch(
 }
 
 // MakeRevalidator builds a new revalidator for model.Response by catching a request into closure for be able to call backend later.
-func (s *Backend) MakeRevalidator() func(
+func (s *BackendNode) MakeRevalidator() func(
 	rule *config.Rule, path []byte, query []byte, queryHeaders *[][2][]byte,
 ) (
 	status int, headers *[][2][]byte, body []byte, releaseFn func(), err error,
@@ -124,7 +126,7 @@ var (
 )
 
 // requestExternalBackend actually performs the HTTP request to backend and parses the response.
-func (s *Backend) requestExternalBackend(
+func (s *BackendNode) requestExternalBackend(
 	rule *config.Rule, path []byte, query []byte, queryHeaders *[][2][]byte,
 ) (status int, headers *[][2][]byte, body []byte, releaseFn func(), err error) {
 	req := fasthttp.AcquireRequest()
@@ -209,7 +211,11 @@ func (s *Backend) requestExternalBackend(
 	return resp.StatusCode(), headers, buf.Bytes(), releaseFn, nil
 }
 
-func (s *Backend) IsHealthy() bool {
+func (s *BackendNode) Name() string {
+	return s.name
+}
+
+func (s *BackendNode) IsHealthy() bool {
 	cfg := s.cfg.Load()
 
 	req := fasthttp.AcquireRequest()
