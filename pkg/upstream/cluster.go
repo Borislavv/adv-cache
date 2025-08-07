@@ -47,11 +47,12 @@ const (
 // -----------------------------------------------------------------------------
 
 var (
-	ErrNoBackends         = errors.New("no healthy backends in cluster")
-	ErrDuplicate          = errors.New("backend already exists in cluster")
-	ErrNotFound           = errors.New("backend not found in cluster")
-	ErrNilBackend         = errors.New("nil backend")
-	ErrAllBackendsAreBusy = errors.New("all backends are busy")
+	ErrNoBackends                   = errors.New("no healthy backends in cluster")
+	ErrDuplicate                    = errors.New("backend already exists in cluster")
+	ErrNotFound                     = errors.New("backend not found in cluster")
+	ErrNilBackendConfig             = errors.New("nil backend config")
+	ErrAllBackendsAreBusy           = errors.New("all backends are busy")
+	ErrCannotFindNameForNameBackend = errors.New("cannot find name for backend")
 )
 
 // -----------------------------------------------------------------------------
@@ -137,72 +138,53 @@ type BackendCluster struct {
 
 	hcTicker     <-chan time.Time
 	killerTicker <-chan time.Time
+
+	reservedNames map[string]struct{}
 }
 
 // NewCluster initialises cluster & launches active HC.
-func NewCluster(ctx context.Context, cfg config.Config) (c *BackendCluster, err error) {
-	c = &BackendCluster{
-		ctx:          ctx,
-		cfg:          cfg,
-		all:          make(map[string]*backendSlot),
-		sick:         make(map[string]*backendSlot),
-		dead:         make(map[string]*backendSlot),
-		hcTicker:     utils.NewTicker(ctx, hcInterval),
-		killerTicker: utils.NewTicker(ctx, killerInterval),
-		names:        make(map[string]struct{}, len(cfg.Upstream().Cluster.Backends)),
+func NewCluster(ctx context.Context, cfg config.Config) (cluster *BackendCluster, err error) {
+	cluster = &BackendCluster{
+		ctx:           ctx,
+		cfg:           cfg,
+		all:           make(map[string]*backendSlot),
+		sick:          make(map[string]*backendSlot),
+		dead:          make(map[string]*backendSlot),
+		hcTicker:      utils.NewTicker(ctx, hcInterval),
+		killerTicker:  utils.NewTicker(ctx, killerInterval),
+		reservedNames: make(map[string]struct{}, len(cfg.Upstream().Cluster.Backends)),
 	}
 
 	gofakeit.Seed(time.Now().UnixNano())
-	reserved := make(map[string]struct{}, len(cfg.Upstream().Cluster.Backends))
-
 	var healthySlots []*backendSlot
-	for _, bcfg := range cfg.Upstream().Cluster.Backends {
-		name := bcfg.Name
-		if name == "" {
-			for i := 0; i < 10_000; i++ {
-				cand := strings.ToLower(gofakeit.FirstName())
-				if _, dup := reserved[cand]; !dup {
-					name = cand
-					reserved[name] = struct{}{}
-					break
-				}
-			}
+	for _, backendCfg := range cfg.Upstream().Cluster.Backends {
+		if err = cluster.Add(backendCfg); err != nil {
+			log.Error().Err(err).Msg("[upstream-cluster] adding backend failed")
 		}
-
-		slot := newBackendSlot(ctx, NewBackend(ctx, bcfg, name))
-		if slot.backend.IsHealthy() {
-			slot.state = healthy
-			healthySlots = append(healthySlots, slot)
-		} else {
-			slot.state = sick
-			c.sick[name] = slot
-		}
-		c.all[name] = slot
 	}
 
-	c.setHealthySlice(healthySlots)
+	cluster.setHealthySlice(healthySlots)
 	healthyGauge.Store(int64(len(healthySlots)))
-	sickGauge.Store(int64(len(c.sick)))
+	sickGauge.Store(int64(len(cluster.sick)))
 
-	if len(healthySlots) == 0 {
-		err = ErrNoBackends
+	// start a lifecycle manager
+	cluster.runLifeCycle()
+
+	if len(healthySlots) <= 0 {
 		log.Error().
 			Int64("healthy", HealthyBackends()).
 			Int64("sick", SickBackends()).
 			Int64("dead", DeadBackends()).
 			Msg("[upstream-cluster] init failed: no healthy backends")
+		return cluster, ErrNoBackends
 	} else {
 		log.Info().
 			Int64("healthy", HealthyBackends()).
 			Int64("sick", SickBackends()).
 			Int64("dead", DeadBackends()).
 			Msg("[upstream-cluster] cluster initialised")
+		return cluster, nil
 	}
-
-	// start a lifecycle manager
-	c.runLifeCycle()
-
-	return
 }
 
 // -----------------------------------------------------------------------------
@@ -246,24 +228,28 @@ func (c *BackendCluster) Fetch(rule *config.Rule, ctx *fasthttp.RequestCtx, r *f
 // Mutation API.
 // -----------------------------------------------------------------------------
 
-func (c *BackendCluster) Add(backend Backend) error {
-	if backend == nil {
-		return ErrNilBackend
-	}
-	name := backend.Name()
-	if name == "" {
-		for i := 0; i < 10_000; i++ {
-			cand := strings.ToLower(gofakeit.FirstName())
-			if _, dup := reserved[cand]; !dup {
-				name = cand
-				reserved[name] = struct{}{}
-				break
-			}
-		}
+func (c *BackendCluster) Add(cfg *config.Backend) error {
+	if cfg == nil {
+		return ErrNilBackendConfig
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	var name string
+	for range 100_000 {
+		cand := strings.ToLower(gofakeit.FirstName())
+		if _, dup := c.reservedNames[cand]; !dup {
+			name = cand
+			c.reservedNames[name] = struct{}{}
+			break
+		}
+	}
+	if name == "" {
+		return ErrCannotFindNameForNameBackend
+	}
+
+	backend := NewBackend(c.ctx, cfg, name)
 
 	if _, dup := c.all[name]; dup {
 		log.Warn().Str("backend", name).Msg("[upstream-cluster] add ignored: duplicate")
@@ -284,6 +270,7 @@ func (c *BackendCluster) Add(backend Backend) error {
 		sickGauge.Add(1)
 		log.Info().Str("backend", name).Msg("[upstream-cluster] backend added as sick")
 	}
+
 	return nil
 }
 

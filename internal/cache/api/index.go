@@ -194,7 +194,7 @@ func (c *CacheProxyController) runErrorLogger() {
 		go func() {
 			for range writeTrigger {
 				for err, count := range prev {
-					log.Error().Msgf("[error-logger] %s (count=%d)", err, count)
+					log.Error().Msgf("[dedup-err-logger][5s] %s (count=%d)", err, count)
 				}
 			}
 		}()

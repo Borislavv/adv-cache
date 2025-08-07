@@ -58,7 +58,7 @@ func NewApp(ctx context.Context, cfg config.Config, probe liveness.Prober) (cach
 		if !wannaContinueAfterError("Failed to create upstream", err) {
 			return nil, err
 		}
-		log.Warn().Err(err).Msg("[app] continuing with sick or dead backends in upstream cluster")
+		log.Warn().Err(err).Msg("[app] continuing without healthy backends in cluster")
 	}
 
 	db := lru.NewStorage(ctx, cfg, cluster)
