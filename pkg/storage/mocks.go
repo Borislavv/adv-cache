@@ -1,8 +1,8 @@
 package storage
 
 import (
-	"bytes"
 	"context"
+	"fmt"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/rs/zerolog/log"
@@ -12,28 +12,28 @@ import (
 	"time"
 )
 
-var responseBytes = []byte(`{
+var respTemplate = `{
   "data": {
-	"type": "seo/pagedata",
-	"attributes": {
-	  "title": "1xBet[{{...}}]: It repeats some phrases multiple times. This is a long description for SEO page data.",
-	  "description": "1xBet[{{...}}]: his is a long description for SEO page data. This description is intentionally made verbose to increase the JSON payload size.",
-	  "metaRobots": [],
-	  "hierarchyMetaRobots": [
-		{
-		  "name": "robots",
-		  "content": "noindex, nofollow"
-		}
-	  ],
-	  "ampPageUrl": null,
-	  "alternativeLinks": [],
-	  "alternateMedia": [],
-	  "customCanonical": null,
-	  "metas": [],
-	  "siteName": null
-	}
+    "type": "seo/pagedata",
+    "attributes": {
+      "title": "1xBet[%d]: It repeats some phrases multiple times. This is a long description for SEO page data.",
+      "description": "1xBet[%d]: his is a long description for SEO page data. This description is intentionally made verbose to increase the JSON payload size.",
+      "metaRobots": [],
+      "hierarchyMetaRobots": [
+        {
+          "name": "robots",
+          "content": "noindex, nofollow"
+        }
+      ],
+      "ampPageUrl": null,
+      "alternativeLinks": [],
+      "alternateMedia": [],
+      "customCanonical": null,
+      "metas": [],
+      "siteName": null
+    }
   }
-}`)
+}`
 
 func LoadMocks(ctx context.Context, config config.Config, storage Storage, num int) {
 	go func() {
@@ -179,5 +179,5 @@ func streamEntryPointersConsecutive(ctx context.Context, cfg config.Config, path
 
 // copiedBodyBytes returns a random ASCII string of length between minStrLen and maxStrLen.
 func copiedBodyBytes(idx int) []byte {
-	return bytes.ReplaceAll(responseBytes, []byte("{{...}}"), []byte(strconv.Itoa(idx)))
+	return []byte(fmt.Sprintf(respTemplate, idx, idx))
 }
