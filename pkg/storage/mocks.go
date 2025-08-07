@@ -51,6 +51,60 @@ func LoadMocks(ctx context.Context, config config.Config, storage Storage, num i
 	}()
 }
 
+func GetSingleMock(i int, path []byte, cfg config.Config) *model.Entry {
+	query := make([]byte, 0, 512)
+	query = append(query, []byte("project[id]=285")...)
+	query = append(query, []byte("&domain=1x001.com")...)
+	query = append(query, []byte("&language=en")...)
+	query = append(query, []byte("&choice[name]=betting")...)
+	query = append(query, []byte("&choice[choice][name]=betting_live")...)
+	query = append(query, []byte("&choice[choice][choice][name]=betting_live_null")...)
+	query = append(query, []byte("&choice[choice][choice][choice][name]=betting_live_null_"+strconv.Itoa(i))...)
+	query = append(query, []byte("&choice[choice][choice][choice][choice][name]betting_live_null_"+strconv.Itoa(i)+"_"+strconv.Itoa(i))...)
+	query = append(query, []byte("&choice[choice][choice][choice][choice][choice][name]betting_live_null_"+strconv.Itoa(i)+"_"+strconv.Itoa(i)+"_"+strconv.Itoa(i))...)
+	query = append(query, []byte("&choice[choice][choice][choice][choice][choice][choice]=null")...)
+
+	queryHeaders := [][2][]byte{
+		{[]byte("Host"), []byte("0.0.0.0:8020")},
+		{[]byte("Accept-Encoding"), []byte("gzip, deflate, br")},
+		{[]byte("Accept-Language"), []byte("en-US,en;q=0.9")},
+		{[]byte("Content-Type"), []byte("application/json")},
+	}
+
+	responseHeaders := [][2][]byte{
+		{[]byte("Content-Type"), []byte("application/json")},
+		{[]byte("Vary"), []byte("Accept-Encoding, Accept-Language")},
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+
+	req.URI().SetPathBytes(path)
+	req.URI().SetQueryStringBytes(query)
+
+	for _, kv := range queryHeaders {
+		req.Header.AddBytesKV(kv[0], kv[1])
+	}
+
+	for _, kv := range responseHeaders {
+		resp.Header.AddBytesKV(kv[0], kv[1])
+	}
+
+	resp.SetStatusCode(200)
+	resp.SetBody(copiedBodyBytes(i))
+	resp.Header.SetLastModified(time.Now())
+
+	entry, err := model.NewMockEntry(cfg, req, resp)
+	if err != nil {
+		panic(err)
+	}
+
+	fasthttp.ReleaseRequest(req)
+	fasthttp.ReleaseResponse(resp)
+
+	return entry
+}
+
 func streamEntryPointersConsecutive(ctx context.Context, cfg config.Config, path []byte, num int) <-chan *model.Entry {
 	outCh := make(chan *model.Entry, runtime.GOMAXPROCS(0)*4)
 	go func() {

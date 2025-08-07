@@ -88,7 +88,7 @@ func NewEntryFastHttp(cfg config.Config, r *fasthttp.RequestCtx) (*Entry, error)
 
 func NewMockEntry(cfg config.Config, req *fasthttp.Request, resp *fasthttp.Response) (*Entry, error) {
 	path := req.URI().Path()
-	query := req.URI().QueryArgs().QueryString()
+	query := req.URI().QueryString()
 
 	rule := MatchRule(cfg, path)
 	if rule == nil {
@@ -256,7 +256,7 @@ func (e *Entry) isPayloadsAreEquals(a, b []byte) bool {
 // SetPayload packs and gzip-compresses the entire payload: Path, Query, QueryHeaders, StatusCode, ResponseHeaders, Body.
 func (e *Entry) SetPayload(req *fasthttp.Request, resp *fasthttp.Response) *Entry {
 	path := req.URI().Path()
-	query := req.URI().QueryArgs().QueryString()
+	query := req.URI().QueryString()
 	body := resp.Body()
 
 	// === 1) Calculate total size ===
@@ -799,13 +799,10 @@ func (e *Entry) getFilteredAndSortedKeyHeadersFasthttp(r *fasthttp.Request) (kvP
 	out := kvPool.Get().(*[][2][]byte)
 	*out = (*out)[:0]
 
-	allowedKeys := e.rule.Load().CacheKey.QueryBytes
-	r.URI().QueryArgs().All()(func(key, value []byte) bool {
-		for _, ak := range allowedKeys {
-			if bytes.HasPrefix(key, ak) {
-				*out = append(*out, [2][]byte{key, value})
-				break
-			}
+	allowed := e.rule.Load().CacheKey.HeadersMap
+	r.Header.All()(func(k, v []byte) bool {
+		if _, ok := allowed[unsafe.String(unsafe.SliceData(k), len(k))]; ok {
+			*out = append(*out, [2][]byte{k, v})
 		}
 		return true
 	})
