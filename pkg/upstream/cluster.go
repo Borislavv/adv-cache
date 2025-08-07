@@ -22,6 +22,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/Borislavv/advanced-cache/pkg/rate"
 	"github.com/Borislavv/advanced-cache/pkg/utils"
 	"github.com/valyala/fasthttp"
 	"net/http"
@@ -46,10 +47,11 @@ const (
 // -----------------------------------------------------------------------------
 
 var (
-	ErrNoBackends = errors.New("no healthy backends in cluster")
-	ErrDuplicate  = errors.New("backend already exists in cluster")
-	ErrNotFound   = errors.New("backend not found in cluster")
-	ErrNilBackend = errors.New("nil backend")
+	ErrNoBackends         = errors.New("no healthy backends in cluster")
+	ErrDuplicate          = errors.New("backend already exists in cluster")
+	ErrNotFound           = errors.New("backend not found in cluster")
+	ErrNilBackend         = errors.New("nil backend")
+	ErrAllBackendsAreBusy = errors.New("all backends are busy")
 )
 
 // -----------------------------------------------------------------------------
@@ -98,6 +100,23 @@ type backendSlot struct {
 	backend   Backend
 	state     State
 	hcRetries atomic.Int32
+	rate      rate.Limiter
+}
+
+func newBackendSlot(ctx context.Context, backend Backend) *backendSlot {
+	rt := backend.Cfg().Rate
+	if rt < 1 {
+		rt = 1
+	}
+	bt := backend.Cfg().Rate / 10
+	if bt < 1 {
+		bt = 1
+	}
+	return &backendSlot{
+		backend:   backend,
+		hcRetries: atomic.Int32{},
+		rate:      *rate.NewLimiter(ctx, rt, bt),
+	}
 }
 
 // -----------------------------------------------------------------------------
@@ -106,16 +125,15 @@ type backendSlot struct {
 
 type BackendCluster struct {
 	ctx context.Context
-
 	cfg config.Config
-
-	cursor   atomic.Uint64                  // RR cursor (overflow‑safe)
-	slotsPtr atomic.Pointer[[]*backendSlot] // immutable healthy slice
 
 	mu   sync.RWMutex            // guards maps & slice rebuilds
 	all  map[string]*backendSlot // every backend by name
 	sick map[string]*backendSlot // quarantined
 	dead map[string]*backendSlot // removed
+
+	cursor  atomic.Uint64                  // RR cursor (overflow‑safe)
+	healthy atomic.Pointer[[]*backendSlot] // immutable healthy slice
 
 	hcTicker     <-chan time.Time
 	killerTicker <-chan time.Time
@@ -184,34 +202,48 @@ func NewCluster(ctx context.Context, cfg config.Config) (*BackendCluster, error)
 // Hot path (Fetch) – no logs/allocs.
 // -----------------------------------------------------------------------------
 
-func (c *BackendCluster) FetchFH(rule *config.Rule, ctx *fasthttp.RequestCtx) (
-	path, query []byte, qHeaders, rHeaders *[][2][]byte,
-	status int, body []byte, releaseFn func(), err error,
+func (c *BackendCluster) Fetch(rule *config.Rule, ctx *fasthttp.RequestCtx) (
+	req *fasthttp.Request, resp *fasthttp.Response,
+	releaser func(*fasthttp.Request, *fasthttp.Response), err error,
 ) {
-	slots := c.slotsPtr.Load()
+	slots := c.healthy.Load()
 	if len(*slots) == 0 {
-		return nil, nil, nil, nil, 0, nil, emptyReleaseFn, ErrNoBackends
+		return nil, nil, emptyReleaserFn, ErrNoBackends
+	}
+	slotsLen := uint64(len(*slots))
+
+	// attempts number = healthy backends number
+	for _i := uint64(0); _i < slotsLen; _i++ {
+		// peek next slot by round-robin
+		slot := (*slots)[int(c.cursor.Add(1)%slotsLen)]
+		// check whether it can handle else one request
+		select {
+		case <-c.ctx.Done():
+			return nil, nil, emptyReleaserFn, c.ctx.Err()
+		case <-slot.rate.Chan():
+			// if so, do request
+			req, resp, releaser, err = slot.backend.Fetch(rule, ctx)
+			if err != nil || resp.StatusCode() >= http.StatusInternalServerError {
+				go c.markSickAsync(slot.backend.Name())
+			}
+			return req, resp, releaser, err
+		default:
+			continue
+		}
 	}
 
-	idx := int(c.cursor.Add(1) % uint64(len(*slots)))
-	slot := (*slots)[idx]
-
-	path, query, qHeaders, rHeaders, status, body, rel, err := slot.backend.Fetch(rule, ctx)
-	if err != nil || status >= http.StatusInternalServerError {
-		go c.markSickAsync(slot.backend.Name())
-	}
-	return path, query, qHeaders, rHeaders, status, body, rel, err
+	return nil, nil, emptyReleaserFn, ErrAllBackendsAreBusy
 }
 
 // -----------------------------------------------------------------------------
 // Mutation API.
 // -----------------------------------------------------------------------------
 
-func (c *BackendCluster) Add(be Backend) error {
-	if be == nil {
+func (c *BackendCluster) Add(backend Backend) error {
+	if backend == nil {
 		return ErrNilBackend
 	}
-	name := be.Name()
+	name := backend.Name()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -221,10 +253,10 @@ func (c *BackendCluster) Add(be Backend) error {
 		return ErrDuplicate
 	}
 
-	slot := &backendSlot{backend: be}
+	slot := newBackendSlot(c.ctx, backend)
 	c.all[name] = slot
 
-	if be.IsHealthy() {
+	if backend.IsHealthy() {
 		slot.state = healthy
 		c.appendHealthySlot(slot)
 		healthyGauge.Add(1)
@@ -397,20 +429,20 @@ func (c *BackendCluster) markSickAsync(name string) {
 // -----------------------------------------------------------------------------
 
 func (c *BackendCluster) setHealthySlice(slots []*backendSlot) {
-	c.slotsPtr.Store(&slots)
+	c.healthy.Store(&slots)
 	if len(slots) == 0 {
 		c.cursor.Store(0)
 	}
 }
 
 func (c *BackendCluster) appendHealthySlot(slot *backendSlot) {
-	old := c.slotsPtr.Load()
+	old := c.healthy.Load()
 	newSlice := append(append([]*backendSlot(nil), *old...), slot)
 	c.setHealthySlice(newSlice)
 }
 
 func (c *BackendCluster) removeFromHealthySlice(slot *backendSlot) {
-	old := c.slotsPtr.Load()
+	old := c.healthy.Load()
 	newSlice := make([]*backendSlot, 0, len(*old)-1)
 	for _, s := range *old {
 		if s != slot {

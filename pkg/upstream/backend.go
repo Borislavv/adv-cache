@@ -88,10 +88,11 @@ var transport = &http.Transport{
 type Backend interface {
 	Name() string
 	IsHealthy() bool
+	Cfg() *config.Backend
 	Update(cfg *config.Backend) error
 	Fetch(rule *config.Rule, ctx *fasthttp.RequestCtx) (
-		path, query []byte, qHeaders, rHeaders *[][2][]byte,
-		status int, body []byte, releaseFn func(), err error,
+		req *fasthttp.Request, resp *fasthttp.Response,
+		releaser func(*fasthttp.Request, *fasthttp.Response), err error,
 	)
 }
 
@@ -200,6 +201,10 @@ func (b *BackendNode) Fetch(rule *config.Rule, ctx *fasthttp.RequestCtx) (
 
 func (b *BackendNode) Name() string {
 	return b.name
+}
+
+func (b *BackendNode) Cfg() *config.Backend {
+	return b.cfg.Load()
 }
 
 func (b *BackendNode) IsHealthy() bool {
