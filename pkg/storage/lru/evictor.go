@@ -25,7 +25,7 @@ type EvictionStat struct {
 }
 
 type Evictor interface {
-	runInstances()
+	Run()
 }
 
 type Evict struct {
@@ -38,24 +38,24 @@ type Evict struct {
 }
 
 func NewEvictor(ctx context.Context, cfg config.Config, db Storage, balancer Balancer) *Evict {
+	fatShardsPercentage := maxShards * fatShardsPercent
 	return &Evict{
 		ctx:                 ctx,
 		cfg:                 cfg,
 		db:                  db,
 		balancer:            balancer,
-		fatShardsPercentage: int(float64(maxShards) * fatShardsPercent),
+		fatShardsPercentage: int(fatShardsPercentage),
 		memoryThreshold:     int64(float64(cfg.Storage().Size) * cfg.Eviction().Threshold),
 	}
 }
 
 // Run is the main background eviction loop for one worker.
 // Each worker tries to bring Weight usage under the threshold by evicting from most loaded shards.
-func (e *Evict) Run() *Evict {
+func (e *Evict) Run() {
 	if e.cfg.IsEnabled() && e.cfg.Eviction().Enabled {
 		e.runLogger()
 		e.runEvictor()
 	}
-	return e
 }
 
 func (e *Evict) runEvictor() {

@@ -27,7 +27,7 @@ var (
 var ErrRefreshUpstreamBadStatusCode = errors.New("invalid upstream status code")
 
 type Refresher interface {
-	runInstances()
+	Run()
 }
 
 // Refresh is responsible for background refreshing of cache entries.
@@ -56,13 +56,12 @@ func NewRefresher(ctx context.Context, cfg config.Config, storage Storage, upstr
 // Run starts the refresher background loop.
 // It runs a logger (if debugging is enabled), spawns a provider for sampling shards,
 // and continuously processes shard samples for candidate responses to refreshItem.
-func (r *Refresh) Run() *Refresh {
+func (r *Refresh) Run() {
 	if r.cfg.IsEnabled() && r.cfg.Refresh().Enabled {
 		r.runLogger()           // handle consumer stats and print logs
 		r.runDedupErrorLogger() // deduplicates errors
 		r.runInstances()        // runInstances workers (N=workersNum) which scan the storage and runInstances async refresh tasks
 	}
-	return r
 }
 
 func (r *Refresh) runInstances() {
@@ -100,22 +99,23 @@ func (r *Refresh) runInstances() {
 }
 
 func (r *Refresh) refresh(e *model.Entry) error {
-	path, query, headers, respHeaders, _, _, release, err := e.Payload()
-	defer release(headers, respHeaders)
+	req, resp, releaser, err := e.Payload()
+	defer releaser(req, resp)
 	if err != nil {
 		return err
 	}
 
-	statusCode, respHeaders, body, releaser, err := r.upstream.Fetch(e.Rule(), path, query, headers)
-	defer releaser()
+	req, resp, releaser, err = r.upstream.Fetch(e.Rule(), nil, req)
+	defer releaser(req, resp)
 	if err != nil {
 		return err
 	}
-	if statusCode != http.StatusOK {
+
+	if resp.StatusCode() != http.StatusOK {
 		return ErrRefreshUpstreamBadStatusCode
+	} else {
+		e.SetPayload(req, resp)
 	}
-
-	e.SetPayload(path, query, headers, respHeaders, body, statusCode)
 
 	return nil
 }

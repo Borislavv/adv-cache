@@ -18,6 +18,9 @@ import (
 // Storage is a generic interface for cache storages.
 // It supports typical Get/Set operations with reference management.
 type Storage interface {
+	Run()
+	Close() error
+
 	// Get attempts to retrieve a cached response for the given request.
 	// Returns the response, a releaser for safe concurrent access, and a hit/miss flag.
 	Get(*model.Entry) (entry *model.Entry, hit bool)
@@ -51,6 +54,11 @@ type Storage interface {
 	Rand() (entry *model.Entry, ok bool)
 
 	WalkShards(ctx context.Context, fn func(key uint64, shard *sharded.Shard[*model.Entry]))
+
+	// Dumper functionality
+	Dump(ctx context.Context) error
+	Load(ctx context.Context) error
+	LoadVersion(ctx context.Context, v string) error
 }
 
 // InMemoryStorage is a Weight-aware, sharded InMemoryStorage cache with background eviction and refreshItem support.
@@ -60,9 +68,12 @@ type InMemoryStorage struct {
 	shardedMap      *sharded.Map[*model.Entry] // Sharded storage for cache entries
 	tinyLFU         *lfu.TinyLFU               // Helps hold more frequency used items in cache while eviction
 	upstream        upstream.Upstream          // Remote upstream server.
-	balancer        Balancer                   // Helps pick shards to evict from
-	mem             int64                      // Current Weight usage (bytes)
-	memoryThreshold int64                      // Threshold for triggering eviction (bytes)
+	refresher       Refresher
+	balancer        Balancer // Helps pick shards to evict from
+	evictor         Evictor
+	dumper          Dumper
+	mem             int64 // Current Weight usage (bytes)
+	memoryThreshold int64 // Threshold for triggering eviction (bytes)
 }
 
 // NewStorage constructs a new InMemoryStorage cache instance and launches eviction and refreshItem routines.
@@ -70,7 +81,7 @@ func NewStorage(ctx context.Context, cfg config.Config, upstream upstream.Upstre
 	shardedMap := sharded.NewMap[*model.Entry](ctx)
 	balancer := NewBalancer(ctx, shardedMap)
 
-	db := &InMemoryStorage{
+	db := (&InMemoryStorage{
 		ctx:             ctx,
 		cfg:             cfg,
 		shardedMap:      shardedMap,
@@ -78,12 +89,11 @@ func NewStorage(ctx context.Context, cfg config.Config, upstream upstream.Upstre
 		upstream:        upstream,
 		tinyLFU:         lfu.NewTinyLFU(ctx),
 		memoryThreshold: int64(float64(cfg.Storage().Size) * cfg.Eviction().Threshold),
-	}
+	}).init()
 
-	db.init()
-	db.runLogger()
-	NewRefresher(ctx, cfg, db, upstream).Run()
-	NewEvictor(ctx, cfg, db, db.balancer).Run()
+	db.evictor = NewEvictor(ctx, cfg, db, db.balancer)
+	db.refresher = NewRefresher(ctx, cfg, db, upstream)
+	db.dumper = NewDumper(cfg, db, upstream)
 
 	return db
 }
@@ -95,6 +105,24 @@ func (s *InMemoryStorage) init() *InMemoryStorage {
 	})
 
 	return s
+}
+
+func (s *InMemoryStorage) Run() {
+	s.runLogger()
+	s.evictor.Run()
+	s.refresher.Run()
+}
+
+func (s *InMemoryStorage) Close() error {
+	if s.cfg.IsEnabled() && s.cfg.Data().Dump.IsEnabled {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute*3)
+		defer cancel()
+
+		if err := s.dumper.Dump(ctx); err != nil {
+			log.Err(err).Msg("[dump] failed to store cache dump")
+		}
+	}
+	return nil
 }
 
 func (s *InMemoryStorage) Clear() {
@@ -203,6 +231,12 @@ func (s *InMemoryStorage) touch(existing *model.Entry) {
 func (s *InMemoryStorage) update(existing, new *model.Entry) {
 	existing.SwapPayloads(new)
 	s.balancer.Update(existing)
+}
+
+func (s *InMemoryStorage) Dump(ctx context.Context) error { return s.dumper.Dump(ctx) }
+func (s *InMemoryStorage) Load(ctx context.Context) error { return s.dumper.Load(ctx) }
+func (s *InMemoryStorage) LoadVersion(ctx context.Context, v string) error {
+	return s.dumper.LoadVersion(ctx, v)
 }
 
 // runLogger emits detailed stats about evictions, Weight, and GC activity every 5 seconds if debugging is enabled.

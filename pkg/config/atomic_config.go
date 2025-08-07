@@ -22,7 +22,22 @@ type AtomicCache struct {
 }
 
 func makeConfigAtomic(config *Cache) *AtomicCache {
-	atomicCfg := &AtomicCache{}
+	atomicCfg := &AtomicCache{
+		env:      &atomic.Pointer[string]{},
+		enabled:  &atomic.Bool{},
+		api:      &atomic.Pointer[Api]{},
+		upstream: &atomic.Pointer[Upstream]{},
+		runtime:  &atomic.Pointer[Runtime]{},
+		data:     &atomic.Pointer[Data]{},
+		refresh:  &atomic.Pointer[Refresh]{},
+		eviction: &atomic.Pointer[Eviction]{},
+		storage:  &atomic.Pointer[Storage]{},
+		logs:     &atomic.Pointer[Logs]{},
+		k8s:      &atomic.Pointer[K8S]{},
+		metrics:  &atomic.Pointer[Metrics]{},
+		forceGC:  &atomic.Pointer[ForceGC]{},
+		rules:    make(map[string]*atomic.Pointer[Rule], len(config.Cache.Rules)),
+	}
 
 	atomicCfg.env.Store(&config.Cache.Env)
 	atomicCfg.enabled.Store(config.Cache.Enabled)
@@ -38,17 +53,9 @@ func makeConfigAtomic(config *Cache) *AtomicCache {
 	atomicCfg.metrics.Store(config.Cache.Metrics)
 	atomicCfg.forceGC.Store(config.Cache.ForceGC)
 
-	atomicCfg.rules = make(map[string]*atomic.Pointer[Rule], len(config.Cache.Rules))
 	for path, rule := range config.Cache.Rules {
 		atomicCfg.rules[path] = &atomic.Pointer[Rule]{}
 		atomicCfg.rules[path].Store(rule)
-	}
-
-	upstream := atomicCfg.upstream.Load()
-	for _, backend := range upstream.Cluster.Backends {
-		escapeTimeoutHeader := make([]byte, len(backend.UseMaxTimeoutHeaderBytes))
-		copy(escapeTimeoutHeader, backend.UseMaxTimeoutHeaderBytes)
-		backend.UseMaxTimeoutHeaderBytes = escapeTimeoutHeader
 	}
 
 	return atomicCfg

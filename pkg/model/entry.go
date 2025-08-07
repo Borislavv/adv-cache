@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	bytes2 "github.com/Borislavv/advanced-cache/pkg/bytes"
-	"github.com/Borislavv/advanced-cache/pkg/upstream"
 	"math"
 	"math/rand/v2"
 	"net/http"
@@ -18,10 +17,8 @@ import (
 
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/list"
-	"github.com/Borislavv/advanced-cache/pkg/pools"
 	"github.com/Borislavv/advanced-cache/pkg/sort"
 	sharded "github.com/Borislavv/advanced-cache/pkg/storage/map"
-	"github.com/rs/zerolog/log"
 	"github.com/valyala/fasthttp"
 	"github.com/zeebo/xxh3"
 )
@@ -34,17 +31,17 @@ var (
 
 // Entry is the packed request+response payload
 type Entry struct {
-	key          uint64   // 64  bit xxh
-	shard        uint64   // 64  bit xxh % NumOfShards
-	fingerprint  [16]byte // 128 bit xxh
-	rule         *atomic.Pointer[config.Rule]
-	payload      *atomic.Pointer[[]byte]
-	lruListElem  *atomic.Pointer[list.Element[*Entry]]
-	updatedAt    int64 // atomic: unix nano (last update was at)
-	isCompressed int64 // atomic: bool as int64
+	key         uint64   // 64  bit xxh
+	shard       uint64   // 64  bit xxh % NumOfShards
+	fingerprint [16]byte // 128 bit xxh
+	rule        *atomic.Pointer[config.Rule]
+	payload     *atomic.Pointer[[]byte]
+	lruListElem *atomic.Pointer[list.Element[*Entry]]
+	updatedAt   int64 // atomic: unix nano (last update was at)
 }
 
 func (e *Entry) Init() *Entry {
+	e.rule = &atomic.Pointer[config.Rule]{}
 	e.payload = &atomic.Pointer[[]byte]{}
 	e.lruListElem = &atomic.Pointer[list.Element[*Entry]]{}
 	atomic.StoreInt64(&e.updatedAt, time.Now().UnixNano())
@@ -88,7 +85,10 @@ func NewEntryFastHttp(cfg config.Config, r *fasthttp.RequestCtx) (*Entry, error)
 	return entry, nil
 }
 
-func NewEntryManual(cfg config.Config, path, query []byte, headers *[][2][]byte) (*Entry, error) {
+func NewMockEntry(cfg config.Config, req *fasthttp.Request, resp *fasthttp.Response) (*Entry, error) {
+	path := req.URI().Path()
+	query := req.URI().QueryArgs().QueryString()
+
 	rule := MatchRule(cfg, path)
 	if rule == nil {
 		return nil, ruleNotFoundError
@@ -100,9 +100,12 @@ func NewEntryManual(cfg config.Config, path, query []byte, headers *[][2][]byte)
 	filteredQueries, filteredQueriesReleaser := entry.parseFilterAndSortQuery(query) // here, we are referring to the same query buffer which used in payload which have been mentioned before
 	defer filteredQueriesReleaser(filteredQueries)                                   // this is really reduce memory usage and GC pressure
 
-	filteredHeaders := entry.filteredAndSortedKeyHeadersInPlace(headers)
+	filteredHeaders, filteredHeadersReleaser := entry.getFilteredAndSortedKeyHeadersFasthttp(req)
+	defer filteredHeadersReleaser(filteredHeaders)
 
 	entry.calculateAndSetUpKeys(filteredQueries, filteredHeaders)
+
+	entry.SetPayload(req, resp)
 
 	return entry, nil
 }
@@ -113,7 +116,6 @@ func NewEntryFromField(
 	fingerprint [16]byte,
 	payload []byte,
 	rule *config.Rule,
-	isCompressed int64,
 	updatedAt int64,
 ) *Entry {
 	entry := new(Entry).Init()
@@ -122,7 +124,6 @@ func NewEntryFromField(
 	entry.fingerprint = fingerprint
 	entry.rule.Store(rule)
 	entry.payload.Store(&payload)
-	entry.isCompressed = isCompressed
 	entry.updatedAt = updatedAt
 	return entry
 }
@@ -341,7 +342,6 @@ func (e *Entry) SetPayload(req *fasthttp.Request, resp *fasthttp.Response) *Entr
 	// === 5) Store raw ===
 	payloadBuf = payloadBuf[:]
 	e.payload.Store(&payloadBuf)
-	atomic.StoreInt64(&e.isCompressed, 0)
 
 	// Tell everyone that entry already updated
 	e.touch()
@@ -349,49 +349,35 @@ func (e *Entry) SetPayload(req *fasthttp.Request, resp *fasthttp.Response) *Entr
 	return e
 }
 
-var payloadReleaser = func(queryHeaders *[][2][]byte, responseHeaders *[][2][]byte) {
-	*queryHeaders = (*queryHeaders)[:0]
-	pools.KeyValueSlicePool.Put(queryHeaders)
-	*responseHeaders = (*responseHeaders)[:0]
-	pools.KeyValueSlicePool.Put(responseHeaders)
-}
-
 var ErrPayloadIsEmpty = fmt.Errorf("payload is empty")
 
 // Payload decompresses the entire payload and unpacks it into fields.
-func (e *Entry) Payload() (
-	path []byte,
-	query []byte,
-	queryHeaders *[][2][]byte,
-	responseHeaders *[][2][]byte,
-	body []byte,
-	status int,
-	releaseFn func(q, h *[][2][]byte),
-	err error,
-) {
+func (e *Entry) Payload() (req *fasthttp.Request, resp *fasthttp.Response, releaser func(*fasthttp.Request, *fasthttp.Response), err error) {
 	payload := e.PayloadBytes()
 	if len(payload) == 0 {
-		return nil, nil, nil, nil, nil, 0, emptyReleaser, ErrPayloadIsEmpty
+		return nil, nil, emptyReleaser, ErrPayloadIsEmpty
 	}
+
+	req = fasthttp.AcquireRequest()
+	resp = fasthttp.AcquireResponse()
 
 	offset := 0
 
 	// --- Path
 	pathLen := binary.LittleEndian.Uint32(payload[offset:])
 	offset += 4
-	path = payload[offset : offset+int(pathLen)]
+	req.URI().SetPathBytes(payload[offset : offset+int(pathLen)])
 	offset += int(pathLen)
 
 	// --- Query
 	queryLen := binary.LittleEndian.Uint32(payload[offset:])
 	offset += 4
-	query = payload[offset : offset+int(queryLen)]
+	req.URI().SetQueryStringBytes(payload[offset : offset+int(queryLen)])
 	offset += int(queryLen)
 
 	// --- QueryHeaders
 	numQueryHeaders := binary.LittleEndian.Uint32(payload[offset:])
 	offset += 4
-	queryHeaders = pools.KeyValueSlicePool.Get().(*[][2][]byte)
 	for i := 0; i < int(numQueryHeaders); i++ {
 		keyLen := binary.LittleEndian.Uint32(payload[offset:])
 		offset += 4
@@ -403,17 +389,16 @@ func (e *Entry) Payload() (
 		v := payload[offset : offset+int(valueLen)]
 		offset += int(valueLen)
 
-		*queryHeaders = append(*queryHeaders, [2][]byte{k, v})
+		req.Header.AddBytesKV(k, v)
 	}
 
 	// --- StatusCode
-	status = int(binary.LittleEndian.Uint32(payload[offset:]))
+	resp.Header.SetStatusCode(int(binary.LittleEndian.Uint32(payload[offset:])))
 	offset += 4
 
 	// --- Response Headers
 	numHeaders := binary.LittleEndian.Uint32(payload[offset:])
 	offset += 4
-	responseHeaders = pools.KeyValueSlicePool.Get().(*[][2][]byte)
 	for i := 0; i < int(numHeaders); i++ {
 		keyLen := binary.LittleEndian.Uint32(payload[offset:])
 		offset += 4
@@ -427,18 +412,104 @@ func (e *Entry) Payload() (
 			offset += 4
 			val := payload[offset : offset+int(valueLen)]
 			offset += int(valueLen)
-			*responseHeaders = append(*responseHeaders, [2][]byte{key, val})
+
+			resp.Header.AddBytesKV(key, val)
 		}
 	}
 
 	// --- Body
 	offset += 4
-	body = payload[offset:]
+	resp.SetBodyRaw(payload[offset:])
 
-	releaseFn = payloadReleaser
+	releaser = func(request *fasthttp.Request, response *fasthttp.Response) {
+		fasthttp.ReleaseRequest(req)
+		fasthttp.ReleaseResponse(resp)
+	}
 
 	return
 }
+
+// TODO test with already wrapped req and resp, if it will not good enough then uncomment and change back
+//func (e *Entry) Payload() (
+//	path []byte,
+//	query []byte,
+//	queryHeaders *[][2][]byte,
+//	responseHeaders *[][2][]byte,
+//	body []byte,
+//	status int,
+//	releaseFn func(q, h *[][2][]byte),
+//	err error,
+//) {
+//	payload := e.PayloadBytes()
+//	if len(payload) == 0 {
+//		return nil, nil, nil, nil, nil, 0, emptyReleaser, ErrPayloadIsEmpty
+//	}
+//
+//	offset := 0
+//
+//	// --- Path
+//	pathLen := binary.LittleEndian.Uint32(payload[offset:])
+//	offset += 4
+//	path = payload[offset : offset+int(pathLen)]
+//	offset += int(pathLen)
+//
+//	// --- Query
+//	queryLen := binary.LittleEndian.Uint32(payload[offset:])
+//	offset += 4
+//	query = payload[offset : offset+int(queryLen)]
+//	offset += int(queryLen)
+//
+//	// --- QueryHeaders
+//	numQueryHeaders := binary.LittleEndian.Uint32(payload[offset:])
+//	offset += 4
+//	queryHeaders = pools.KeyValueSlicePool.Get().(*[][2][]byte)
+//	for i := 0; i < int(numQueryHeaders); i++ {
+//		keyLen := binary.LittleEndian.Uint32(payload[offset:])
+//		offset += 4
+//		k := payload[offset : offset+int(keyLen)]
+//		offset += int(keyLen)
+//
+//		valueLen := binary.LittleEndian.Uint32(payload[offset:])
+//		offset += 4
+//		v := payload[offset : offset+int(valueLen)]
+//		offset += int(valueLen)
+//
+//		*queryHeaders = append(*queryHeaders, [2][]byte{k, v})
+//	}
+//
+//	// --- StatusCode
+//	status = int(binary.LittleEndian.Uint32(payload[offset:]))
+//	offset += 4
+//
+//	// --- Response Headers
+//	numHeaders := binary.LittleEndian.Uint32(payload[offset:])
+//	offset += 4
+//	responseHeaders = pools.KeyValueSlicePool.Get().(*[][2][]byte)
+//	for i := 0; i < int(numHeaders); i++ {
+//		keyLen := binary.LittleEndian.Uint32(payload[offset:])
+//		offset += 4
+//		key := payload[offset : offset+int(keyLen)]
+//		offset += int(keyLen)
+//
+//		numVals := binary.LittleEndian.Uint32(payload[offset:])
+//		offset += 4
+//		for v := 0; v < int(numVals); v++ {
+//			valueLen := binary.LittleEndian.Uint32(payload[offset:])
+//			offset += 4
+//			val := payload[offset : offset+int(valueLen)]
+//			offset += int(valueLen)
+//			*responseHeaders = append(*responseHeaders, [2][]byte{key, val})
+//		}
+//	}
+//
+//	// --- Body
+//	offset += 4
+//	body = payload[offset:]
+//
+//	releaseFn = payloadReleaser
+//
+//	return
+//}
 
 func (e *Entry) PayloadBytes() []byte {
 	var payload []byte
@@ -451,10 +522,6 @@ func (e *Entry) PayloadBytes() []byte {
 
 func (e *Entry) Weight() int64 {
 	return int64(unsafe.Sizeof(*e)) + int64(cap(e.PayloadBytes()))
-}
-
-func (e *Entry) IsCompressed() bool {
-	return atomic.LoadInt64(&e.isCompressed) == 1
 }
 
 func (e *Entry) UpdateAt() int64 {
@@ -726,27 +793,27 @@ func (e *Entry) filteredAndSortedKeyQueriesInPlace(queries *[][2][]byte) *[][2][
 	return queries
 }
 
-// filteredAndSortedKeyHeadersInPlace - filters an input slice, be careful!
-func (e *Entry) filteredAndSortedKeyHeadersInPlace(headers *[][2][]byte) *[][2][]byte {
-	h := *headers
-	allowedMap := e.rule.Load().CacheKey.HeadersMap
+// getFilteredAndSortedKeyHeadersFasthttp - filters an input slice, be careful!
+func (e *Entry) getFilteredAndSortedKeyHeadersFasthttp(r *fasthttp.Request) (kvPairs *[][2][]byte, releaseFn func(*[][2][]byte)) {
+	out := kvPool.Get().(*[][2][]byte)
+	*out = (*out)[:0]
 
-	// in-place write index
-	n := 0
-	for i := 0; i < len(h); i++ {
-		key := unsafe.String(unsafe.SliceData(h[i][0]), len(h[i][0]))
-		if _, ok := allowedMap[key]; ok {
-			h[n] = h[i]
-			n++
+	allowedKeys := e.rule.Load().CacheKey.QueryBytes
+	r.URI().QueryArgs().All()(func(key, value []byte) bool {
+		for _, ak := range allowedKeys {
+			if bytes.HasPrefix(key, ak) {
+				*out = append(*out, [2][]byte{key, value})
+				break
+			}
 		}
+		return true
+	})
+
+	if len(*out) > 1 {
+		sort.KVSlice(*out)
 	}
 
-	if n > 1 {
-		sort.KVSlice(h[:n])
-	}
-
-	*headers = h[:n]
-	return headers
+	return out, queriesReleaser
 }
 
 // SetLruListElement sets the LRU list element pointer.
@@ -839,13 +906,6 @@ func (e *Entry) ToBytes() (data []byte, releaseFn func()) {
 	// === Fingerprint ===
 	buf.Write(e.fingerprint[:])
 
-	// === IsCompressed ===
-	if e.IsCompressed() {
-		buf.WriteByte(1)
-	} else {
-		buf.WriteByte(0)
-	}
-
 	// === UpdateAt ===
 	binary.LittleEndian.PutUint64(scratch8[:], uint64(e.UpdateAt()))
 	buf.Write(scratch8[:])
@@ -859,7 +919,7 @@ func (e *Entry) ToBytes() (data []byte, releaseFn func()) {
 	return buf.Bytes(), releaseFn
 }
 
-func EntryFromBytes(data []byte, cfg config.Config, backend upstream.Upstream) (*Entry, error) {
+func EntryFromBytes(data []byte, cfg config.Config) (*Entry, error) {
 	var offset int
 
 	// RulePath
@@ -886,14 +946,6 @@ func EntryFromBytes(data []byte, cfg config.Config, backend upstream.Upstream) (
 	copy(fp[:], data[offset:offset+16])
 	offset += 16
 
-	// IsCompressed
-	compressed := data[offset] == 1
-	var isCompressed int64
-	if compressed {
-		isCompressed = 1
-	}
-	offset += 1
-
 	// UpdateAt
 	updatedAt := int64(binary.LittleEndian.Uint64(data[offset:]))
 	offset += 8
@@ -903,7 +955,7 @@ func EntryFromBytes(data []byte, cfg config.Config, backend upstream.Upstream) (
 	offset += 4
 	payload := data[offset : offset+int(payloadLen)]
 
-	return NewEntryFromField(key, shard, fp, payload, rule, isCompressed, updatedAt), nil
+	return NewEntryFromField(key, shard, fp, payload, rule, updatedAt), nil
 }
 
 func MatchRule(cfg config.Config, path []byte) *config.Rule {
@@ -920,52 +972,52 @@ func (e *Entry) SetMapKey(key uint64) *Entry {
 	return e
 }
 
-func (e *Entry) DumpPayload() {
-	path, query, queryHeaders, responseHeaders, body, status, releaseFn, err := e.Payload()
-	defer releaseFn(queryHeaders, responseHeaders)
-	if err != nil {
-		log.Error().Err(err).Msg("[dump] failed to unpack payload")
-		return
-	}
-
-	fmt.Printf("\n========== DUMP PAYLOAD ==========\n")
-	fmt.Printf("RuleKey:          %d\n", e.key)
-	fmt.Printf("Shard:        %d\n", e.shard)
-	fmt.Printf("IsCompressed: %v\n", e.IsCompressed())
-	fmt.Printf("UpdateAt:	 %s\n", time.Unix(0, e.UpdateAt()).Format(time.RFC3339Nano))
-	fmt.Printf("----------------------------------\n")
-
-	fmt.Printf("Path:   	   %q\n", string(path))
-	fmt.Printf("Query:  	   %q\n", string(query))
-	fmt.Printf("StatusCode: %d\n", status)
-
-	fmt.Printf("\nQuery Headers:\n")
-	if len(*queryHeaders) == 0 {
-		fmt.Println("  (none)")
-	} else {
-		for i, kv := range *queryHeaders {
-			fmt.Printf("  [%02d] %q : %q\n", i, kv[0], kv[1])
-		}
-	}
-
-	fmt.Printf("\nResponse Headers:\n")
-	if len(*responseHeaders) == 0 {
-		fmt.Println("  (none)")
-	} else {
-		for i, kv := range *responseHeaders {
-			fmt.Printf("  [%02d] %q : %q\n", i, kv[0], kv[1])
-		}
-	}
-
-	fmt.Printf("\nBody (%d bytes):\n", len(body))
-	if len(body) > 0 {
-		const maxLen = 500
-		if len(body) > maxLen {
-			fmt.Printf("  %q ... [truncated, total %d bytes]\n", body[:maxLen], len(body))
-		} else {
-			fmt.Printf("  %q\n", body)
-		}
-	}
-
-	fmt.Println("==================================")
-}
+//func (e *Entry) DumpPayload() {
+//	path, query, queryHeaders, responseHeaders, body, status, releaseFn, err := e.Payload()
+//	defer releaseFn(queryHeaders, responseHeaders)
+//	if err != nil {
+//		log.Error().Err(err).Msg("[dump] failed to unpack payload")
+//		return
+//	}
+//
+//	fmt.Printf("\n========== DUMP PAYLOAD ==========\n")
+//	fmt.Printf("RuleKey:          %d\n", e.key)
+//	fmt.Printf("Shard:        %d\n", e.shard)
+//	fmt.Printf("IsCompressed: %v\n", e.IsCompressed())
+//	fmt.Printf("UpdateAt:	 %s\n", time.Unix(0, e.UpdateAt()).Format(time.RFC3339Nano))
+//	fmt.Printf("----------------------------------\n")
+//
+//	fmt.Printf("Path:   	   %q\n", string(path))
+//	fmt.Printf("Query:  	   %q\n", string(query))
+//	fmt.Printf("StatusCode: %d\n", status)
+//
+//	fmt.Printf("\nQuery Headers:\n")
+//	if len(*queryHeaders) == 0 {
+//		fmt.Println("  (none)")
+//	} else {
+//		for i, kv := range *queryHeaders {
+//			fmt.Printf("  [%02d] %q : %q\n", i, kv[0], kv[1])
+//		}
+//	}
+//
+//	fmt.Printf("\nResponse Headers:\n")
+//	if len(*responseHeaders) == 0 {
+//		fmt.Println("  (none)")
+//	} else {
+//		for i, kv := range *responseHeaders {
+//			fmt.Printf("  [%02d] %q : %q\n", i, kv[0], kv[1])
+//		}
+//	}
+//
+//	fmt.Printf("\nBody (%d bytes):\n", len(body))
+//	if len(body) > 0 {
+//		const maxLen = 500
+//		if len(body) > maxLen {
+//			fmt.Printf("  %q ... [truncated, total %d bytes]\n", body[:maxLen], len(body))
+//		} else {
+//			fmt.Printf("  %q\n", body)
+//		}
+//	}
+//
+//	fmt.Println("==================================")
+//}

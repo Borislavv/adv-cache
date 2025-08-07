@@ -1,4 +1,4 @@
-package storage
+package lru
 
 import (
 	"bufio"
@@ -209,7 +209,7 @@ func (d *Dump) load(ctx context.Context, dir string) error {
 					atomic.AddInt32(&failures, 1)
 					continue
 				}
-				e, err := model.EntryFromBytes(buf, d.cfg, d.backend)
+				e, err := model.EntryFromBytes(buf, d.cfg)
 				if err != nil {
 					log.Error().Err(err).Str("file", fn).Msg("[load] entry decode error")
 					atomic.AddInt32(&failures, 1)

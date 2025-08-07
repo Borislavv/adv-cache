@@ -124,7 +124,7 @@ func (c *CacheProxyController) handleTroughCache(ctx *fasthttp.RequestCtx) error
 	} else {
 		misses.Add(1)
 		// fetch missed data from upstream
-		req, resp, releaser, ferr := c.upstream.Fetch(requestedEntry.Rule(), ctx)
+		req, resp, releaser, ferr := c.upstream.Fetch(requestedEntry.Rule(), ctx, nil)
 		defer releaser(req, resp)
 		if ferr != nil {
 			c.logError(ferr)
@@ -150,7 +150,7 @@ func (c *CacheProxyController) handleTroughCache(ctx *fasthttp.RequestCtx) error
 
 func (c *CacheProxyController) handleTroughProxy(ctx *fasthttp.RequestCtx) error {
 	// fetch missed data from upstream
-	req, resp, releaser, err := c.upstream.Fetch(nil, ctx)
+	req, resp, releaser, err := c.upstream.Fetch(nil, ctx, nil)
 	defer releaser(req, resp)
 	if err != nil {
 		c.logError(err)

@@ -140,8 +140,8 @@ type BackendCluster struct {
 }
 
 // NewCluster initialises cluster & launches active HC.
-func NewCluster(ctx context.Context, cfg config.Config) (*BackendCluster, error) {
-	c := &BackendCluster{
+func NewCluster(ctx context.Context, cfg config.Config) (c *BackendCluster, err error) {
+	c = &BackendCluster{
 		ctx:          ctx,
 		cfg:          cfg,
 		all:          make(map[string]*backendSlot),
@@ -149,6 +149,7 @@ func NewCluster(ctx context.Context, cfg config.Config) (*BackendCluster, error)
 		dead:         make(map[string]*backendSlot),
 		hcTicker:     utils.NewTicker(ctx, hcInterval),
 		killerTicker: utils.NewTicker(ctx, killerInterval),
+		names:        make(map[string]struct{}, len(cfg.Upstream().Cluster.Backends)),
 	}
 
 	gofakeit.Seed(time.Now().UnixNano())
@@ -158,8 +159,8 @@ func NewCluster(ctx context.Context, cfg config.Config) (*BackendCluster, error)
 	for _, bcfg := range cfg.Upstream().Cluster.Backends {
 		name := bcfg.Name
 		if name == "" {
-			for i := 0; i < 3; i++ {
-				cand := gofakeit.FirstName()
+			for i := 0; i < 10_000; i++ {
+				cand := strings.ToLower(gofakeit.FirstName())
 				if _, dup := reserved[cand]; !dup {
 					name = cand
 					reserved[name] = struct{}{}
@@ -168,9 +169,8 @@ func NewCluster(ctx context.Context, cfg config.Config) (*BackendCluster, error)
 			}
 		}
 
-		be := NewBackend(ctx, bcfg, name) // реализация за пределами кластера
-		slot := &backendSlot{backend: be}
-		if be.IsHealthy() {
+		slot := newBackendSlot(ctx, NewBackend(ctx, bcfg, name))
+		if slot.backend.IsHealthy() {
 			slot.state = healthy
 			healthySlots = append(healthySlots, slot)
 		} else {
@@ -180,29 +180,36 @@ func NewCluster(ctx context.Context, cfg config.Config) (*BackendCluster, error)
 		c.all[name] = slot
 	}
 
-	if len(healthySlots) == 0 {
-		log.Error().Msg("[upstream-cluster] init failed: no healthy backends")
-		return nil, ErrNoBackends
-	}
-
 	c.setHealthySlice(healthySlots)
 	healthyGauge.Store(int64(len(healthySlots)))
 	sickGauge.Store(int64(len(c.sick)))
 
-	log.Info().Int("healthy", int(HealthyBackends())).Int("sick", int(SickBackends())).
-		Msg("[upstream-cluster] cluster initialised")
+	if len(healthySlots) == 0 {
+		err = ErrNoBackends
+		log.Error().
+			Int64("healthy", HealthyBackends()).
+			Int64("sick", SickBackends()).
+			Int64("dead", DeadBackends()).
+			Msg("[upstream-cluster] init failed: no healthy backends")
+	} else {
+		log.Info().
+			Int64("healthy", HealthyBackends()).
+			Int64("sick", SickBackends()).
+			Int64("dead", DeadBackends()).
+			Msg("[upstream-cluster] cluster initialised")
+	}
 
 	// start a lifecycle manager
 	c.runLifeCycle()
 
-	return c, nil
+	return
 }
 
 // -----------------------------------------------------------------------------
 // Hot path (Fetch) – no logs/allocs.
 // -----------------------------------------------------------------------------
 
-func (c *BackendCluster) Fetch(rule *config.Rule, ctx *fasthttp.RequestCtx) (
+func (c *BackendCluster) Fetch(rule *config.Rule, ctx *fasthttp.RequestCtx, r *fasthttp.Request) (
 	req *fasthttp.Request, resp *fasthttp.Response,
 	releaser func(*fasthttp.Request, *fasthttp.Response), err error,
 ) {
@@ -222,7 +229,7 @@ func (c *BackendCluster) Fetch(rule *config.Rule, ctx *fasthttp.RequestCtx) (
 			return nil, nil, emptyReleaserFn, c.ctx.Err()
 		case <-slot.rate.Chan():
 			// if so, do request
-			req, resp, releaser, err = slot.backend.Fetch(rule, ctx)
+			req, resp, releaser, err = slot.backend.Fetch(rule, ctx, r)
 			if err != nil || resp.StatusCode() >= http.StatusInternalServerError {
 				go c.markSickAsync(slot.backend.Name())
 			}
@@ -244,6 +251,16 @@ func (c *BackendCluster) Add(backend Backend) error {
 		return ErrNilBackend
 	}
 	name := backend.Name()
+	if name == "" {
+		for i := 0; i < 10_000; i++ {
+			cand := strings.ToLower(gofakeit.FirstName())
+			if _, dup := reserved[cand]; !dup {
+				name = cand
+				reserved[name] = struct{}{}
+				break
+			}
+		}
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
