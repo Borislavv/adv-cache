@@ -4,7 +4,7 @@ cache:
 
   logs:
     level: "info"
-    stats: true   # Should the statistic like num evictions, refreshes, rps, memory usage and so on be written in /std/out?
+    stats: true # Should log metrics in /std/out?
 
   runtime:
     gomaxprocs: 0
@@ -32,8 +32,8 @@ cache:
   data:
     dump:
       enabled: false
-      dump_dir: "public/dump" # dump dir.
-      dump_name: "cache.dump" # dump name
+      dump_dir: "public/dump"
+      dump_name: "cache.dump"
       crc32_control_sum: true
       max_versions: 3
       gzip: false
@@ -46,7 +46,7 @@ cache:
 
   eviction:
     enabled: true
-    threshold: 0.95    # Trigger eviction when cache memory usage exceeds 90% of its configured limit.
+    threshold: 0.95   # Trigger eviction when cache memory usage exceeds 90% of its configured limit.
 
   refresh:
     enabled: true     # Should this be run?
