@@ -153,7 +153,7 @@ func (c *Cache) LoadData(ctx context.Context, interactive bool) error {
 				log.Info().Msg("[app] dump loading is disabled")
 			}
 			if c.cfg.Data().Mock.Enabled {
-				storage.LoadMocks(ctx, c.cfg, c.upstream, c.db, c.cfg.Data().Mock.Length)
+				storage.LoadMocks(ctx, c.cfg, c.db, c.cfg.Data().Mock.Length)
 			} else {
 				log.Info().Msg("[app] mock loading is disabled")
 			}
@@ -248,7 +248,7 @@ func (c *Cache) loadDataInteractive(ctx context.Context) error {
 		// mocks
 		res, _ := numberOfMocksPrompt.Run()
 		nMocks, _ := strconv.Atoi(res)
-		storage.LoadMocks(ctx, c.cfg, c.upstream, c.db, nMocks)
+		storage.LoadMocks(ctx, c.cfg, c.db, nMocks)
 
 	case idx == n+2:
 		// YAML config selection menu

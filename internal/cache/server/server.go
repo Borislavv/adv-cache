@@ -119,17 +119,17 @@ func (s *HttpServer) initServer() error {
 // controllers returns all HTTP controllers for the server (endpoints/handlers).
 func (s *HttpServer) controllers() []controller.HttpController {
 	return []controller.HttpController{
-		liveness.NewController(s.probe),    // Liveness/healthcheck endpoint
-		controller2.NewPrometheusMetrics(), // metrics endpoint
-		api.NewOnOffController(),           // AtomicCache on-off controller
-		api.NewClearController(s.cfg, s.db),
-		api.NewCacheController(s.ctx, s.cfg, s.db, s.metrics, s.backend), // Main cache handler
+		liveness.NewController(s.probe),                                       // healthcheck probe endpoint
+		controller2.NewPrometheusMetrics(),                                    // metrics endpoint
+		api.NewOnOffController(s.cfg),                                         // on-off controller
+		api.NewClearController(s.cfg, s.db),                                   // clears cache
+		api.NewCacheProxyController(s.ctx, s.cfg, s.db, s.metrics, s.backend), // main cache handler
 	}
 }
 
 // middlewares returns the request middlewares for the server, executed in reverse order.
 func (s *HttpServer) middlewares() []middleware.HttpMiddleware {
 	return []middleware.HttpMiddleware{
-		/** exec 1st. */ middleware.NewApplicationJsonMiddleware(), // Sets Content-Type
+		/** exec 1st. */ middleware.NewApplicationJsonMiddleware(), // sets the Content-Type: application/json
 	}
 }

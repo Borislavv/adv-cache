@@ -252,32 +252,26 @@ func (e *Entry) isPayloadsAreEquals(a, b []byte) bool {
 }
 
 // SetPayload packs and gzip-compresses the entire payload: Path, Query, QueryHeaders, StatusCode, ResponseHeaders, Body.
-func (e *Entry) SetPayload(
-	path, query []byte,
-	queryHeaders *[][2][]byte,
-	headers *[][2][]byte,
-	body []byte,
-	status int,
-) *Entry {
-	queryHeadersDeref := *queryHeaders
-	responseHeadersDeref := *headers
-
-	numQueryHeaders := len(queryHeadersDeref)
-	numResponseHeaders := len(responseHeadersDeref)
+func (e *Entry) SetPayload(req *fasthttp.Request, resp *fasthttp.Response) *Entry {
+	path := req.URI().Path()
+	query := req.URI().QueryArgs().QueryString()
+	body := req.Body()
 
 	// === 1) Calculate total size ===
 	total := 0
 	total += 4 + len(path)
 	total += 4 + len(query)
 	total += 4
-	for _, kv := range queryHeadersDeref {
-		total += 4 + len(kv[0]) + 4 + len(kv[1])
-	}
+	req.Header.All()(func(k []byte, v []byte) bool {
+		total += 4 + len(k) + 4 + len(v)
+		return true
+	})
 	total += 4
 	total += 4
-	for _, kv := range responseHeadersDeref {
-		total += 4 + len(kv[0]) + 4 + 4 + len(kv[1])
-	}
+	resp.Header.All()(func(k []byte, v []byte) bool {
+		total += 4 + len(k) + 4 + 4 + len(v)
+		return true
+	})
 	total += 4 + len(body)
 
 	// === 2) Allocate ===
@@ -301,40 +295,42 @@ func (e *Entry) SetPayload(
 	offset += len(query)
 
 	// QueryHeaders
-	binary.LittleEndian.PutUint32(scratch[:], uint32(numQueryHeaders))
+	binary.LittleEndian.PutUint32(scratch[:], uint32(req.Header.Len()))
 	payloadBuf = append(payloadBuf, scratch[:]...)
-	for _, kv := range queryHeadersDeref {
-		binary.LittleEndian.PutUint32(scratch[:], uint32(len(kv[0])))
+	req.Header.All()(func(k []byte, v []byte) bool {
+		binary.LittleEndian.PutUint32(scratch[:], uint32(len(k)))
 		payloadBuf = append(payloadBuf, scratch[:]...)
-		payloadBuf = append(payloadBuf, kv[0]...)
-		offset += len(kv[0])
+		payloadBuf = append(payloadBuf, k...)
+		offset += len(k)
 
-		binary.LittleEndian.PutUint32(scratch[:], uint32(len(kv[1])))
+		binary.LittleEndian.PutUint32(scratch[:], uint32(len(v)))
 		payloadBuf = append(payloadBuf, scratch[:]...)
-		payloadBuf = append(payloadBuf, kv[1]...)
-		offset += len(kv[1])
-	}
+		payloadBuf = append(payloadBuf, v...)
+		offset += len(v)
+		return true
+	})
 
 	// StatusCode
-	binary.LittleEndian.PutUint32(scratch[:], uint32(status))
+	binary.LittleEndian.PutUint32(scratch[:], uint32(resp.StatusCode()))
 	payloadBuf = append(payloadBuf, scratch[:]...)
 
 	// ResponseHeaders
-	binary.LittleEndian.PutUint32(scratch[:], uint32(numResponseHeaders))
+	binary.LittleEndian.PutUint32(scratch[:], uint32(resp.Header.Len()))
 	payloadBuf = append(payloadBuf, scratch[:]...)
-	for _, kv := range responseHeadersDeref {
-		binary.LittleEndian.PutUint32(scratch[:], uint32(len(kv[0])))
+	resp.Header.All()(func(k []byte, v []byte) bool {
+		binary.LittleEndian.PutUint32(scratch[:], uint32(len(k)))
 		payloadBuf = append(payloadBuf, scratch[:]...)
-		payloadBuf = append(payloadBuf, kv[0]...)
-		offset += len(kv[0])
+		payloadBuf = append(payloadBuf, k...)
+		offset += len(k)
 
 		binary.LittleEndian.PutUint32(scratch[:], uint32(1))
 		payloadBuf = append(payloadBuf, scratch[:]...)
-		binary.LittleEndian.PutUint32(scratch[:], uint32(len(kv[1])))
+		binary.LittleEndian.PutUint32(scratch[:], uint32(len(v)))
 		payloadBuf = append(payloadBuf, scratch[:]...)
-		payloadBuf = append(payloadBuf, kv[1]...)
-		offset += len(kv[1])
-	}
+		payloadBuf = append(payloadBuf, v...)
+		offset += len(v)
+		return true
+	})
 
 	// Body
 	binary.LittleEndian.PutUint32(scratch[:], uint32(len(body)))
@@ -591,13 +587,14 @@ func (e *Entry) getFilteredAndSortedKeyQueriesFastHttp(r *fasthttp.RequestCtx) (
 
 	allowedKeys := e.rule.Load().CacheKey.QueryBytes
 
-	r.QueryArgs().VisitAll(func(key, value []byte) {
+	r.QueryArgs().All()(func(key, value []byte) bool {
 		for _, ak := range allowedKeys {
 			if bytes.HasPrefix(key, ak) {
 				*out = append(*out, [2][]byte{key, value})
 				break
 			}
 		}
+		return true
 	})
 
 	if len(*out) > 1 {
@@ -630,9 +627,9 @@ func (e *Entry) getFilteredAndSortedKeyHeadersFastHttp(r *fasthttp.RequestCtx) (
 	allowed := e.rule.Load().CacheKey.HeadersMap
 
 	n := 0
-	r.Request.Header.VisitAll(func(k, v []byte) {
+	r.Request.Header.All()(func(k, v []byte) bool {
 		if _, ok := allowed[unsafe.String(unsafe.SliceData(k), len(k))]; !ok {
-			return
+			return true
 		}
 
 		if n < cap(*out) {
@@ -648,6 +645,8 @@ func (e *Entry) getFilteredAndSortedKeyHeadersFastHttp(r *fasthttp.RequestCtx) (
 			*out = append(*out, [2][]byte{k, v})
 		}
 		n++
+
+		return true
 	})
 
 	*out = (*out)[:n]

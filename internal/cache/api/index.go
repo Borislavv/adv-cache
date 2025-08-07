@@ -4,10 +4,9 @@ import (
 	"context"
 	"errors"
 	"github.com/Borislavv/advanced-cache/pkg/config"
-	"github.com/Borislavv/advanced-cache/pkg/header"
 	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
-	serverutils "github.com/Borislavv/advanced-cache/pkg/server/utils"
+	"github.com/Borislavv/advanced-cache/pkg/responder"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
 	"github.com/Borislavv/advanced-cache/pkg/template"
 	"github.com/Borislavv/advanced-cache/pkg/upstream"
@@ -16,6 +15,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/valyala/fasthttp"
 	"net/http"
+	"runtime"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -33,10 +33,14 @@ var (
 	duration = &atomic.Int64{} // UnixNano
 )
 
-var retryThroughProxyErr = errors.New("need to retry through proxy")
+var (
+	contentType              = []byte("application/json")
+	errNeedRetryThroughProxy = errors.New("need retry through proxy")
+	bufCap                   = runtime.GOMAXPROCS(0) * 4
+)
 
-// CacheController handles cache API requests (read/write-through, error reporting, metrics).
-type CacheController struct {
+// CacheProxyController handles cache API requests (read/write-through, error reporting, metrics).
+type CacheProxyController struct {
 	cfg      config.Config
 	ctx      context.Context
 	cache    storage.Storage
@@ -45,175 +49,140 @@ type CacheController struct {
 	errorsCh chan error
 }
 
-// NewCacheController builds a cache API controller with all dependencies.
+// NewCacheProxyController builds a cache API controller with all dependencies.
 // If debug is enabled, launches internal stats logger goroutine.
-func NewCacheController(
+func NewCacheProxyController(
 	ctx context.Context,
 	cfg config.Config,
 	cache storage.Storage,
 	metrics metrics.Meter,
 	backend upstream.Upstream,
-) *CacheController {
-	c := &CacheController{
+) *CacheProxyController {
+	c := &CacheProxyController{
 		cfg:      cfg,
 		ctx:      ctx,
 		cache:    cache,
 		metrics:  metrics,
 		upstream: backend,
-		errorsCh: make(chan error, 8196),
+		errorsCh: make(chan error, bufCap),
 	}
-	c.runLoggerMetricsWriter()
 	c.runErrorLogger()
+	c.runLoggerMetricsWriter()
 	return c
 }
 
+// AddRoute attaches controller's route(s) to the provided router.
+func (c *CacheProxyController) AddRoute(router *router.Router) {
+	router.GET(CacheGetPath, c.Index)
+}
+
 // Index is the main HTTP handler.
-func (c *CacheController) Index(r *fasthttp.RequestCtx) {
+func (c *CacheProxyController) Index(ctx *fasthttp.RequestCtx) {
 	var from = time.Now()
 	defer func() { duration.Add(time.Since(from).Nanoseconds()) }()
 
 	total.Add(1)
 	if c.cfg.IsEnabled() {
-		if err := c.handleTroughCache(r); err != nil {
-			c.respondThatServiceIsTemporaryUnavailable(err, r)
-			errered.Add(1)
+		if err := c.handleTroughCache(ctx); err != nil {
+			if !errors.Is(err, errNeedRetryThroughProxy) {
+				c.respondServiceIsUnavailable(ctx, err)
+				errered.Add(1)
+				return
+			}
+		} else {
 			return
 		}
 	}
 
 	proxied.Add(1)
-	c.handleTroughProxy(r)
+	if err := c.handleTroughProxy(ctx); err != nil {
+		c.respondServiceIsUnavailable(ctx, err)
+	}
 }
 
-func (c *CacheController) handleTroughCache(r *fasthttp.RequestCtx) error {
-	// make a lightweight request Entry (contains only key, shardKey and fingerprint)
-	request, err := model.NewEntryFastHttp(c.cfg, r) // must be removed on hit and release on miss
+func (c *CacheProxyController) handleTroughCache(ctx *fasthttp.RequestCtx) error {
+	// make a lightweight requestedEntry Entry (contains only key, shardKey and fingerprint)
+	requestedEntry, err := model.NewEntryFastHttp(c.cfg, ctx)
 	if err != nil {
-		return err
+		// retry though proxy if cache path was not found
+		return errNeedRetryThroughProxy
 	}
 
 	var (
-		// response vars.
-		payloadHeaders *[][2][]byte
-		payloadBody    []byte
-		payloadStatus  int
-		// search vars.
-		entry *model.Entry
 		found bool
+		entry *model.Entry
 	)
 
-	if entry, found = c.cache.Get(request); found {
+	if entry, found = c.cache.Get(requestedEntry); found {
 		hits.Add(1)
-		// unpack found Entry data
-		var queryHeaders *[][2][]byte
-		var payloadReleaser func(q, h *[][2][]byte)
-		_, _, queryHeaders, payloadHeaders, payloadBody, payloadStatus, payloadReleaser, err = entry.Payload()
-		defer payloadReleaser(queryHeaders, payloadHeaders)
-		if err != nil {
-			return retryThroughProxyErr
+		// write found response and return it
+		if err = responder.WriteFromEntry(ctx, entry); err != nil {
+			c.logError(err)
+			// retry though proxy if payload unpack has errors
+			return errNeedRetryThroughProxy
 		}
 	} else {
 		misses.Add(1)
-		// extract request data
-		path := r.Path()
-		rule := request.Rule()
-		queryString := r.QueryArgs().QueryString()
-		queryHeaders, queryReleaser := model.ParseQueryHeaders(r)
-		defer queryReleaser(queryHeaders)
-
-		// fetch data from upstream
-		var payloadReleaser func()
-		payloadStatus, payloadHeaders, payloadBody, payloadReleaser, err = c.upstream.Fetch(rule, path, queryString, queryHeaders)
-		defer payloadReleaser()
-		if err != nil {
+		// fetch missed data from upstream
+		req, resp, releaser, ferr := c.upstream.Fetch(requestedEntry.Rule(), ctx)
+		defer releaser(req, resp)
+		if ferr != nil {
+			c.logError(ferr)
+			return ferr
+		}
+		// store fetched data only if it's positive
+		if resp.StatusCode() == http.StatusOK {
+			requestedEntry.SetPayload(req, resp)
+			// persist new entry (make it available other threads)
+			c.cache.Set(requestedEntry)
+			// set the new entry as found
+			entry = requestedEntry
+		}
+		// write fetched response and return it
+		if err = responder.WriteFromResponse(ctx, resp, entry.UpdateAt()); err != nil {
+			c.logError(ferr)
 			return err
 		}
-
-		if payloadStatus == http.StatusOK {
-			entry = request.SetPayload(path, queryString, queryHeaders, payloadHeaders, payloadBody, payloadStatus)
-			// persist new entry (make it available other threads)
-			if persisted := c.cache.Set(request); !persisted {
-
-			}
-		}
-	}
-
-	return c.respond(r, payloadStatus, payloadHeaders, payloadBody, entry)
-}
-
-func (c *CacheController) respond(
-	r *fasthttp.RequestCtx,
-	payloadStatus int,
-	payloadHeaders *[][2][]byte,
-	payloadBody []byte,
-	cacheEntry *model.Entry,
-) error {
-	// Write payloadStatus, payloadHeaders, and payloadBody from the cached (or fetched) response.
-	r.Response.SetStatusCode(payloadStatus)
-	for _, kv := range *payloadHeaders {
-		r.Response.Header.AddBytesKV(kv[0], kv[1])
-	}
-
-	// Set up Last-Modified header
-	header.SetLastModifiedFastHttp(r, cacheEntry)
-
-	// Write payloadBody
-	if _, err := serverutils.Write(payloadBody, r); err != nil {
-		return err
 	}
 
 	return nil
 }
 
-func (c *CacheController) handleTroughProxy(r *fasthttp.RequestCtx) {
-	// extract request data
-	path := r.Path()
-	queryString := r.QueryArgs().QueryString()
-	queryHeaders, queryReleaser := model.ParseQueryHeaders(r)
-	defer queryReleaser(queryHeaders)
-
-	// fetch data from upstream
-	payloadStatus, payloadHeaders, payloadBody, payloadReleaser, err := c.upstream.Fetch(nil, path, queryString, queryHeaders)
-	defer payloadReleaser()
+func (c *CacheProxyController) handleTroughProxy(ctx *fasthttp.RequestCtx) error {
+	// fetch missed data from upstream
+	req, resp, releaser, err := c.upstream.Fetch(nil, ctx)
+	defer releaser(req, resp)
 	if err != nil {
-		c.respondThatServiceIsTemporaryUnavailable(err, r)
-		return
+		c.logError(err)
+		return err
 	}
-
-	// Write payloadStatus, payloadHeaders, and payloadBody from the cached (or fetched) response.
-	r.Response.SetStatusCode(payloadStatus)
-	for _, kv := range *payloadHeaders {
-		r.Response.Header.AddBytesKV(kv[0], kv[1])
+	// write fetched response and return it
+	if err = responder.WriteFromResponse(ctx, resp, 0); err != nil {
+		c.logError(err)
+		return err
 	}
-
-	// Set up Last-Modified header
-	header.SetLastModifiedValueFastHttp(r, time.Now().UnixNano())
-
-	// Write payloadBody
-	if _, err = serverutils.Write(payloadBody, r); err != nil {
-		c.respondThatServiceIsTemporaryUnavailable(err, r)
-		return
-	}
+	return nil
 }
 
-var contentType = []byte("application/json")
-
-// respondThatServiceIsTemporaryUnavailable returns 503 and logs the error.
-func (c *CacheController) respondThatServiceIsTemporaryUnavailable(err error, ctx *fasthttp.RequestCtx) {
-	c.errorsCh <- err
+// respondServiceIsUnavailable returns 503 and logs the error.
+func (c *CacheProxyController) respondServiceIsUnavailable(ctx *fasthttp.RequestCtx, err error) {
+	c.logError(err)
 	ctx.Response.Header.SetContentTypeBytes(contentType)
 	ctx.SetStatusCode(fasthttp.StatusServiceUnavailable)
-	if _, err = serverutils.Write(template.RespondUnavailable(err), ctx); err != nil {
-		c.errorsCh <- err
+	if _, err = ctx.Write(template.RespondUnavailable(err)); err != nil {
+		c.logError(err)
 	}
 }
 
-// AddRoute attaches controller's route(s) to the provided router.
-func (c *CacheController) AddRoute(router *router.Router) {
-	router.GET(CacheGetPath, c.Index)
+func (c *CacheProxyController) logError(err error) {
+	select {
+	case <-c.ctx.Done():
+	case c.errorsCh <- err:
+	default:
+	}
 }
 
-func (c *CacheController) runErrorLogger() {
+func (c *CacheProxyController) runErrorLogger() {
 	go func() {
 		var prev map[string]int
 		dedupMap := make(map[string]int, 2048)
@@ -245,7 +214,7 @@ func (c *CacheController) runErrorLogger() {
 	}()
 }
 
-func (c *CacheController) runLoggerMetricsWriter() {
+func (c *CacheProxyController) runLoggerMetricsWriter() {
 	go func() {
 		metricsTicker := utils.NewTicker(c.ctx, time.Second)
 

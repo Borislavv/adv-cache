@@ -2,15 +2,17 @@ package serverutils
 
 import (
 	"errors"
+	"github.com/rs/zerolog/log"
 	"github.com/valyala/fasthttp"
 )
 
-var WriteResponseMsg = "error occurred while writing data into *fasthttp.RequestCtx"
+var ErrWriteResponse = errors.New("error occurred while writing data into *fasthttp.RequestCtx")
 
 func Write(b []byte, ctx *fasthttp.RequestCtx) (int, error) {
 	n, err := ctx.Write(b)
 	if err != nil {
-		return 0, errors.New(WriteResponseMsg + " (" + err.Error() + ")")
+		log.Error().Err(err).Msg("error while writing data into *fasthttp.RequestCtx")
+		return 0, ErrWriteResponse
 	}
 	return n, nil
 }
@@ -18,7 +20,8 @@ func Write(b []byte, ctx *fasthttp.RequestCtx) (int, error) {
 func WriteString(s string, ctx *fasthttp.RequestCtx) (int, error) {
 	n, err := ctx.WriteString(s)
 	if err != nil {
-		return 0, errors.New(WriteResponseMsg + " (" + err.Error() + ")")
+		log.Error().Err(err).Msg("error while writing data into *fasthttp.RequestCtx")
+		return 0, ErrWriteResponse
 	}
 	return n, nil
 }
