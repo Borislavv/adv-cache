@@ -152,8 +152,6 @@ type Cluster struct {
 
 type Backend struct {
 	Name                     string        `yaml:"name"`
-	Url                      string        `yaml:"url"`
-	UrlBytes                 []byte        // virtual field, Url converted to []byte
 	Scheme                   string        `yaml:"scheme"` // http or https
 	SchemeBytes              []byte        // virtual field, Scheme converted to []byte
 	Host                     string        `yaml:"host"` // backend.example.com
@@ -286,7 +284,8 @@ func LoadConfig(path string) (*AtomicCache, error) {
 	}
 
 	for i, _ := range cfg.Cache.Upstream.Cluster.Backends {
-		cfg.Cache.Upstream.Cluster.Backends[i].UrlBytes = []byte(cfg.Cache.Upstream.Cluster.Backends[i].Url)
+		cfg.Cache.Upstream.Cluster.Backends[i].SchemeBytes = []byte(cfg.Cache.Upstream.Cluster.Backends[i].Scheme)
+		cfg.Cache.Upstream.Cluster.Backends[i].HostBytes = []byte(cfg.Cache.Upstream.Cluster.Backends[i].Host)
 		cfg.Cache.Upstream.Cluster.Backends[i].UseMaxTimeoutHeaderBytes = []byte(cfg.Cache.Upstream.Cluster.Backends[i].UseMaxTimeoutHeader)
 	}
 

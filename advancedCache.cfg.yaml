@@ -1,5 +1,5 @@
 cache:
-  env: "dev"
+  env: "prod"
   enabled: true
 
   logs:
@@ -10,17 +10,24 @@ cache:
     gomaxprocs: 0
 
   api:
-    where: ":8020"
+    name: "advCache.starTeam"
+    port: "8020"
 
   upstream:
     cluster:
       backends:
-        - url: "https://seo-master.lux.kube.xbet.lan"  # Backend (example of full qualified url: http://localhost:8020)
-          rate: 250000                                 # Rate limiting reqs to backend per second.
-          timeout: "5m"                                # Timeout for requests to backend.
-        - url: "http://localhost:8080"                 # Backend (example of full qualified url: http://localhost:8020)
-          rate: 250000                                 # Rate limiting reqs to backend per second.
-          timeout: "5m"
+        - host: "localhost:8080"
+          scheme: "http"
+          rate: 250000
+          timeout: "5s"
+          max_timeout: "3m"
+          use_max_timeout_header: "X-Google-Bot"
+        - host: "seo-master.lux.kube.xbet.lan"
+          scheme: "https"
+          rate: 250000
+          timeout: "5s"
+          max_timeout: "3m"
+          use_max_timeout_header: "X-Google-Bot"
 
   data:
     dump:
@@ -63,8 +70,8 @@ cache:
   rules:
     /api/v2/pagedata:
       refresh:
-        enabled: true
-        ttl: "12h"
+        enabled: true     # Enabled refresh of this path.
+        ttl: "12h"        # Will be used be default with 200 status code.
         beta: 0.4         # Controls randomness in refresh timing to avoid thundering herd (from 0 to 1).
         coefficient: 0.5  # Starts attempts to renew data after TTL*coefficient=50% (12h if whole TTL is 24h)
       cache_key:
