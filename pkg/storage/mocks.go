@@ -9,6 +9,7 @@ import (
 	"github.com/valyala/fasthttp"
 	"runtime"
 	"strconv"
+	"time"
 )
 
 var responseBytes = []byte(`{
@@ -102,10 +103,10 @@ func streamEntryPointersConsecutive(ctx context.Context, cfg config.Config, path
 					resp.Header.AddBytesKV(kv[0], kv[1])
 				}
 
-				resp.SetBodyRaw(copiedBodyBytes(i))
 				resp.SetStatusCode(200)
+				resp.SetBody(copiedBodyBytes(i))
+				resp.Header.SetLastModified(time.Now())
 
-				// releaser is unnecessary due to all entries will escape to heap
 				entry, err := model.NewMockEntry(cfg, req, resp)
 				if err != nil {
 					panic(err)

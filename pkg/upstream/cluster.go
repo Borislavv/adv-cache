@@ -52,6 +52,7 @@ var (
 	ErrNotFound                  = errors.New("backend not found in cluster")
 	ErrNilBackendConfig          = errors.New("nil backend config")
 	ErrAllBackendsAreBusy        = errors.New("all backends are busy")
+	ErrWorkflowStateMismatch     = errors.New("workflow state mismatch")
 	ErrCannotAcquireIDForBackend = errors.New("cannot acquire ID for backend")
 )
 
@@ -136,6 +137,9 @@ type BackendCluster struct {
 	sick map[string]*backendSlot // quarantined
 	dead map[string]*backendSlot // removed
 
+	quarantineCh     chan string
+	quarantineTicker <-chan time.Time
+
 	hcTicker     <-chan time.Time
 	killerTicker <-chan time.Time
 
@@ -146,16 +150,18 @@ type BackendCluster struct {
 func NewCluster(ctx context.Context, cfg config.Config) (cluster *BackendCluster, err error) {
 	length := len(cfg.Upstream().Cluster.Backends)
 	cluster = &BackendCluster{
-		ctx:          ctx,
-		cfg:          cfg,
-		cursor:       atomic.Uint64{},
-		healthy:      atomic.Pointer[[]*backendSlot]{},
-		all:          make(map[string]*backendSlot, length),
-		sick:         make(map[string]*backendSlot, length),
-		dead:         make(map[string]*backendSlot, length),
-		hcTicker:     utils.NewTicker(ctx, hcInterval),
-		killerTicker: utils.NewTicker(ctx, killerInterval),
-		reservedIDs:  make(map[string]struct{}, length),
+		ctx:              ctx,
+		cfg:              cfg,
+		cursor:           atomic.Uint64{},
+		healthy:          atomic.Pointer[[]*backendSlot]{},
+		all:              make(map[string]*backendSlot, length),
+		sick:             make(map[string]*backendSlot, length),
+		dead:             make(map[string]*backendSlot, length),
+		hcTicker:         utils.NewTicker(ctx, hcInterval),
+		killerTicker:     utils.NewTicker(ctx, killerInterval),
+		reservedIDs:      make(map[string]struct{}, length),
+		quarantineCh:     make(chan string, length*4+1),
+		quarantineTicker: utils.NewTicker(ctx, killerInterval),
 	}
 
 	var healthySlots []*backendSlot
@@ -166,7 +172,7 @@ func NewCluster(ctx context.Context, cfg config.Config) (cluster *BackendCluster
 	gofakeit.Seed(time.Now().UnixNano())
 	for _, backendCfg := range cfg.Upstream().Cluster.Backends {
 		if err = cluster.Add(backendCfg); err != nil {
-			log.Error().Err(err).Msg("[upstream] adding backend failed")
+			log.Error().Err(err).Msg("[upstream-cluster] adding backend failed")
 		}
 	}
 
@@ -178,7 +184,7 @@ func NewCluster(ctx context.Context, cfg config.Config) (cluster *BackendCluster
 				Int64("sick", SickBackends()).
 				Int64("dead", DeadBackends())
 		}
-		logEvent.Msg("[upstream] cluster initialization failed")
+		logEvent.Msg("[upstream-cluster] cluster initialization failed")
 		return cluster, ErrNoBackends
 	} else {
 		logEvent := log.Info()
@@ -188,12 +194,13 @@ func NewCluster(ctx context.Context, cfg config.Config) (cluster *BackendCluster
 				Int64("sick", SickBackends()).
 				Int64("dead", DeadBackends())
 		}
-		logEvent.Msg("[upstream] cluster initialised")
+		logEvent.Msg("[upstream-cluster] cluster initialised")
 		return cluster, nil
 	}
 }
 
 func (c *BackendCluster) Run() {
+	c.runMedic()
 	c.runKiller()
 	c.runHealthChecker()
 }
@@ -218,17 +225,14 @@ func (c *BackendCluster) Fetch(rule *config.Rule, ctx *fasthttp.RequestCtx, r *f
 		slot := (*slots)[int(c.cursor.Add(1)%slotsLen)]
 		// check whether it can handle else one request
 		select {
-		case <-c.ctx.Done():
-			return nil, nil, emptyReleaserFn, c.ctx.Err()
 		case <-slot.rate.Chan():
 			// if so, do request
 			req, resp, releaser, err = slot.backend.Fetch(rule, ctx, r)
 			if err != nil || resp.StatusCode() >= http.StatusInternalServerError {
-				go c.markSickAsync(slot.backend.ID(), slot.backend.Name())
+				c.markSickAsync(slot.backend.ID())
 			}
 			return req, resp, releaser, err
 		default:
-			continue
 		}
 	}
 
@@ -268,7 +272,7 @@ func (c *BackendCluster) Add(cfg *config.Backend) error {
 			logEvent.
 				Str("from", "new")
 		}
-		logEvent.Msgf("[upstream] adding backend '%s' ignored: duplicate", backend.Name())
+		logEvent.Msgf("[upstream-cluster] adding backend '%s' ignored: duplicate", backend.Name())
 		return ErrDuplicate
 	}
 
@@ -287,7 +291,7 @@ func (c *BackendCluster) Add(cfg *config.Backend) error {
 				Str("to", slot.state.String()).
 				Str("backend", slot.backend.Name())
 		}
-		logEvent.Msgf("[upstream] backend '%s' added as healthy", slot.backend.Name())
+		logEvent.Msgf("[upstream-cluster] backend '%s' added as healthy", slot.backend.Name())
 	} else {
 		slot.state = sick
 		c.sick[id] = slot
@@ -300,7 +304,7 @@ func (c *BackendCluster) Add(cfg *config.Backend) error {
 				Str("to", slot.state.String()).
 				Str("backend", slot.state.String())
 		}
-		logEvent.Msgf("[upstream] backend '%s' added as sick", slot.backend.Name())
+		logEvent.Msgf("[upstream-cluster] backend '%s' added as sick", slot.backend.Name())
 	}
 
 	return nil
@@ -349,7 +353,7 @@ func (c *BackendCluster) Update(ctx context.Context, id string, cfg *config.Back
 			Str("to", slot.state.String()).
 			Str("backend", slot.backend.Name())
 	}
-	logEvent.Msgf("[upstream] backend '%s' updated", slot.backend.Name())
+	logEvent.Msgf("[upstream-cluster] backend '%s' updated", slot.backend.Name())
 
 	return nil
 }
@@ -388,7 +392,7 @@ func (c *BackendCluster) Resurrect(ctx context.Context, id string, cfg *config.B
 			Str("to", slot.state.String()).
 			Str("backend", slot.backend.Name())
 	}
-	logEvent.Msgf("[upstream] backend '%s' resurrected", slot.backend.Name())
+	logEvent.Msgf("[upstream-cluster] backend '%s' resurrected", slot.backend.Name())
 
 	return nil
 }
@@ -411,7 +415,7 @@ func (c *BackendCluster) quarantine(id string) error {
 		return ErrNotFound
 	}
 	if slot.state != healthy {
-		return nil
+		return ErrWorkflowStateMismatch
 	}
 
 	c.removeFromHealthySlice(slot)
@@ -421,11 +425,7 @@ func (c *BackendCluster) quarantine(id string) error {
 	c.sick[id] = slot
 	sickGauge.Add(1)
 
-	logEvent := log.Info()
-	if c.cfg.IsProd() {
-		logEvent.Str("backend", slot.backend.Name())
-	}
-	logEvent.Msgf("[upstream] backend '%s' quarantined", slot.backend.Name())
+	log.Info().Msgf("[upstream-cluster] backend '%s' quarantined", slot.backend.Name())
 
 	return nil
 }
@@ -450,7 +450,7 @@ func (c *BackendCluster) promote(id string) error {
 		logEvent.
 			Str("backend", id)
 	}
-	logEvent.Msgf("[upstream] backend '%s' promoted to healthy", id)
+	logEvent.Msgf("[upstream-cluster] backend '%s' promoted to healthy", id)
 
 	return nil
 }
@@ -473,31 +473,19 @@ func (c *BackendCluster) kill(id string) error {
 		sickGauge.Add(-1)
 	}
 
-	oldState := slot.state
 	slot.state = dead
 	c.dead[id] = slot
 	deadGauge.Add(1)
 
-	logEvent := log.Info()
-	if c.cfg.IsProd() {
-		logEvent.
-			Str("backend", slot.backend.Name()).
-			Str("from", oldState.String()).
-			Str("to", slot.state.String())
-	}
-	logEvent.Msgf("[upstream] backend '%s' buried", slot.backend.Name())
+	log.Info().Msgf("[upstream-cluster] backend '%s' buried", slot.backend.Name())
 
 	return nil
 }
 
-func (c *BackendCluster) markSickAsync(id, name string) {
-	if err := c.quarantine(id); err == nil {
-		logEvent := log.Info()
-		if c.cfg.IsProd() {
-			logEvent.
-				Str("backend", name)
-		}
-		logEvent.Msgf("[upstream] backend '%s' quarantined due to error", name)
+func (c *BackendCluster) markSickAsync(id string) {
+	select {
+	case c.quarantineCh <- id: // move to quarantine on hit
+	default: // do nothing, it's hot path, was just lost one not so important action
 	}
 }
 
@@ -533,8 +521,25 @@ func (c *BackendCluster) removeFromHealthySlice(slot *backendSlot) {
 // LifeCycle checkers.
 // -----------------------------------------------------------------------------
 
+func (c *BackendCluster) runMedic() {
+	log.Info().Msg("[upstream-medic] started")
+
+	go func() {
+		for {
+			select {
+			case <-c.ctx.Done():
+				return
+			case id := <-c.quarantineCh:
+				if err := c.quarantine(id); err == nil {
+					log.Info().Msgf("[upstream-medic][1d] backend '%s' was moved ro quarantine", id)
+				}
+			}
+		}
+	}()
+}
+
 func (c *BackendCluster) runKiller() {
-	log.Info().Dur("killerInterval", killerInterval).Msg("[upstream] killer started")
+	log.Info().Msg("[upstream-killer] started")
 
 	go func() {
 		for {
@@ -542,7 +547,8 @@ func (c *BackendCluster) runKiller() {
 			case <-c.ctx.Done():
 				return
 			case <-c.killerTicker:
-				c.killDoomedBackends()
+				killed := c.killDoomedBackends()
+				log.Info().Msgf("[upstream-killer][1d] '%d' were killed today", killed)
 			}
 		}
 	}()
@@ -551,7 +557,7 @@ func (c *BackendCluster) runKiller() {
 const maxRetries = 60
 
 func (c *BackendCluster) runHealthChecker() {
-	log.Info().Dur("hcInterval", hcInterval).Msg("[upstream] active HC started")
+	log.Info().Msg("[upstream-cluster] active HC started")
 
 	go func() {
 		for {
@@ -559,36 +565,42 @@ func (c *BackendCluster) runHealthChecker() {
 			case <-c.ctx.Done():
 				return
 			case <-c.hcTicker:
-				c.probeSickBackends()
+				healthy, sick, dead := c.probeSickBackends()
+				log.Info().Msgf("[upstream-healthchecker][10s] healthy: %d, sick: %d, dead: %d", healthy, sick, dead)
 			}
 		}
 	}()
 }
 
-func (c *BackendCluster) probeSickBackends() {
+func (c *BackendCluster) probeSickBackends() (healthy, sick, dead int) {
 	c.mu.RLock()
 	for _, slot := range c.sick {
 		go func(slot *backendSlot) {
 			if err := slot.backend.IsHealthy(); err == nil {
 				if err = c.promote(slot.backend.ID()); err != nil {
-					log.Error().Err(err).Msgf("[upstream] failed to promote backend '%s' to healthy", slot.backend.Name())
+					log.Error().Msgf("[upstream-cluster] failed to promote backend '%s' to healthy: %s", slot.backend.Name(), err.Error())
 				}
 			} else {
-				log.Info().Err(err).Msgf("[upstream] backend '%s' still sick", slot.backend.Name())
+				log.Info().Msgf("[upstream-cluster] backend '%s' still sick: %s", slot.backend.Name(), err.Error())
 			}
 
 			if slot.hcRetries.Add(1) >= maxRetries {
 				if err := c.kill(slot.backend.ID()); err != nil {
-					log.Info().Msgf("[upstream] failed to kill backend '%s'", slot.backend.Name())
+					log.Info().Msgf("[upstream-cluster] failed to kill backend '%s': %s", slot.backend.Name(), err.Error())
 				}
 			}
 		}(slot)
 	}
+	sickLen := len(c.sick)
+	deadLen := len(c.dead)
 	c.mu.RUnlock()
+
+	return len(*c.healthy.Load()), sickLen, deadLen
 }
 
-func (c *BackendCluster) killDoomedBackends() {
-	forgottenGauge.Add(int64(len(c.dead)))
+func (c *BackendCluster) killDoomedBackends() int {
+	length := len(c.dead)
+	forgottenGauge.Add(int64(length))
 
 	c.mu.Lock()
 	for _, slot := range c.dead {
@@ -596,6 +608,8 @@ func (c *BackendCluster) killDoomedBackends() {
 		delete(c.dead, slot.backend.ID())
 	}
 	c.mu.Unlock()
+
+	return length
 }
 
 // -----------------------------------------------------------------------------

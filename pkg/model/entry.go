@@ -257,7 +257,7 @@ func (e *Entry) isPayloadsAreEquals(a, b []byte) bool {
 func (e *Entry) SetPayload(req *fasthttp.Request, resp *fasthttp.Response) *Entry {
 	path := req.URI().Path()
 	query := req.URI().QueryArgs().QueryString()
-	body := req.Body()
+	body := resp.Body()
 
 	// === 1) Calculate total size ===
 	total := 0

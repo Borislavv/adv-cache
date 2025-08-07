@@ -47,8 +47,8 @@ const connsPerHost = 16392
 var httpClient = &fasthttp.Client{
 	// TCP-pool
 	MaxConnsPerHost:     connsPerHost,
-	MaxIdleConnDuration: 30 * time.Second,
-	MaxConnWaitTimeout:  100 * time.Millisecond,
+	MaxIdleConnDuration: 60 * time.Second,
+	MaxConnWaitTimeout:  500 * time.Millisecond,
 	// keep-alive and DNS/SYN timeouts
 	Dial: func(addr string) (net.Conn, error) {
 		return (&net.Dialer{
@@ -63,8 +63,8 @@ var httpClient = &fasthttp.Client{
 		ClientSessionCache: tls.NewLRUClientSessionCache(connsPerHost * 1.5),
 	},
 	// Read/Write timeouts.
-	ReadTimeout:         300 * time.Millisecond,
-	WriteTimeout:        300 * time.Millisecond,
+	ReadTimeout:         500 * time.Millisecond,
+	WriteTimeout:        500 * time.Millisecond,
 	MaxResponseBodySize: 0,
 }
 

@@ -139,10 +139,7 @@ func (c *CacheProxyController) handleTroughCache(ctx *fasthttp.RequestCtx) error
 			entry = requestedEntry
 		}
 		// write fetched response and return it
-		if err = responder.WriteFromResponse(ctx, resp, entry.UpdateAt()); err != nil {
-			c.logError(ferr)
-			return err
-		}
+		responder.WriteFromResponse(ctx, resp, entry.UpdateAt())
 	}
 
 	return nil
@@ -157,10 +154,7 @@ func (c *CacheProxyController) handleTroughProxy(ctx *fasthttp.RequestCtx) error
 		return err
 	}
 	// write fetched response and return it
-	if err = responder.WriteFromResponse(ctx, resp, 0); err != nil {
-		c.logError(err)
-		return err
-	}
+	responder.WriteFromResponse(ctx, resp, 0)
 	return nil
 }
 
