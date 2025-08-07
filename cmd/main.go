@@ -15,7 +15,10 @@ import (
 	"time"
 )
 
-var isInteractive = flag.Bool("inter", false, "Enable interactive mode of data loading")
+var (
+	customCfg     = flag.String("cfg", "/path/to/config", "custom config file")
+	isInteractive = flag.Bool("inter", false, "Enable interactive mode of data loading")
+)
 
 func init() {
 	flag.Parse()
@@ -36,7 +39,18 @@ func setMaxProcs(cfg config.Config) {
 
 // loadCfg loads the configuration struct from environment variables
 // and computes any derived configuration values.
-func loadCfg() (config.Config, error) {
+func loadCfg(path string) (config.Config, error) {
+	if path != "" {
+		cfg, err := config.LoadConfig(path)
+		if err != nil {
+			log.Error().Err(err).Msgf("[config] failed to load custom config from '%v'", path)
+			return nil, err
+		} else {
+			log.Info().Msgf("[config] custom config loaded from '%v'", path)
+			return cfg, nil
+		}
+	}
+
 	cfg, err := config.LoadConfig(cache.ConfigPathLocal)
 	if err != nil {
 		cfg, err = config.LoadConfig(cache.ConfigPath)
@@ -59,7 +73,7 @@ func main() {
 	defer cancel()
 
 	// Load the application configuration from env vars.
-	cfg, err := loadCfg()
+	cfg, err := loadCfg(*customCfg)
 	if err != nil {
 		log.Err(err).Msg("[main] failed to load cache config")
 		return
@@ -76,15 +90,15 @@ func main() {
 	probe := liveness.NewProbe(cfg.K8S().Probe.Timeout)
 
 	// Initialize and start the cache application.
-	app, err := cache.NewApp(ctx, cfg, probe)
+	app, err := cache.NewApp(ctx, cfg, probe, *isInteractive)
 	if err != nil {
-		log.Err(err).Msg("[main] failed to init cache app")
+		log.Err(err).Msg("[main] failed to init. cache app")
 		return
 	}
 
 	// Register app for gracefulShutdown shutdown.
 	gsh.Add(1)
-	if err = app.Start(gsh, *isInteractive); err != nil {
+	if err = app.Start(gsh); err != nil {
 		log.Err(err).Msg("[main] failed to start app")
 		return
 	} else {

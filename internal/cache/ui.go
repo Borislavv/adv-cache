@@ -18,6 +18,11 @@ import (
 	"time"
 )
 
+const (
+	cfgFilePatternYml  = "advCache.cfg.*.yml"
+	cfgFilePatternYaml = "advCache.cfg.*.yaml"
+)
+
 func wannaContinueAfterError(msg string, err error) bool {
 	prompt := promptui.Prompt{
 		Label:     fmt.Sprintf("%s: %v. Continue anyway?", msg, err),
@@ -153,53 +158,58 @@ func (c *Cache) loadDataInteractive(ctx context.Context) error {
 		storage.LoadMocks(ctx, c.cfg, c.db, nMocks)
 
 	case idx == n+2:
-		// YAML config selection menu
+		// YAML config selection menu: search for advCache.cfg.*.yml and .yaml in the current dir
 		for {
-			actions := []string{
-				fmt.Sprintf("Local config (%s)", ConfigPathLocal),
-				fmt.Sprintf("Prod config (%s)", ConfigPath),
-				"Back",
-				"Exit",
+			// Collect matching files
+			ymlFiles, _ := filepath.Glob(cfgFilePatternYml)
+			yamlFiles, _ := filepath.Glob(cfgFilePatternYaml)
+			configs := append(ymlFiles, yamlFiles...)
+
+			// If none found, return to the previous menu
+			if len(configs) == 0 {
+				fmt.Println("No advCache.cfg.*.yml/.yaml config files found")
+				return c.loadDataInteractive(ctx)
 			}
-			cfgPrompt := promptui.Select{Label: "Select config action", Items: actions}
-			choice, _, err := cfgPrompt.Run()
+
+			// Build menu items: all config files + “Back”
+			items := make([]string, len(configs)+1)
+			for i, cfgPath := range configs {
+				items[i] = cfgPath
+			}
+			items[len(configs)] = "Back"
+
+			prompt := promptui.Select{
+				Label: "Select config file",
+				Items: items,
+			}
+			index, _, err := prompt.Run()
 			if err != nil {
-				log.Err(err).Msgf("[dump] config selection aborted: %v", err)
+				log.Err(err).Msgf("[app] config selection aborted: %v", err)
 				return err
 			}
 
-			var path string
-			switch choice {
-			case 0:
-				path = ConfigPathLocal
-			case 1:
-				path = ConfigPath
-			case 2:
+			// “Back” chosen → go back
+			if index == len(items)-1 {
 				return c.loadDataInteractive(ctx)
-			case 3:
-				fmt.Println("Exiting.")
-				os.Exit(0)
 			}
 
-			fmt.Printf("Using config: %s\n", path)
-			info, statErr := os.Stat(path)
-			if statErr != nil {
-				if os.IsNotExist(statErr) {
-					fmt.Printf("File %q not found\n", path)
-					continue
-				}
-				return statErr
-			}
-			if info.IsDir() {
-				fmt.Printf("%q is a directory\n", path)
-				continue
-			}
-			cfg, loadErr := config.LoadConfig(path)
+			// Try loading the selected config
+			selected := items[index]
+			fmt.Printf("Using config: %s\n", selected)
+			newCfg, loadErr := config.LoadConfig(selected)
 			if loadErr != nil {
-				fmt.Printf("Failed to load config: %v\n", loadErr)
+				fmt.Printf("Failed to load config %q: %v\n", selected, loadErr)
 				continue
 			}
-			c.cfg = cfg
+
+			newApp, err := NewApp(c.ctx, newCfg, c.probe, c.isInteractive)
+			if err != nil {
+				if wannaContinueAfterError("Application init. failed", err) {
+					return c.loadDataInteractive(ctx)
+				}
+				return err
+			}
+			*c = *newApp
 			return useYamlCfgErr
 		}
 
@@ -231,8 +241,17 @@ func (c *Cache) loadDataInteractive(ctx context.Context) error {
 				fmt.Printf("Failed to reload config: %v\n", loadErr)
 				return loadErr
 			}
-			c.cfg = newCfg
 			fmt.Printf("Config reloaded from %s\n", path)
+
+			newApp, err := NewApp(c.ctx, newCfg, c.probe, c.isInteractive)
+			if err != nil {
+				if wannaContinueAfterError("Application init. failed", err) {
+					return c.loadDataInteractive(ctx)
+				}
+				return err
+			}
+			*c = *newApp
+
 			return useYamlCfgErr
 		}
 		// all editors failed

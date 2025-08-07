@@ -1,5 +1,5 @@
 cache:
-  env: "prod"
+  env: "dev"
   enabled: true
 
   logs:
@@ -7,16 +7,16 @@ cache:
     stats: true # Should log metrics in /std/out?
 
   runtime:
-    gomaxprocs: 0
+    gomaxprocs: 6
 
   api:
-    name: "advCache.starTeam"
+    name: "advCache.starTeam:8080"
     port: "8020"
 
   upstream:
     cluster:
       backends:
-        - host: "localhost:8080"
+        - host: "localhost:8021"
           scheme: "http"
           rate: 250000
           timeout: "5s"
@@ -26,7 +26,7 @@ cache:
         - host: "seo-master.lux.kube.xbet.lan"
           scheme: "https"
           rate: 250000
-          timeout: "5s"
+          timeout: "10s"
           max_timeout: "3m"
           use_max_timeout_header: "X-Google-Bot"
           healthcheck: "/healthcheck"
@@ -40,7 +40,7 @@ cache:
       max_versions: 3
       gzip: false
     mock:
-      enabled: false
+      enabled: true
       length: 1000000
 
   storage:
@@ -73,9 +73,9 @@ cache:
     /api/v2/pagedata:
       refresh:
         enabled: true     # Enabled refresh of this path.
-        ttl: "12h"        # Will be used be default with 200 status code.
+        ttl: "1h"         # Will be used be default with 200 status code.
         beta: 0.4         # Controls randomness in refresh timing to avoid thundering herd (from 0 to 1).
-        coefficient: 0.5  # Starts attempts to renew data after TTL*coefficient=50% (12h if whole TTL is 24h)
+        coefficient: 0.2  # Starts attempts to renew data after TTL*coefficient=50% (12h if whole TTL is 24h)
       cache_key:
         query: # Match query parameters by prefix.
           - project[id]
@@ -95,6 +95,8 @@ cache:
           - Content-Length
           - Cache-Control
           - X-Content-Digest
+          - X-Request-ID
+          - X-Request-GUID
           - Age
 
     /api/v1/pagecontent:
@@ -117,4 +119,6 @@ cache:
           - Content-Length
           - Cache-Control
           - X-Content-Digest
+          - X-Request-ID
+          - X-Request-GUID
           - Age

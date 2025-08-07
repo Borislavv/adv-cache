@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	bytes2 "github.com/Borislavv/advanced-cache/pkg/bytes"
+	"github.com/rs/zerolog/log"
 	"math"
 	"math/rand/v2"
 	"net/http"
@@ -972,52 +973,53 @@ func (e *Entry) SetMapKey(key uint64) *Entry {
 	return e
 }
 
-//func (e *Entry) DumpPayload() {
-//	path, query, queryHeaders, responseHeaders, body, status, releaseFn, err := e.Payload()
-//	defer releaseFn(queryHeaders, responseHeaders)
-//	if err != nil {
-//		log.Error().Err(err).Msg("[dump] failed to unpack payload")
-//		return
-//	}
-//
-//	fmt.Printf("\n========== DUMP PAYLOAD ==========\n")
-//	fmt.Printf("RuleKey:          %d\n", e.key)
-//	fmt.Printf("Shard:        %d\n", e.shard)
-//	fmt.Printf("IsCompressed: %v\n", e.IsCompressed())
-//	fmt.Printf("UpdateAt:	 %s\n", time.Unix(0, e.UpdateAt()).Format(time.RFC3339Nano))
-//	fmt.Printf("----------------------------------\n")
-//
-//	fmt.Printf("Path:   	   %q\n", string(path))
-//	fmt.Printf("Query:  	   %q\n", string(query))
-//	fmt.Printf("StatusCode: %d\n", status)
-//
-//	fmt.Printf("\nQuery Headers:\n")
-//	if len(*queryHeaders) == 0 {
-//		fmt.Println("  (none)")
-//	} else {
-//		for i, kv := range *queryHeaders {
-//			fmt.Printf("  [%02d] %q : %q\n", i, kv[0], kv[1])
-//		}
-//	}
-//
-//	fmt.Printf("\nResponse Headers:\n")
-//	if len(*responseHeaders) == 0 {
-//		fmt.Println("  (none)")
-//	} else {
-//		for i, kv := range *responseHeaders {
-//			fmt.Printf("  [%02d] %q : %q\n", i, kv[0], kv[1])
-//		}
-//	}
-//
-//	fmt.Printf("\nBody (%d bytes):\n", len(body))
-//	if len(body) > 0 {
-//		const maxLen = 500
-//		if len(body) > maxLen {
-//			fmt.Printf("  %q ... [truncated, total %d bytes]\n", body[:maxLen], len(body))
-//		} else {
-//			fmt.Printf("  %q\n", body)
-//		}
-//	}
-//
-//	fmt.Println("==================================")
-//}
+func (e *Entry) DumpPayload() {
+	req, resp, releaser, err := e.Payload()
+	defer releaser(req, resp)
+	if err != nil {
+		log.Error().Err(err).Msg("[dump] failed to unpack payload")
+		return
+	}
+
+	fmt.Printf("\n========== DUMP PAYLOAD ==========\n")
+	fmt.Printf("RuleKey:          %d\n", e.key)
+	fmt.Printf("Shard:        %d\n", e.shard)
+	fmt.Printf("UpdateAt:	 %s\n", time.Unix(0, e.UpdateAt()).Format(time.RFC3339Nano))
+	fmt.Printf("----------------------------------\n")
+
+	fmt.Printf("Path:   	   %q\n", string(req.URI().Path()))
+	fmt.Printf("Query:  	   %q\n", string(req.URI().QueryString()))
+	fmt.Printf("StatusCode: %d\n", resp.StatusCode())
+
+	fmt.Printf("\nQuery Headers:\n")
+	if req.Header.Len() == 0 {
+		fmt.Println("  (none)")
+	} else {
+		req.Header.All()(func(k []byte, v []byte) bool {
+			fmt.Printf("  - %q : %q\n", k, v)
+			return true
+		})
+	}
+
+	fmt.Printf("\nResponse Headers:\n")
+	if resp.Header.Len() == 0 {
+		fmt.Println("  (none)")
+	} else {
+		resp.Header.All()(func(k []byte, v []byte) bool {
+			fmt.Printf("  - %q : %q\n", k, v)
+			return true
+		})
+	}
+
+	fmt.Printf("\nBody (%d bytes):\n", len(resp.Body()))
+	if len(resp.Body()) > 0 {
+		const maxLen = 500
+		if len(resp.Body()) > maxLen {
+			fmt.Printf("  %q ... [truncated, total %d bytes]\n", resp.Body()[:maxLen], len(resp.Body()))
+		} else {
+			fmt.Printf("  %q\n", resp.Body())
+		}
+	}
+
+	fmt.Println("==================================")
+}

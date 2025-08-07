@@ -3,18 +3,23 @@ package upstream
 import (
 	"context"
 	"crypto/tls"
+	"errors"
+	"fmt"
 	"github.com/Borislavv/advanced-cache/pkg/config"
+	"github.com/Borislavv/advanced-cache/pkg/pools"
 	"github.com/valyala/fasthttp"
 	"net"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
 )
 
 var (
-	healthCheckPath = []byte("/k8s/probe")
-	emptyReleaserFn = func(*fasthttp.Request, *fasthttp.Response) {}
+	healthCheckPath         = []byte("/k8s/probe")
+	emptyReleaserFn         = func(*fasthttp.Request, *fasthttp.Response) {}
+	ErrNotHealthyStatusCode = errors.New("bad status code")
 )
 
 /* -------------------------------------------------------------------------- */
@@ -47,7 +52,7 @@ var httpClient = &fasthttp.Client{
 	// keep-alive and DNS/SYN timeouts
 	Dial: func(addr string) (net.Conn, error) {
 		return (&net.Dialer{
-			Timeout:   3 * time.Second,
+			Timeout:   10 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).Dial("tcp", addr)
 	},
@@ -58,8 +63,8 @@ var httpClient = &fasthttp.Client{
 		ClientSessionCache: tls.NewLRUClientSessionCache(connsPerHost * 1.5),
 	},
 	// Read/Write timeouts.
-	ReadTimeout:         100 * time.Millisecond, // guard p99
-	WriteTimeout:        100 * time.Millisecond,
+	ReadTimeout:         300 * time.Millisecond,
+	WriteTimeout:        300 * time.Millisecond,
 	MaxResponseBodySize: 0,
 }
 
@@ -71,8 +76,9 @@ var httpClient = &fasthttp.Client{
 //
 //nolint:interfacebloat // explicit on purpose
 type Backend interface {
+	ID() string
 	Name() string
-	IsHealthy() bool
+	IsHealthy() error
 	Cfg() *config.Backend
 	Update(cfg *config.Backend) error
 	Fetch(rule *config.Rule, inCtx *fasthttp.RequestCtx, inReq *fasthttp.Request) (
@@ -82,7 +88,7 @@ type Backend interface {
 }
 
 type BackendNode struct {
-	name      string
+	id        string
 	ctx       context.Context
 	cfg       *atomic.Pointer[config.Backend]
 	transport *http.Transport
@@ -91,12 +97,18 @@ type BackendNode struct {
 // NewBackend creates a new instance of BackendNode.
 func NewBackend(ctx context.Context, cfg *config.Backend, name string) *BackendNode {
 	backend := &BackendNode{
-		ctx:  ctx,
-		name: name,
-		cfg:  &atomic.Pointer[config.Backend]{},
+		ctx: ctx,
+		id:  name,
+		cfg: &atomic.Pointer[config.Backend]{},
 	}
 	backend.cfg.Store(cfg)
 	return backend
+}
+
+var respHeadersPool = sync.Pool{
+	New: func() interface{} {
+		return new(fasthttp.ResponseHeader)
+	},
 }
 
 // Fetch actually performs the HTTP request to backend and parses the response.
@@ -154,30 +166,51 @@ func (b *BackendNode) Fetch(rule *config.Rule, inCtx *fasthttp.RequestCtx, inReq
 	}
 
 	/**
-	 * Parse response headers and store only available.
+	 * Filters response headers if rule !== nil (mutates response).
 	 */
-	if rule != nil {
-		allowedHeadersMap := rule.CacheValue.HeadersMap
-		outResp.Header.All()(func(k, v []byte) bool {
-			if _, ok := allowedHeadersMap[unsafe.String(unsafe.SliceData(k), len(k))]; !ok {
-				outResp.Header.DelBytes(k)
-			}
-			return true
-		})
-	}
+	b.filterHeaders(rule, outResp)
 
 	return outReq, outResp, releaser, nil
 }
 
+func (b *BackendNode) filterHeaders(rule *config.Rule, resp *fasthttp.Response) {
+	if rule != nil {
+		allowedMap := rule.CacheValue.HeadersMap
+		if len(allowedMap) > 0 {
+			var kvBuf = pools.KeyValueSlicePool.Get().(*[][2][]byte)
+
+			resp.Header.All()(func(k, v []byte) bool {
+				if _, ok := allowedMap[unsafe.String(unsafe.SliceData(k), len(k))]; ok {
+					*kvBuf = append(*kvBuf, [2][]byte{k, v})
+				}
+				return true
+			})
+
+			resp.Header.Reset()
+			for _, kv := range *kvBuf {
+				resp.Header.AddBytesKV(kv[0], kv[1])
+			}
+
+			*kvBuf = (*kvBuf)[:0]
+			pools.KeyValueSlicePool.Put(kvBuf)
+		}
+	}
+}
+
+func (b *BackendNode) ID() string {
+	return b.id
+}
+
 func (b *BackendNode) Name() string {
-	return b.name
+	cfg := b.cfg.Load()
+	return fmt.Sprintf("%s://%s", cfg.Scheme, cfg.Host)
 }
 
 func (b *BackendNode) Cfg() *config.Backend {
 	return b.cfg.Load()
 }
 
-func (b *BackendNode) IsHealthy() bool {
+func (b *BackendNode) IsHealthy() error {
 	cfg := b.cfg.Load()
 
 	req := fasthttp.AcquireRequest()
@@ -187,15 +220,18 @@ func (b *BackendNode) IsHealthy() bool {
 	defer fasthttp.ReleaseResponse(resp)
 
 	uri := req.URI()
-	uri.SetSchemeBytes(cfg.SchemeBytes) // "http" / "https"
-	uri.SetHostBytes(cfg.HostBytes)     // backend.example.com
-	uri.SetPathBytes(healthCheckPath)   // /k8s/probe
+	uri.SetSchemeBytes(cfg.SchemeBytes)    // "http" / "https"
+	uri.SetHostBytes(cfg.HostBytes)        // backend.example.com
+	uri.SetPathBytes(cfg.HealthcheckBytes) // /k8s/probe or /healthcheck for example
 
 	req.Header.SetMethod(fasthttp.MethodGet)
 	if err := httpClient.DoTimeout(req, resp, cfg.Timeout); err != nil {
-		return false
+		return err
 	}
-	return resp.StatusCode() != fasthttp.StatusOK
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return ErrNotHealthyStatusCode
+	}
+	return nil
 }
 
 func (b *BackendNode) Update(cfg *config.Backend) error {

@@ -34,16 +34,18 @@ type App interface {
 
 // Cache encapsulates the entire cache application state.
 type Cache struct {
-	cfg    config.Config
-	ctx    context.Context
-	cancel context.CancelFunc
-	probe  liveness.Prober
-	db     storage.Storage
-	server server.Http
+	cfg           config.Config
+	ctx           context.Context
+	cancel        context.CancelFunc
+	cluster       upstream.Upstream
+	db            storage.Storage
+	probe         liveness.Prober
+	server        server.Http
+	isInteractive bool
 }
 
 // NewApp builds a new Cache app.
-func NewApp(ctx context.Context, cfg config.Config, probe liveness.Prober) (cache *Cache, err error) {
+func NewApp(ctx context.Context, cfg config.Config, probe liveness.Prober, isInteractive bool) (cache *Cache, err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer func() {
 		if err != nil {
@@ -52,17 +54,11 @@ func NewApp(ctx context.Context, cfg config.Config, probe liveness.Prober) (cach
 	}()
 
 	var cluster upstream.Upstream
-	cluster, err = upstream.NewCluster(ctx, cfg)
-	if err != nil {
-		log.Error().Err(err).Msg("[app] failed to create upstream")
-		if !wannaContinueAfterError("Failed to create upstream", err) {
-			return nil, err
-		}
-		log.Warn().Err(err).Msg("[app] continuing without healthy backends in cluster")
+	if cluster, err = upstream.NewCluster(ctx, cfg); err != nil {
+		log.Error().Err(err).Msg("[app] failed to make a new upstream cluster")
 	}
 
 	db := lru.NewStorage(ctx, cfg, cluster)
-
 	srv, err := server.New(ctx, cfg, db, cluster, probe, metrics.New())
 	if err != nil {
 		cancel()
@@ -70,21 +66,23 @@ func NewApp(ctx context.Context, cfg config.Config, probe liveness.Prober) (cach
 	}
 
 	return &Cache{
-		ctx:    ctx,
-		cancel: cancel,
-		cfg:    cfg,
-		probe:  probe,
-		db:     db,
-		server: srv,
+		ctx:           ctx,
+		cancel:        cancel,
+		cfg:           cfg,
+		probe:         probe,
+		db:            db,
+		server:        srv,
+		cluster:       cluster,
+		isInteractive: isInteractive,
 	}, nil
 }
 
 // Start runs the cache server and probes, handles shutdown.
-func (c *Cache) Start(gsh shutdown.Gracefuller, isInteractive bool) error {
+func (c *Cache) Start(gsh shutdown.Gracefuller) error {
 	log.Info().Msg("[app] starting")
 
 	// load dump/mocks if necessary
-	if err := c.loadData(c.ctx, isInteractive); err != nil {
+	if err := c.loadData(c.ctx, c.isInteractive); err != nil {
 		log.Err(err).Msg("[main] failed to load data")
 		return err
 	}
@@ -95,6 +93,7 @@ func (c *Cache) Start(gsh shutdown.Gracefuller, isInteractive bool) error {
 			gsh.Done()
 		}()
 		c.db.Run()
+		c.cluster.Run()
 		c.probe.Watch(c)
 		c.server.Start()
 	}()

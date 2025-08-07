@@ -161,6 +161,8 @@ type Backend struct {
 	MaxTimeout               time.Duration `yaml:"max_timeout"`            // MaxTimeout for requests which are escape Timeout through UseMaxTimeoutHeaderBytes.
 	UseMaxTimeoutHeader      string        `yaml:"use_max_timeout_header"` // If the header exists the timeout above will be skipped.
 	UseMaxTimeoutHeaderBytes []byte        // The same value but converted into slice bytes.
+	Healthcheck              string        `yaml:"healthcheck"` // Healthcheck or readiness probe path
+	HealthcheckBytes         []byte        // The same value but converted into slice bytes.
 }
 
 type Dump struct {
@@ -287,6 +289,7 @@ func LoadConfig(path string) (*AtomicCache, error) {
 		cfg.Cache.Upstream.Cluster.Backends[i].SchemeBytes = []byte(cfg.Cache.Upstream.Cluster.Backends[i].Scheme)
 		cfg.Cache.Upstream.Cluster.Backends[i].HostBytes = []byte(cfg.Cache.Upstream.Cluster.Backends[i].Host)
 		cfg.Cache.Upstream.Cluster.Backends[i].UseMaxTimeoutHeaderBytes = []byte(cfg.Cache.Upstream.Cluster.Backends[i].UseMaxTimeoutHeader)
+		cfg.Cache.Upstream.Cluster.Backends[i].HealthcheckBytes = []byte(cfg.Cache.Upstream.Cluster.Backends[i].Healthcheck)
 	}
 
 	return makeConfigAtomic(cfg), nil
