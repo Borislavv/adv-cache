@@ -586,7 +586,6 @@ func (e *Entry) getFilteredAndSortedKeyQueriesFastHttp(r *fasthttp.RequestCtx) (
 	*out = (*out)[:0]
 
 	allowedKeys := e.rule.Load().CacheKey.QueryBytes
-
 	r.QueryArgs().All()(func(key, value []byte) bool {
 		for _, ak := range allowedKeys {
 			if bytes.HasPrefix(key, ak) {
