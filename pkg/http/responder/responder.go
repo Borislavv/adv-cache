@@ -1,7 +1,7 @@
 package responder
 
 import (
-	"github.com/Borislavv/advanced-cache/pkg/header"
+	"github.com/Borislavv/advanced-cache/pkg/http/header"
 	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/valyala/fasthttp"
 )

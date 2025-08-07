@@ -5,12 +5,12 @@ import (
 	"errors"
 	"github.com/Borislavv/advanced-cache/internal/cache/api"
 	"github.com/Borislavv/advanced-cache/pkg/config"
+	httpserver2 "github.com/Borislavv/advanced-cache/pkg/http/server"
+	"github.com/Borislavv/advanced-cache/pkg/http/server/controller"
+	middleware2 "github.com/Borislavv/advanced-cache/pkg/http/server/middleware"
 	"github.com/Borislavv/advanced-cache/pkg/k8s/probe/liveness"
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
 	controller2 "github.com/Borislavv/advanced-cache/pkg/prometheus/metrics/controller"
-	httpserver "github.com/Borislavv/advanced-cache/pkg/server"
-	"github.com/Borislavv/advanced-cache/pkg/server/controller"
-	"github.com/Borislavv/advanced-cache/pkg/server/middleware"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
 	"github.com/Borislavv/advanced-cache/pkg/upstream"
 	"github.com/rs/zerolog/log"
@@ -36,7 +36,7 @@ type HttpServer struct {
 	backend       upstream.Upstream
 	probe         liveness.Prober
 	metrics       metrics.Meter
-	server        httpserver.Server
+	server        httpserver2.Server
 	isServerAlive *atomic.Bool
 }
 
@@ -106,7 +106,7 @@ func (s *HttpServer) spawnServer(wg *sync.WaitGroup) {
 // initServer creates the HTTP server instance, sets up controllers and middlewares, and stores the result.
 func (s *HttpServer) initServer() error {
 	// Compose server with controllers and middlewares.
-	if server, err := httpserver.New(s.ctx, s.cfg, s.controllers(), s.middlewares()); err != nil {
+	if server, err := httpserver2.New(s.ctx, s.cfg, s.controllers(), s.middlewares()); err != nil {
 		log.Err(err).Msg(InitFailedErrorMessage)
 		return errors.New(InitFailedErrorMessage)
 	} else {
@@ -128,8 +128,8 @@ func (s *HttpServer) controllers() []controller.HttpController {
 }
 
 // middlewares returns the request middlewares for the server, executed in reverse order.
-func (s *HttpServer) middlewares() []middleware.HttpMiddleware {
-	return []middleware.HttpMiddleware{
-		/** exec 1st. */ middleware.NewApplicationJsonMiddleware(), // sets the Content-Type: application/json
+func (s *HttpServer) middlewares() []middleware2.HttpMiddleware {
+	return []middleware2.HttpMiddleware{
+		/** exec 1st. */ middleware2.NewApplicationJsonMiddleware(), // sets the Content-Type: application/json
 	}
 }
