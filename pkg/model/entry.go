@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	bytes2 "github.com/Borislavv/advanced-cache/pkg/bytes"
 	"github.com/Borislavv/advanced-cache/pkg/upstream"
 	"math"
 	"math/rand/v2"
@@ -125,9 +126,7 @@ func NewEntryFromField(
 	entry.updatedAt = updatedAt
 	return entry
 }
-func IsRouteWasNotFound(err error) bool {
-	return errors.Is(err, ruleNotFoundError)
-}
+
 func (e *Entry) MapKey() uint64     { return e.key }
 func (e *Entry) ShardKey() uint64   { return e.shard }
 func (e *Entry) Rule() *config.Rule { return e.rule.Load() }
@@ -249,16 +248,7 @@ func (e *Entry) touch() {
 }
 
 func (e *Entry) isPayloadsAreEquals(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	if len(a) < 32 {
-		return bytes.Equal(a, b)
-	}
-
-	ha := xxh3.Hash(a[:8]) ^ xxh3.Hash(a[len(a)/2:len(a)/2+8]) ^ xxh3.Hash(a[len(a)-8:])
-	hb := xxh3.Hash(b[:8]) ^ xxh3.Hash(b[len(b)/2:len(b)/2+8]) ^ xxh3.Hash(b[len(b)-8:])
-	return ha == hb
+	return bytes2.IsBytesAreEquals(a, b)
 }
 
 // SetPayload packs and gzip-compresses the entire payload: Path, Query, QueryHeaders, StatusCode, ResponseHeaders, Body.

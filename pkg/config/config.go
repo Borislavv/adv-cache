@@ -154,6 +154,10 @@ type Backend struct {
 	Name                     string        `yaml:"name"`
 	Url                      string        `yaml:"url"`
 	UrlBytes                 []byte        // virtual field, Url converted to []byte
+	Scheme                   string        `yaml:"scheme"` // http or https
+	SchemeBytes              []byte        // virtual field, Scheme converted to []byte
+	Host                     string        `yaml:"host"` // backend.example.com
+	HostBytes                []byte        // virtual field, Host converted to []byte
 	Rate                     int           `yaml:"rate"`                   // Rate limiting reqs to backend per second.
 	Timeout                  time.Duration `yaml:"timeout"`                // Timeout for requests to backend.
 	MaxTimeout               time.Duration `yaml:"max_timeout"`            // MaxTimeout for requests which are escape Timeout through UseMaxTimeoutHeaderBytes.
