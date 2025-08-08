@@ -194,7 +194,7 @@ func NewCluster(ctx context.Context, cfg config.Config) (cluster *BackendCluster
 				Int64("dead", DeadBackends())
 		}
 		logEvent.Msg("[upstream-cluster] cluster initialization failed")
-		return cluster, ErrNoBackends
+		return nil, ErrNoBackends
 	} else {
 		logEvent := log.Info()
 		if cfg.IsProd() {
@@ -204,15 +204,14 @@ func NewCluster(ctx context.Context, cfg config.Config) (cluster *BackendCluster
 				Int64("dead", DeadBackends())
 		}
 		logEvent.Msg("[upstream-cluster] cluster initialised")
+
+		cluster.runErrorMonitor()
+		cluster.runHealthChecker()
+		cluster.runQuarantineAgent()
+		cluster.runFuneralAgent()
+
 		return cluster, nil
 	}
-}
-
-func (c *BackendCluster) Run() {
-	c.runErrorMonitor()
-	c.runHealthChecker()
-	c.runQuarantineAgent()
-	c.runFuneralAgent()
 }
 
 // -----------------------------------------------------------------------------
