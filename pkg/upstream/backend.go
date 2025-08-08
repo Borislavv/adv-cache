@@ -10,7 +10,6 @@ import (
 	"github.com/valyala/fasthttp"
 	"net"
 	"net/http"
-	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -95,20 +94,14 @@ type BackendNode struct {
 }
 
 // NewBackend creates a new instance of BackendNode.
-func NewBackend(ctx context.Context, cfg *config.Backend, name string) *BackendNode {
+func NewBackend(ctx context.Context, cfg *config.Backend, id string) *BackendNode {
 	backend := &BackendNode{
 		ctx: ctx,
-		id:  name,
+		id:  id,
 		cfg: &atomic.Pointer[config.Backend]{},
 	}
 	backend.cfg.Store(cfg)
 	return backend
-}
-
-var respHeadersPool = sync.Pool{
-	New: func() interface{} {
-		return new(fasthttp.ResponseHeader)
-	},
 }
 
 // Fetch actually performs the HTTP request to backend and parses the response.
@@ -203,7 +196,7 @@ func (b *BackendNode) ID() string {
 
 func (b *BackendNode) Name() string {
 	cfg := b.cfg.Load()
-	return fmt.Sprintf("%s://%s", cfg.Scheme, cfg.Host)
+	return fmt.Sprintf("%s [%s://%s]", b.id, cfg.Scheme, cfg.Host)
 }
 
 func (b *BackendNode) Cfg() *config.Backend {
