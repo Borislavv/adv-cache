@@ -56,6 +56,7 @@ func NewApp(ctx context.Context, cfg config.Config, probe liveness.Prober, isInt
 	var cluster upstream.Upstream
 	if cluster, err = upstream.NewCluster(ctx, cfg); err != nil {
 		log.Error().Err(err).Msg("[app] failed to make a new upstream cluster")
+		return nil, err
 	}
 
 	db := lru.NewStorage(ctx, cfg, cluster)
