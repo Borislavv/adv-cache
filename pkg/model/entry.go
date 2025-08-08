@@ -246,7 +246,7 @@ func (e *Entry) SwapPayloads(another *Entry) {
 }
 
 func (e *Entry) touch() {
-	atomic.StoreInt64(&e.updatedAt, time.Now().Unix())
+	atomic.StoreInt64(&e.updatedAt, time.Now().UnixNano())
 }
 
 func (e *Entry) isPayloadsAreEquals(a, b []byte) bool {

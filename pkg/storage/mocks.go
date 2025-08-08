@@ -74,6 +74,8 @@ func GetSingleMock(i int, path []byte, cfg config.Config) *model.Entry {
 	responseHeaders := [][2][]byte{
 		{[]byte("Content-Type"), []byte("application/json")},
 		{[]byte("Vary"), []byte("Accept-Encoding, Accept-Language")},
+		{[]byte("Cache-Control"), []byte("no-cache")},
+		{[]byte("Control-Transport"), []byte("tls")},
 	}
 
 	req := fasthttp.AcquireRequest()
