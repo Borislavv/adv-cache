@@ -230,7 +230,7 @@ func (r *Refresh) runLogger() {
 						Int64("scans", scans).
 						Int64("scans_found", found)
 				}
-				logEvent.Msgf("[refresher][5s] refreshes=%d, errors=%d, scans=%d, found=%d",
+				logEvent.Msgf("[refresher][5s] refreshes: %d, errors: %d, scans: %d, found: %d",
 					success, errs, scans, found)
 
 			case <-eachHour:
