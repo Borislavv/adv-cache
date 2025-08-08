@@ -93,7 +93,6 @@ func (c *Cache) Start(gsh shutdown.Gracefuller) error {
 			gsh.Done()
 		}()
 		c.db.Run()
-		c.cluster.Run()
 		c.probe.Watch(c)
 		c.server.Start()
 	}()
