@@ -158,8 +158,11 @@ func (r *Refresh) runLogger() {
 	go func() {
 		each5Secs := utils.NewTicker(r.ctx, 5*time.Second)
 		eachHour := utils.NewTicker(r.ctx, time.Hour)
+		<-eachHour
 		each12Hours := utils.NewTicker(r.ctx, 12*time.Hour)
+		<-each12Hours
 		each24Hours := utils.NewTicker(r.ctx, 24*time.Hour)
+		<-each24Hours
 
 		type counters struct {
 			success int64
@@ -188,7 +191,7 @@ func (r *Refresh) runLogger() {
 					Int64("scans", c.scans).
 					Int64("scans_found", c.found)
 			}
-			logEvent.Msgf("[refresher][%s] refreshes=%d, errors=%d, scans=%d, found=%d",
+			logEvent.Msgf("[refresher][%s] refreshes: %d, errors: %d, scans: %d, found: %d",
 				label, c.success, c.errors, c.scans, c.found)
 		}
 
