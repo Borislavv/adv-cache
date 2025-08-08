@@ -54,7 +54,7 @@ func NewApp(ctx context.Context, cfg config.Config, probe liveness.Prober, isInt
 	}()
 
 	var cluster upstream.Upstream
-	if cluster, err = upstream.NewCluster(ctx, cfg); err != nil {
+	if cluster, err = upstream.NewBackendCluster(ctx, cfg); err != nil {
 		log.Error().Err(err).Msg("[app] failed to make a new upstream cluster")
 	}
 
@@ -93,7 +93,7 @@ func (c *Cache) Start(gsh shutdown.Gracefuller) error {
 			gsh.Done()
 		}()
 		c.db.Run()
-		c.cluster.Run()
+		c.cluster.Run(c.ctx)
 		c.probe.Watch(c)
 		c.server.Start()
 	}()
