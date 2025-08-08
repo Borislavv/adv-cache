@@ -16,7 +16,7 @@ cache:
   upstream:
     cluster:
       backends:
-        - host: "localhost:8021"
+        - host: "localhost:8080"
           scheme: "http"
           rate: 250000
           timeout: "5s"
