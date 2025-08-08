@@ -220,11 +220,7 @@ func (c *BackendCluster) Fetch(rule *config.Rule, ctx *fasthttp.RequestCtx, r *f
 	slotsLen := uint64(len(*slots))
 
 	// attempts number = healthy backends number
-	i := uint64(0)
-	for {
-		if i >= slotsLen {
-			break
-		}
+	for scans := uint64(0); scans < slotsLen; scans++ {
 		// peek next slot by round-robin
 		slot := (*slots)[int(c.cursor.Add(1)%slotsLen)]
 		// check whether it can handle else one request
@@ -237,7 +233,6 @@ func (c *BackendCluster) Fetch(rule *config.Rule, ctx *fasthttp.RequestCtx, r *f
 			}
 			return req, resp, releaser, err
 		default:
-			i++
 		}
 	}
 
