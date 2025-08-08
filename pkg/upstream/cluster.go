@@ -1,372 +1,463 @@
-// atomic_slot.go
 package upstream
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"github.com/Borislavv/advanced-cache/pkg/utils"
-	"github.com/brianvoe/gofakeit/v6"
-	"github.com/rs/zerolog/log"
+	"github.com/Borislavv/advanced-cache/pkg/config"
 	"strings"
 	"sync/atomic"
 	"time"
 
-	"github.com/Borislavv/advanced-cache/pkg/config"
+	"github.com/brianvoe/gofakeit/v6"
+	"github.com/rs/zerolog/log"
 	"github.com/valyala/fasthttp"
+	"golang.org/x/time/rate"
 )
 
-// BackendCluster atomic backend cluster with immutable healthy slice
+// Errors returned by Fetch when no backends are available or all are busy.
+var (
+	ErrNotFound                  = errors.New("backend not found in cluster")
+	ErrDuplicate                 = errors.New("backend already exists in cluster")
+	ErrNoHealthyBackends         = errors.New("no healthy backends in cluster")
+	ErrAllBackendsBusy           = errors.New("all backends are busy")
+	ErrNilBackendConfig          = errors.New("nil backend config")
+	ErrWorkflowStateMismatch     = errors.New("workflow state mismatch")
+	ErrCannotAcquireIDForBackend = errors.New("cannot acquire ID for backend")
+)
 
-type BackendCluster struct {
-	cursor  atomic.Uint64                  // RR cursor
-	healthy atomic.Pointer[[]*backendSlot] // immutable, atomically swapped
+// slotState represents the state of a backend slot.
+type slotState uint32
 
-	all  atomic.Pointer[map[string]*backendSlot]
-	sick atomic.Pointer[map[string]*backendSlot]
-	dead atomic.Pointer[map[string]*backendSlot]
+const (
+	stateInvalid slotState = iota
+	stateHealthy
+	stateSick
+	stateDead
+)
+
+func (s slotState) String() string {
+	switch s {
+	case stateHealthy:
+		return "healthy"
+	case stateSick:
+		return "sick"
+	case stateDead:
+		return "dead"
+	default:
+		return "invalid"
+	}
 }
 
-func NewBackendCluster(ctx context.Context, cfg config.Config) (*BackendCluster, error) {
-	c := &BackendCluster{}
-	c.healthy.Store(new([]*backendSlot))
-	c.all.Store(&map[string]*backendSlot{})
-	c.sick.Store(&map[string]*backendSlot{})
-	c.dead.Store(&map[string]*backendSlot{})
+// backendSlot wraps a Backend with state, rate limiting, and counters.
+type backendSlot struct {
+	backend      Backend
+	state        atomic.Uint32 // slotState
+	limiter      *rate.Limiter // rate limiter
+	requestCount atomic.Uint64 // requests in current window
+	errorCount   atomic.Uint64 // errors in current window
+	hcRetries    atomic.Uint32 // consecutive health-check failures
+}
 
-	for _, backendCfg := range cfg.Upstream().Cluster.Backends {
-		if ID, err := c.Add(ctx, backendCfg); err != nil {
-			log.Error().Msgf("[upstream-cluster] failed to add new one backend (%s) into cluster: %s", backendCfg.Host, err.Error())
-			return nil, err
-		} else {
-			log.Info().Msgf("[upstream-cluster] added new one backend '%s' (%s) into cluster", ID, backendCfg.Host)
-		}
+// newBackendSlot constructs a slot for the given backend and initial state.
+func newBackendSlot(b Backend, initial slotState) *backendSlot {
+	rt := b.Cfg().Rate
+	burst := int(rt / 10)
+	if burst < 1 {
+		burst = 1
+	}
+	lim := rate.NewLimiter(rate.Limit(rt), burst)
+	s := &backendSlot{backend: b, limiter: lim}
+	s.state.Store(uint32(initial))
+	return s
+}
+
+func (s *backendSlot) State() slotState {
+	return slotState(s.state.Load())
+}
+
+func (s *backendSlot) TryTransition(from, to slotState) bool {
+	return s.state.CompareAndSwap(uint32(from), uint32(to))
+}
+
+// BackendCluster manages a pool of backendSlots with lock-free snapshots.
+type BackendCluster struct {
+	ctx          context.Context
+	cfg          config.Config
+	cursor       atomic.Uint64                  // round-robin cursor
+	healthy      atomic.Pointer[[]*backendSlot] // snapshot of healthy slots
+	all          atomic.Pointer[map[string]*backendSlot]
+	sick         atomic.Pointer[map[string]*backendSlot]
+	dead         atomic.Pointer[map[string]*backendSlot]
+	quarantineCh chan string
+}
+
+// NewBackendCluster creates and initializes an empty cluster.
+func NewBackendCluster(ctx context.Context, cfg config.Config) (*BackendCluster, error) {
+	c := &BackendCluster{ctx: ctx, cfg: cfg, quarantineCh: make(chan string, 256)}
+
+	// initialize empty healthy slice
+	healthy := make([]*backendSlot, 0)
+	c.healthy.Store(&healthy)
+
+	// initialize empty maps
+	all := make(map[string]*backendSlot)
+	sick := make(map[string]*backendSlot)
+	dead := make(map[string]*backendSlot)
+	c.all.Store(&all)
+	c.sick.Store(&sick)
+	c.dead.Store(&dead)
+
+	// create backends
+	for _, backCfg := range cfg.Upstream().Cluster.Backends {
+		c.Add(backCfg)
+	}
+
+	for _, h := range *c.healthy.Load() {
+		fmt.Println("healthy: ", h.backend.Name())
 	}
 
 	return c, nil
 }
 
-func (c *BackendCluster) Run(ctx context.Context) {
-	quarantineCh := make(chan string, 256)
-	hcTicker := utils.NewTicker(ctx, 10*time.Second)
-	killerTicker := utils.NewTicker(ctx, 24*time.Hour)
-
-	c.runMedic(ctx, quarantineCh)
-	c.runHealthChecker(ctx, hcTicker)
-	c.runKiller(ctx, killerTicker)
-}
-
-func (c *BackendCluster) getAll() map[string]*backendSlot {
-	return *c.all.Load()
-}
-
-func (c *BackendCluster) getSick() map[string]*backendSlot {
-	return *c.sick.Load()
-}
-
-func (c *BackendCluster) getDead() map[string]*backendSlot {
-	return *c.dead.Load()
-}
-
-func (c *BackendCluster) appendHealthySlot(s *backendSlot) {
+// Add registers a new backend, assigns a unique ID, and places it in healthy or sick.
+func (c *BackendCluster) Add(cfg *config.Backend) (id string) {
 	for {
-		old := c.healthy.Load()
-		slice := append(append([]*backendSlot(nil), *old...), s)
-		if c.healthy.CompareAndSwap(old, &slice) {
-			return
-		}
-	}
-}
-
-func (c *BackendCluster) removeHealthySlot(target *backendSlot) {
-	for {
-		old := c.healthy.Load()
-		slice := make([]*backendSlot, 0, len(*old)-1)
-		for _, s := range *old {
-			if s != target {
-				slice = append(slice, s)
-			}
-		}
-		if c.healthy.CompareAndSwap(old, &slice) {
-			return
-		}
-	}
-}
-
-func (c *BackendCluster) Quarantine(id string) bool {
-	all := c.getAll()
-	slot, ok := all[id]
-	if !ok || !slot.TryTransition(stateHealthy, stateSick) {
-		return false
-	}
-	c.removeHealthySlot(slot)
-	for {
-		old := c.sick.Load()
-		copy := make(map[string]*backendSlot, len(*old)+1)
-		for k, v := range *old {
-			copy[k] = v
-		}
-		copy[id] = slot
-		if c.sick.CompareAndSwap(old, &copy) {
-			return true
-		}
-	}
-}
-
-func (c *BackendCluster) Promote(id string) bool {
-	sick := c.getSick()
-	slot, ok := sick[id]
-	if !ok || !slot.TryTransition(stateSick, stateHealthy) {
-		return false
-	}
-	for {
-		old := c.sick.Load()
-		copy := make(map[string]*backendSlot, len(*old)-1)
-		for k, v := range *old {
-			if k != id {
-				copy[k] = v
-			}
-		}
-		if c.sick.CompareAndSwap(old, &copy) {
-			break
-		}
-	}
-	c.appendHealthySlot(slot)
-	return true
-}
-
-func (c *BackendCluster) Kill(id string) bool {
-	all := c.getAll()
-	slot, ok := all[id]
-	if !ok {
-		return false
-	}
-	for {
-		st := slot.State()
-		if st == stateDead {
-			return false
-		}
-		if slot.TryTransition(st, stateDead) {
-			break
-		}
-	}
-	c.removeHealthySlot(slot)
-	for {
-		old := c.dead.Load()
-		copy := make(map[string]*backendSlot, len(*old)+1)
-		for k, v := range *old {
-			copy[k] = v
-		}
-		copy[id] = slot
-		if c.dead.CompareAndSwap(old, &copy) {
-			return true
-		}
-	}
-	return false
-}
-
-// Add create and set a new backend. Returns and ID or error.
-func (c *BackendCluster) Add(ctx context.Context, cfg *config.Backend) (string, error) {
-	if cfg == nil {
-		return "", fmt.Errorf("invalid backend config")
-	}
-	for tries := 0; tries < 100_000; tries++ {
-		candidateID := strings.ToLower(gofakeit.FirstName())
-		old := c.all.Load()
-		if _, exists := (*old)[candidateID]; exists {
+		id = strings.ToLower(gofakeit.FirstName())
+		oldAll := c.all.Load()
+		if _, exists := (*oldAll)[id]; exists {
 			continue
 		}
-		copy := make(map[string]*backendSlot, len(*old)+1)
-		for k, v := range *old {
-			copy[k] = v
+
+		b := NewBackend(c.ctx, cfg, id)
+
+		// prepare new map
+		newAll := cloneMap(*oldAll)
+
+		// determine initial state via health check
+		initial := stateSick
+		if err := b.IsHealthy(); err == nil {
+			initial = stateHealthy
 		}
-		be := NewBackend(ctx, cfg, candidateID)
-		slot := newBackendSlot(ctx, be)
-		copy[candidateID] = slot
-		if c.all.CompareAndSwap(old, &copy) {
-			if err := be.IsHealthy(); err == nil {
-				slot.state.Store(uint32(stateHealthy))
-				c.appendHealthySlot(slot)
-			} else {
-				slot.state.Store(uint32(stateSick))
-				for {
-					oldSick := c.sick.Load()
-					copySick := make(map[string]*backendSlot, len(*oldSick)+1)
-					for k, v := range *oldSick {
-						copySick[k] = v
-					}
-					copySick[candidateID] = slot
-					if c.sick.CompareAndSwap(oldSick, &copySick) {
-						break
-					}
-				}
+
+		// acquire a new slot for backend
+		slot := newBackendSlot(b, initial)
+
+		newAll[id] = slot
+		if c.all.CompareAndSwap(oldAll, &newAll) {
+			// update snapshots
+			switch initial {
+			case stateHealthy:
+				c.updateHealthy(func(h []*backendSlot) []*backendSlot {
+					return append(h, slot)
+				})
+			case stateSick:
+				c.updateMap(&c.sick, id, slot)
 			}
-			return candidateID, nil
-		}
-	}
-	return "", fmt.Errorf("failed to generate unique backend id")
-}
-
-func (c *BackendCluster) Update(ctx context.Context, id string, cfg *config.Backend) error {
-	if cfg == nil {
-		return fmt.Errorf("nil backend config")
-	}
-	for {
-		old := c.all.Load()
-		slot, ok := (*old)[id]
-		if !ok {
-			return fmt.Errorf("backend not found")
-		}
-		newAll := make(map[string]*backendSlot, len(*old))
-		for k, v := range *old {
-			newAll[k] = v
-		}
-		backend := NewBackend(ctx, cfg, id)
-		slot.backend = backend
-		if c.all.CompareAndSwap(old, &newAll) {
-			return nil
+			log.Info().Msgf("registered backend %s (initial: %s)", id, initial)
+			return id
 		}
 	}
 }
 
-func (c *BackendCluster) Remove(id string) bool {
-	all := c.getAll()
-	slot, ok := all[id]
-	if !ok {
+// Fetch selects a healthy backend in a lock-free, allocation-free hot path.
+// It returns ErrNoHealthyBackends if none healthy, ErrAllBackendsBusy if all rate-limited.
+func (c *BackendCluster) Fetch(
+	rule *config.Rule,
+	ctx *fasthttp.RequestCtx,
+	req *fasthttp.Request,
+) (
+	outReq *fasthttp.Request, outResp *fasthttp.Response,
+	releaseFn func(*fasthttp.Request, *fasthttp.Response), err error,
+) {
+	slots := *c.healthy.Load()
+	n := uint64(len(slots))
+	if n == 0 {
+		panic("really zero")
+		err = ErrNoHealthyBackends
+		return
+	}
+	// round-robin tries
+	for i := uint64(0); i < n; i++ {
+		idx := c.cursor.Add(1)
+		s := slots[idx%n]
+		if s.State() != stateHealthy {
+			continue
+		}
+		// count and rate-limit
+		s.requestCount.Add(1)
+		if !s.limiter.Allow() {
+			continue
+		}
+		// perform fetch
+		outReq, outResp, releaseFn, err = s.backend.Fetch(rule, ctx, req)
+		// track errors
+		if err != nil || outResp.StatusCode() >= 500 {
+			s.errorCount.Add(1)
+			select {
+			case c.quarantineCh <- s.backend.ID():
+			default:
+			}
+		}
+		return
+	}
+	// all busy
+	err = ErrAllBackendsBusy
+	return
+}
+
+// Promote moves a sick backend back to healthy.
+func (c *BackendCluster) Promote(id string) bool {
+	slot := c.getSlot(c.sick.Load(), id)
+	if slot == nil || !slot.TryTransition(stateSick, stateHealthy) {
 		return false
 	}
-	for {
-		old := c.all.Load()
-		newMap := make(map[string]*backendSlot, len(*old)-1)
-		for k, v := range *old {
-			if k != id {
-				newMap[k] = v
-			}
-		}
-		if c.all.CompareAndSwap(old, &newMap) {
-			break
-		}
-	}
-	c.removeHealthySlot(slot)
+	c.updateMapRemove(&c.sick, id)
+	c.updateHealthy(func(h []*backendSlot) []*backendSlot {
+		return append(h, slot)
+	})
+	log.Info().Msgf("transition sick → healthy for backend %s", id)
 	return true
 }
 
-func (c *BackendCluster) markSickAsync(id string) {
-	_ = c.Quarantine(id) // non-blocking, best-effort
+// Quarantine demotes a healthy backend to sick.
+func (c *BackendCluster) Quarantine(id string) bool {
+	slot := c.getSlot(c.all.Load(), id)
+	if slot == nil || !slot.TryTransition(stateHealthy, stateSick) {
+		return false
+	}
+	c.updateHealthy(func(h []*backendSlot) []*backendSlot {
+		return removeSlot(h, slot)
+	})
+	c.updateMap(&c.sick, id, slot)
+	log.Info().Msgf("transition healthy → sick for backend %s", id)
+	return true
 }
 
-func (c *BackendCluster) Fetch(rule *config.Rule, ctx *fasthttp.RequestCtx, r *fasthttp.Request) (
-	req *fasthttp.Request, resp *fasthttp.Response,
-	releaser func(*fasthttp.Request, *fasthttp.Response), err error,
-) {
-	slots := c.healthy.Load()
-	if len(*slots) == 0 {
-		return nil, nil, emptyReleaserFn, ErrNoBackends
+// Kill marks any backend as dead and removes from healthy.
+func (c *BackendCluster) Kill(id string) bool {
+	slot := c.getSlot(c.all.Load(), id)
+	if slot == nil {
+		return false
 	}
-	slotsLen := uint64(len(*slots))
-	i := uint64(0)
+	// final transition
 	for {
-		if i >= slotsLen {
+		st := slot.State()
+		if st == stateDead || slot.TryTransition(st, stateDead) {
 			break
 		}
-		slot := (*slots)[int(c.cursor.Add(1)%slotsLen)]
-		select {
-		case <-slot.rate.Chan():
-			req, resp, releaser, err = slot.backend.Fetch(rule, ctx, r)
-			if err != nil || resp.StatusCode() >= 500 {
-				c.markSickAsync(slot.backend.ID())
-			}
-			return req, resp, releaser, err
-		default:
-			i++
-		}
 	}
-	return nil, nil, emptyReleaserFn, ErrAllBackendsAreBusy
+	c.updateHealthy(func(h []*backendSlot) []*backendSlot {
+		return removeSlot(h, slot)
+	})
+	c.updateMap(&c.dead, id, slot)
+	log.Info().Msgf("transition %s → dead for backend %s", stateDead, id)
+	return true
 }
 
+// Bury irreversibly removes a backend from all states.
+func (c *BackendCluster) Bury(id string) bool {
+	slot := c.getSlot(c.all.Load(), id)
+	if slot == nil {
+		return false
+	}
+	c.updateMapRemove(&c.all, id)
+	c.updateMapRemove(&c.sick, id)
+	c.updateMapRemove(&c.dead, id)
+	c.updateHealthy(func(h []*backendSlot) []*backendSlot {
+		return removeSlot(h, slot)
+	})
+	log.Info().Msgf("backend %s buried and removed", id)
+	return true
+}
+
+// SnapshotMetrics returns Prometheus-formatted metrics for backend states.
 func (c *BackendCluster) SnapshotMetrics() string {
-	b := &strings.Builder{}
-	b.WriteString("# HELP backend_state Backend State: 1=present, 0=absent\n")
+	var b strings.Builder
+	b.WriteString("# HELP backend_state Backend state: 1=present, 0=absent\n")
 	b.WriteString("# TYPE backend_state gauge\n")
-	for name, slot := range c.getAll() {
+	allMap := *c.all.Load()
+	for id, slot := range allMap {
 		for _, st := range []slotState{stateHealthy, stateSick, stateDead} {
 			val := 0
 			if slot.State() == st {
 				val = 1
 			}
-			fmt.Fprintf(b, "backend_state{backend=\"%s\",state=\"%s\"} %d\n", name, st.String(), val)
+			b.WriteString(fmt.Sprintf(
+				"backend_state{backend=\"%s\",state=\"%s\"} %d\n",
+				id, st.String(), val,
+			))
 		}
 	}
 	return b.String()
 }
 
-func (c *BackendCluster) runMedic(ctx context.Context, quarantineCh <-chan string) {
-	log.Info().Msg("[upstream-medic] started")
+// Run starts all background monitoring agents.
+func (c *BackendCluster) Run(ctx context.Context) {
+	c.runErrorMonitor(ctx)
+	c.runQuarantineAgent(ctx)
+	c.runHealthChecker(ctx)
+	c.runFuneralAgent(ctx)
+}
+
+// runErrorMonitor checks error rates every 10s and quarantines if >10%.
+func (c *BackendCluster) runErrorMonitor(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Second)
 	go func() {
+		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case id := <-quarantineCh:
-				_ = c.Quarantine(id) // best-effort
-				log.Info().Msgf("[upstream-medic] backend '%s' was moved to quarantine", id)
-			}
-		}
-	}()
-}
-
-func (c *BackendCluster) runKiller(ctx context.Context, ticker <-chan time.Time) {
-	log.Info().Msg("[upstream-killer] started")
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker:
-				count := c.killDoomedBackends()
-				log.Info().Msgf("[upstream-killer] '%d' were killed", count)
-			}
-		}
-	}()
-}
-
-func (c *BackendCluster) runHealthChecker(ctx context.Context, ticker <-chan time.Time) {
-	log.Info().Msg("[upstream-healthchecker] started")
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker:
-				h, s, d := c.probeSickBackends()
-				log.Info().Msgf("[upstream-healthchecker] healthy: %d, sick: %d, dead: %d", h, s, d)
-			}
-		}
-	}()
-}
-
-func (c *BackendCluster) probeSickBackends() (healthy, sick, dead int) {
-	sickMap := c.getSick()
-	for id, slot := range sickMap {
-		go func(id string, slot *backendSlot) {
-			if err := slot.backend.IsHealthy(); err == nil {
-				c.Promote(id)
-			} else {
-				if slot.hcRetries.Add(1) >= 60 {
-					c.Kill(id)
+			case <-ticker.C:
+				allMap := *c.all.Load()
+				for id, slot := range allMap {
+					req := slot.requestCount.Load()
+					err := slot.errorCount.Load()
+					if req > 0 && err*100 > req*10 {
+						select {
+						case c.quarantineCh <- id:
+						default:
+						}
+						log.Info().Msgf("error monitor quarantined backend %s", id)
+					}
+					slot.requestCount.Store(0)
+					slot.errorCount.Store(0)
 				}
 			}
-		}(id, slot)
-	}
-	return len(*c.healthy.Load()), len(sickMap), len(c.getDead())
+		}
+	}()
 }
 
-func (c *BackendCluster) killDoomedBackends() int {
-	deadMap := c.getDead()
-	count := 0
-	for id := range deadMap {
-		if c.Remove(id) {
-			count++
+// runQuarantineAgent processes quarantine signals.
+func (c *BackendCluster) runQuarantineAgent(ctx context.Context) {
+	go func() {
+		log.Info().Msg("[quarantine-agent] started")
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case id := <-c.quarantineCh:
+				c.Quarantine(id)
+				log.Info().Msgf("[quarantine-agent] backend %s quarantined", id)
+			}
+		}
+	}()
+}
+
+// runHealthChecker probes sick backends every 10s and promotes or kills.
+func (c *BackendCluster) runHealthChecker(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Second)
+	go func() {
+		defer ticker.Stop()
+		log.Info().Msg("[health-checker] started")
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				for id, slot := range *c.sick.Load() {
+					go func(id string, s *backendSlot) {
+						if err := s.backend.IsHealthy(); err == nil {
+							c.Promote(id)
+						} else if s.hcRetries.Add(1) >= 3 {
+							c.Kill(id)
+						}
+					}(id, slot)
+				}
+			}
+		}
+	}()
+}
+
+// runFuneralAgent removes dead backends every 24h.
+func (c *BackendCluster) runFuneralAgent(ctx context.Context) {
+	ticker := time.NewTicker(24 * time.Hour)
+	go func() {
+		defer ticker.Stop()
+		log.Info().Msg("[funeral-agent] started")
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				count := 0
+				for id := range *c.dead.Load() {
+					if c.Bury(id) {
+						count++
+					}
+				}
+				log.Info().Msgf("[funeral-agent] buried %d dead backends", count)
+			}
+		}
+	}()
+}
+
+// getSlot retrieves a slot from a map pointer.
+func (c *BackendCluster) getSlot(mpPtr *map[string]*backendSlot, id string) *backendSlot {
+	return (*mpPtr)[id]
+}
+
+// updateMap adds or updates a slot in the given atomic map pointer.
+func (c *BackendCluster) updateMap(
+	ptr *atomic.Pointer[map[string]*backendSlot],
+	id string,
+	slot *backendSlot,
+) bool {
+	for {
+		old := ptr.Load()
+		newMap := cloneMap(*old)
+		newMap[id] = slot
+		if ptr.CompareAndSwap(old, &newMap) {
+			return true
 		}
 	}
-	return count
+}
+
+// updateMapRemove removes a slot from the given atomic map pointer.
+func (c *BackendCluster) updateMapRemove(
+	ptr *atomic.Pointer[map[string]*backendSlot],
+	id string,
+) bool {
+	for {
+		old := ptr.Load()
+		newMap := cloneMap(*old)
+		delete(newMap, id)
+		if ptr.CompareAndSwap(old, &newMap) {
+			return true
+		}
+	}
+}
+
+// updateHealthy atomically transforms the healthy slice.
+func (c *BackendCluster) updateHealthy(
+	transform func([]*backendSlot) []*backendSlot,
+) {
+	for {
+		old := c.healthy.Load()
+		newSlice := transform(*old)
+		if c.healthy.CompareAndSwap(old, &newSlice) {
+			return
+		}
+	}
+}
+
+// cloneMap shallow-copies a map of backend slots.
+func cloneMap(src map[string]*backendSlot) map[string]*backendSlot {
+	d := make(map[string]*backendSlot, len(src))
+	for k, v := range src {
+		d[k] = v
+	}
+	return d
+}
+
+// removeSlot filters out a slot from a slice.
+func removeSlot(src []*backendSlot, target *backendSlot) []*backendSlot {
+	out := make([]*backendSlot, 0, len(src)-1)
+	for _, s := range src {
+		if s != target {
+			out = append(out, s)
+		}
+	}
+	return out
 }

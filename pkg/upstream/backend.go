@@ -78,6 +78,7 @@ var httpClient = &fasthttp.Client{
 type Backend interface {
 	ID() string
 	Name() string
+	SetID(name string)
 	IsHealthy() error
 	Cfg() *config.Backend
 	Update(cfg *config.Backend) error
@@ -95,10 +96,10 @@ type BackendNode struct {
 }
 
 // NewBackend creates a new instance of BackendNode.
-func NewBackend(ctx context.Context, cfg *config.Backend, name string) *BackendNode {
+func NewBackend(ctx context.Context, cfg *config.Backend, id string) *BackendNode {
 	backend := &BackendNode{
 		ctx: ctx,
-		id:  name,
+		id:  id,
 		cfg: &atomic.Pointer[config.Backend]{},
 	}
 	backend.cfg.Store(cfg)
@@ -203,7 +204,11 @@ func (b *BackendNode) ID() string {
 
 func (b *BackendNode) Name() string {
 	cfg := b.cfg.Load()
-	return fmt.Sprintf("%s://%s", cfg.Scheme, cfg.Host)
+	return fmt.Sprintf("%s (%s://%s)", b.id, cfg.Scheme, cfg.Host)
+}
+
+func (b *BackendNode) SetID(id string) {
+	b.id = id
 }
 
 func (b *BackendNode) Cfg() *config.Backend {
