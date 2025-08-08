@@ -10,7 +10,6 @@ import (
 	"github.com/valyala/fasthttp"
 	"net"
 	"net/http"
-	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -105,12 +104,6 @@ func NewBackend(ctx context.Context, cfg *config.Backend, name string) *BackendN
 	return backend
 }
 
-var respHeadersPool = sync.Pool{
-	New: func() interface{} {
-		return new(fasthttp.ResponseHeader)
-	},
-}
-
 // Fetch actually performs the HTTP request to backend and parses the response.
 // Note: that rule is optional and if not provided response will not delete unavailable headers for store.
 // Also remember that you need provide only one argument: inCtx or inReq.
@@ -203,7 +196,7 @@ func (b *BackendNode) ID() string {
 
 func (b *BackendNode) Name() string {
 	cfg := b.cfg.Load()
-	return fmt.Sprintf("%s://%s", cfg.Scheme, cfg.Host)
+	return fmt.Sprintf("%s (%s://%s)", b.id, cfg.Scheme, cfg.Host)
 }
 
 func (b *BackendNode) Cfg() *config.Backend {
