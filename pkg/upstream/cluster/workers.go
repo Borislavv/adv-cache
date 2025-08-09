@@ -112,6 +112,71 @@ func (c *Cluster) runThrottleMonitor(ctx context.Context) {
 	}
 }
 
+func (c *Cluster) runSickMonitor(ctx context.Context) {
+	cfg := withDefaults()
+	const requiredOK = 3 // подряд успешных проб для выхода из карантина
+
+	t := time.NewTicker(cfg.ProbeInterval)
+	defer t.Stop()
+
+	// Локальная книга успешных подряд: имя -> счётчик
+	successes := make(map[string]int, 64)
+
+	// helper без аллокаций на fast-path (мы во воркере, аллокации допустимы)
+	maxInt := func(a, b int) int {
+		if a > b {
+			return a
+		}
+		return b
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			for name, s := range c.all {
+				if State(s.state.Load()) != Sick {
+					// Сбросим счётчик на всякий случай (если успели промоутить снаружи)
+					delete(successes, name)
+					continue
+				}
+
+				if s.be.IsHealthy() == nil {
+					successes[name]++
+					if successes[name] >= requiredOK {
+						// Seed для slow-start: консервативная доля от target rate.
+						target := s.be.Cfg().Rate
+						// Стартуем где-то с ~10% или минимум 1 rps, чтобы не шарахнуть сразу.
+						start := maxInt(1, int(math.Max(1, float64(target)/10.0)))
+
+						// Устанавливаем мягкий старт до Promote, чтобы сразу после публикации лимитер не “взорвался”.
+						s.effective.Store(uint32(start))
+						s.lim.rate = uint32(start)
+
+						if err := c.Promote(name); err == nil {
+							log.Info().
+								Str("backend", name).
+								Int("seed_effective_rps", start).
+								Int("target_rps", target).
+								Msg("[upstream-cluster] promote from sick after stable probes (slow-start seeded)")
+						} else {
+							log.Debug().Str("backend", name).Err(err).
+								Msg("[upstream-cluster] promote from sick skipped (state changed)")
+						}
+						delete(successes, name) // сбросить счётчик
+					}
+				} else {
+					// Любая ошибка — сброс последовательности
+					if successes[name] != 0 {
+						successes[name] = 0
+					}
+				}
+			}
+		}
+	}
+}
+
 // runDeadMonitor: attempts to resurrect with exp backoff + jitter.
 func (c *Cluster) runDeadMonitor(ctx context.Context) {
 	cfg := withDefaults()

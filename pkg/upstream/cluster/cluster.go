@@ -46,6 +46,7 @@ func New(ctx context.Context, cfg config.Config) (*Cluster, error) {
 	var c Cluster
 	c.all = all
 	c.healthy.Store(&healthy)
+	go c.runSickMonitor(ctx)
 	go c.runDeadMonitor(ctx)
 	go c.runThrottleMonitor(ctx)
 	go c.runHealthyIdleMonitor(ctx)
