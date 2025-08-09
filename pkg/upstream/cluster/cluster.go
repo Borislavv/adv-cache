@@ -93,7 +93,7 @@ func (c *Cluster) Fetch(rule *config.Rule, inCtx *fasthttp.RequestCtx, inReq *fa
 		k := int((cur + 1) % n)
 		alt := hs[k]
 		if !alt.lim.allow(now) {
-			return nil, nil, nil, fasthttp.ErrNoFreeConns
+			return nil, nil, defaultReleaser, fasthttp.ErrNoFreeConns
 		}
 		pick = alt
 	}
@@ -102,10 +102,10 @@ func (c *Cluster) Fetch(rule *config.Rule, inCtx *fasthttp.RequestCtx, inReq *fa
 	outReq, outResp, releaser, err = pick.be.Fetch(rule, inCtx, inReq)
 	if err != nil {
 		pick.recordOutcome(start, false)
-		return
+		return nil, nil, defaultReleaser, fasthttp.ErrNoFreeConns
 	}
 	pick.recordOutcome(start, true)
-	return
+	return nil, nil, defaultReleaser, fasthttp.ErrNoFreeConns
 }
 
 // --- Control-plane methods (COW, no hot-path locks) ---
