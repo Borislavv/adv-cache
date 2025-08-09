@@ -102,7 +102,7 @@ func (c *Cluster) runThrottleMonitor(ctx context.Context) {
 						n = target
 					}
 					s.effective.Store(uint32(n))
-					s.lim.rate = uint32(n)
+					s.lim.rate.Store(uint32(n))
 					_ = now // ensure now is used to avoid inline skip
 				}
 			}
@@ -150,7 +150,7 @@ func (c *Cluster) runSickMonitor(ctx context.Context) {
 
 						// Устанавливаем мягкий старт до Promote, чтобы сразу после публикации лимитер не “взорвался”.
 						s.effective.Store(uint32(start))
-						s.lim.rate = uint32(start)
+						s.lim.rate.Store(uint32(start))
 
 						if err := c.Promote(name); err == nil {
 							log.Info().

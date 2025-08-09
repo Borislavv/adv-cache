@@ -123,7 +123,7 @@ func (c *Cluster) Promote(name string) error {
 	// ensure in healthy slice
 	for {
 		cur := c.healthy.Load()
-		cp := append([]*slot(nil), (*cur)...)
+		cp := append([]*slot(nil), *cur...)
 		if !contains(cp, s) {
 			cp = append(cp, s)
 		}

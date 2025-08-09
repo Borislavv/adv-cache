@@ -122,16 +122,20 @@ func (r *Refresh) refresh(e *model.Entry) error {
 
 func (r *Refresh) runDedupErrorLogger() {
 	go func() {
-		var prev map[string]int
-		dedupMap := make(map[string]int, 2048)
-		each5Secs := utils.NewTicker(r.ctx, time.Second*5)
+		var (
+			prev = atomic.Pointer[map[string]int]{}
+			cur  = atomic.Pointer[map[string]int]{}
+		)
+		curMap := make(map[string]int, 2048)
+		cur.Store(&curMap)
 
+		each5Secs := utils.NewTicker(r.ctx, time.Second*5)
 		writeTrigger := make(chan struct{}, 1)
 		defer close(writeTrigger)
 
 		go func() {
 			for range writeTrigger {
-				for err, count := range prev {
+				for err, count := range *prev.Load() {
 					log.Error().Msgf("[refresher][error] %s (count=%d)", err, count)
 				}
 			}
@@ -142,10 +146,11 @@ func (r *Refresh) runDedupErrorLogger() {
 			case <-r.ctx.Done():
 				return
 			case err := <-r.errorsCh:
-				dedupMap[err.Error()]++
+				(*cur.Load())[err.Error()]++
 			case <-each5Secs:
-				prev = dedupMap
-				dedupMap = make(map[string]int, len(prev))
+				prev.Store(cur.Load())
+				newMap := make(map[string]int, len(*prev.Load()))
+				cur.Store(&newMap)
 				writeTrigger <- struct{}{}
 			}
 		}

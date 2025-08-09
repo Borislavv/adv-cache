@@ -9,9 +9,9 @@ import (
 // Refilled every tick of wall-second (monotonic via time.Now).
 // Allows small burst (configured), and fast-fail when empty.
 type tokenLimiter struct {
-	rate     uint32       // tokens per second (steady)
-	burst    uint32       // max bucket capacity
-	nowNanos atomic.Int64 // unix nano
+	rate     atomic.Uint32 // tokens per second (steady)
+	burst    atomic.Uint32 // max bucket capacity
+	nowNanos atomic.Int64  // unix nano
 	tokens   atomic.Int64
 }
 
@@ -22,16 +22,20 @@ func newTokenLimiter(rate, burst int) *tokenLimiter {
 	if burst < 1 {
 		burst = 1
 	}
-	l := &tokenLimiter{rate: uint32(rate), burst: uint32(burst)}
+
+	l := &tokenLimiter{rate: atomic.Uint32{}, burst: atomic.Uint32{}}
 	l.nowNanos.Store(time.Now().UnixNano())
 	l.tokens.Store(int64(burst))
+	l.rate.Store(uint32(rate))
+	l.burst.Store(uint32(burst))
+
 	return l
 }
 
 // allow tries to consume one token.
 // It never allocates and never blocks. Returns true if permitted.
 func (l *tokenLimiter) allow(nanos int64) bool {
-	if l.rate == 0 {
+	if l.rate.Load() == 0 {
 		// disabled limiter => always allow
 		return true
 	}
@@ -41,15 +45,11 @@ func (l *tokenLimiter) allow(nanos int64) bool {
 		if l.nowNanos.CompareAndSwap(last, nanos) {
 			// compute new tokens with min(capacity, tokens + rate*(delta))
 			delta := nanos - last
-			add := int64(uint64(l.rate) * uint64(delta))
+			add := int64(uint64(l.rate.Load()) * uint64(delta))
 			for {
-				cur := l.tokens.Load()
-				n := cur + add
-				cap := int64(l.burst)
-				if n > cap {
-					n = cap
-				}
-				if l.tokens.CompareAndSwap(cur, n) {
+				oldNum := l.tokens.Load()
+				newNum := oldNum + add
+				if l.tokens.CompareAndSwap(oldNum, newNum) {
 					break
 				}
 			}

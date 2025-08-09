@@ -18,7 +18,7 @@ cache:
       backends:
         - host: "localhost:8080"
           scheme: "http"
-          rate: 250000
+          rate: 200
           timeout: "5s"
           max_timeout: "3m"
           use_max_timeout_header: "X-Google-Bot"
