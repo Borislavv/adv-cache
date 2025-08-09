@@ -562,10 +562,10 @@ func (c *BackendCluster) probeHealthyBackends() {
 			name := slot.backend.Name()
 			if c.isQuarantineErrorsThresholdWasOvercome(slot) {
 				if c.isThrottlePossible(slot) {
-					if rt, bt, err := c.throttle(slot); err != nil {
-						log.Error().Err(err).Msgf("[upstream-healthcheck] backend '%s' cannot be throttled more (rate: %d, burst: %d)", name, rt, bt)
+					if rt, err := c.throttle(slot); err != nil {
+						log.Error().Err(err).Msgf("[upstream-healthcheck] backend '%s' cannot be throttled more (rate: %d)", name, rt)
 					} else {
-						log.Info().Msgf("[upstream-healthcheck] backend '%s' has been throttled (rate: %d, burst: %d)", name, rt, bt)
+						log.Info().Msgf("[upstream-healthcheck] backend '%s' has been throttled (rate: %d)", name, rt)
 					}
 				} else {
 					if err := c.quarantine(slot); err != nil {
@@ -673,12 +673,12 @@ func (c *BackendCluster) isThrottlePossible(slot *backendSlot) bool {
 	return slot.throttles.Load() <= maxThrottles
 }
 
-func (c *BackendCluster) throttle(slot *backendSlot) (r, b int, err error) {
+func (c *BackendCluster) throttle(slot *backendSlot) (rlimit int, err error) {
 	for {
 		old := slot.throttles.Load()
 		if old >= maxThrottles {
 			oldLimiter := slot.rate.Load()
-			return int(oldLimiter.Limit()), slot.rate.Load().Burst(), ErrMaxThrottleValuesReached
+			return int(oldLimiter.Limit()), ErrMaxThrottleValuesReached
 		}
 		if slot.throttles.CompareAndSwap(old, old+1) {
 			or := slot.backend.Cfg().Rate
@@ -686,9 +686,8 @@ func (c *BackendCluster) throttle(slot *backendSlot) (r, b int, err error) {
 			if rt <= 0 {
 				rt = 1
 			}
-			bt := (rt / 30) + 1
-			slot.rate.Store(rate.NewLimiter(c.ctx, rt, bt))
-			return rt, bt, nil
+			slot.rate.Store(rate.NewLimiter(c.ctx, rt, rt))
+			return rt, nil
 		}
 	}
 }
