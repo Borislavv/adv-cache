@@ -1,4 +1,4 @@
-package upstream
+package cluster
 
 import (
 	"context"

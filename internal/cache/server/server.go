@@ -12,7 +12,7 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
 	controller2 "github.com/Borislavv/advanced-cache/pkg/prometheus/metrics/controller"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
-	"github.com/Borislavv/advanced-cache/pkg/upstream"
+	"github.com/Borislavv/advanced-cache/pkg/upstream/cluster"
 	"github.com/rs/zerolog/log"
 	"sync"
 	"sync/atomic"
@@ -33,7 +33,7 @@ type HttpServer struct {
 	ctx           context.Context
 	cfg           config.Config
 	db            storage.Storage
-	backend       upstream.Upstream
+	backend       cluster.Upstream
 	probe         liveness.Prober
 	metrics       metrics.Meter
 	server        httpserver2.Server
@@ -46,7 +46,7 @@ func New(
 	ctx context.Context,
 	cfg config.Config,
 	db storage.Storage,
-	backend upstream.Upstream,
+	backend cluster.Upstream,
 	probe liveness.Prober,
 	meter metrics.Meter,
 ) (*HttpServer, error) {

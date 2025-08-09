@@ -9,7 +9,7 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
-	"github.com/Borislavv/advanced-cache/pkg/upstream"
+	"github.com/Borislavv/advanced-cache/pkg/upstream/cluster"
 	"github.com/Borislavv/advanced-cache/pkg/utils"
 	"github.com/fasthttp/router"
 	"github.com/rs/zerolog/log"
@@ -45,7 +45,7 @@ type CacheProxyController struct {
 	ctx      context.Context
 	cache    storage.Storage
 	metrics  metrics.Meter
-	upstream upstream.Upstream
+	upstream cluster.Upstream
 	errorsCh chan error
 }
 
@@ -56,7 +56,7 @@ func NewCacheProxyController(
 	cfg config.Config,
 	cache storage.Storage,
 	metrics metrics.Meter,
-	backend upstream.Upstream,
+	backend cluster.Upstream,
 ) *CacheProxyController {
 	c := &CacheProxyController{
 		cfg:      cfg,

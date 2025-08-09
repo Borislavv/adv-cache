@@ -5,7 +5,7 @@ import (
 	"errors"
 	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/Borislavv/advanced-cache/pkg/rate"
-	"github.com/Borislavv/advanced-cache/pkg/upstream"
+	"github.com/Borislavv/advanced-cache/pkg/upstream/cluster"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -38,12 +38,12 @@ type Refresh struct {
 	ctx      context.Context
 	cfg      config.Config
 	storage  Storage
-	upstream upstream.Upstream
+	upstream cluster.Upstream
 	errorsCh chan error
 }
 
 // NewRefresher constructs a Refresh.
-func NewRefresher(ctx context.Context, cfg config.Config, storage Storage, upstream upstream.Upstream) *Refresh {
+func NewRefresher(ctx context.Context, cfg config.Config, storage Storage, upstream cluster.Upstream) *Refresh {
 	return &Refresh{
 		ctx:      ctx,
 		cfg:      cfg,

@@ -3,7 +3,7 @@ package lru
 import (
 	"context"
 	"github.com/Borislavv/advanced-cache/pkg/storage/lfu"
-	"github.com/Borislavv/advanced-cache/pkg/upstream"
+	"github.com/Borislavv/advanced-cache/pkg/upstream/cluster"
 	"runtime"
 	"strconv"
 	"time"
@@ -67,7 +67,7 @@ type InMemoryStorage struct {
 	cfg             config.Config              // AtomicCacheBox configuration
 	shardedMap      *sharded.Map[*model.Entry] // Sharded storage for cache entries
 	tinyLFU         *lfu.TinyLFU               // Helps hold more frequency used items in cache while eviction
-	upstream        upstream.Upstream          // Remote upstream server.
+	upstream        cluster.Upstream           // Remote upstream server.
 	refresher       Refresher
 	balancer        Balancer // Helps pick shards to evict from
 	evictor         Evictor
@@ -77,7 +77,7 @@ type InMemoryStorage struct {
 }
 
 // NewStorage constructs a new InMemoryStorage cache instance and launches eviction and refreshItem routines.
-func NewStorage(ctx context.Context, cfg config.Config, upstream upstream.Upstream) *InMemoryStorage {
+func NewStorage(ctx context.Context, cfg config.Config, upstream cluster.Upstream) *InMemoryStorage {
 	shardedMap := sharded.NewMap[*model.Entry](ctx)
 	balancer := NewBalancer(ctx, shardedMap)
 

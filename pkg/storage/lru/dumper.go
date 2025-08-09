@@ -7,7 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/Borislavv/advanced-cache/pkg/upstream"
+	"github.com/Borislavv/advanced-cache/pkg/upstream/cluster"
 	"hash/crc32"
 	"io"
 	"os"
@@ -35,10 +35,10 @@ type Dumper interface {
 type Dump struct {
 	cfg     config.Config
 	storage Storage
-	backend upstream.Upstream
+	backend cluster.Upstream
 }
 
-func NewDumper(cfg config.Config, storage Storage, backend upstream.Upstream) *Dump {
+func NewDumper(cfg config.Config, storage Storage, backend cluster.Upstream) *Dump {
 	return &Dump{cfg: cfg, storage: storage, backend: backend}
 }
 

@@ -3,9 +3,8 @@ package storage
 import (
 	"context"
 	"fmt"
-	"github.com/Borislavv/advanced-cache/pkg/mock"
 	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
-	"github.com/Borislavv/advanced-cache/pkg/upstream"
+	"github.com/Borislavv/advanced-cache/pkg/upstream/cluster"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -90,7 +89,7 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	backend := upstream.NewBackend(ctx, cfg)
+	backend := cluster.NewBackend(ctx, cfg)
 	db := lru.NewStorage(ctx, cfg, backend)
 
 	entries := mock.GenerateEntryPointersConsecutive(cfg, backend, path, maxEntriesNum)
@@ -122,7 +121,7 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 	ctx, cancel := context.WithCancel(b.Context())
 	defer cancel()
 
-	backend := upstream.NewBackend(ctx, cfg)
+	backend := cluster.NewBackend(ctx, cfg)
 	db := lru.NewStorage(ctx, cfg, backend)
 
 	entries := mock.GenerateEntryPointersConsecutive(cfg, backend, path, maxEntriesNum)
@@ -145,7 +144,7 @@ func BenchmarkGetAllocs(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	backend := upstream.NewBackend(ctx, cfg)
+	backend := cluster.NewBackend(ctx, cfg)
 	db := lru.NewStorage(ctx, cfg, backend)
 
 	entry := mock.GenerateRandomEntryPointer(cfg, backend, path)
@@ -163,7 +162,7 @@ func BenchmarkSetAllocs(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	backend := upstream.NewBackend(ctx, cfg)
+	backend := cluster.NewBackend(ctx, cfg)
 	db := lru.NewStorage(ctx, cfg, backend)
 
 	entry := mock.GenerateRandomEntryPointer(cfg, backend, path)

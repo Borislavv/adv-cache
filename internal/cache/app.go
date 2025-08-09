@@ -2,7 +2,7 @@ package cache
 
 import (
 	"context"
-	"github.com/Borislavv/advanced-cache/pkg/upstream"
+	"github.com/Borislavv/advanced-cache/pkg/upstream/cluster"
 	"time"
 
 	"github.com/Borislavv/advanced-cache/internal/cache/server"
@@ -37,7 +37,7 @@ type Cache struct {
 	cfg           config.Config
 	ctx           context.Context
 	cancel        context.CancelFunc
-	cluster       upstream.Upstream
+	cluster       cluster.Upstream
 	db            storage.Storage
 	probe         liveness.Prober
 	server        server.Http
@@ -53,14 +53,14 @@ func NewApp(ctx context.Context, cfg config.Config, probe liveness.Prober, isInt
 		}
 	}()
 
-	var cluster upstream.Upstream
-	if cluster, err = upstream.Cluster(ctx, cfg); err != nil {
+	var upstream cluster.Upstream
+	if upstream, err = cluster.New(ctx, cfg); err != nil {
 		log.Error().Err(err).Msg("[app] failed to make a new upstream cluster")
 		return nil, err
 	}
 
-	db := lru.NewStorage(ctx, cfg, cluster)
-	srv, err := server.New(ctx, cfg, db, cluster, probe, metrics.New())
+	db := lru.NewStorage(ctx, cfg, upstream)
+	srv, err := server.New(ctx, cfg, db, upstream, probe, metrics.New())
 	if err != nil {
 		cancel()
 		return nil, err
@@ -73,7 +73,7 @@ func NewApp(ctx context.Context, cfg config.Config, probe liveness.Prober, isInt
 		probe:         probe,
 		db:            db,
 		server:        srv,
-		cluster:       cluster,
+		cluster:       upstream,
 		isInteractive: isInteractive,
 	}, nil
 }
