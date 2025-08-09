@@ -7,18 +7,19 @@ import (
 	"time"
 )
 
-const doorkeeperCapacity = 1 << 19
+const doorkeeperCapacity = 1 << 20
 
 type TinyLFU struct {
 	curr atomic.Pointer[countMinSketch]
 	prev atomic.Pointer[countMinSketch]
-	door *doorkeeper
+	door atomic.Pointer[doorkeeper]
 }
 
 func NewTinyLFU(ctx context.Context) *TinyLFU {
-	lfu := &TinyLFU{door: newDoorkeeper(doorkeeperCapacity)}
+	lfu := &TinyLFU{door: atomic.Pointer[doorkeeper]{}}
 	lfu.curr.Store(newCountMinSketch())
 	lfu.prev.Store(newCountMinSketch())
+	lfu.door.Store(newDoorkeeper(doorkeeperCapacity))
 	go lfu.run(ctx)
 	return lfu
 }
@@ -38,14 +39,14 @@ func (t *TinyLFU) run(ctx context.Context) {
 
 func (t *TinyLFU) Increment(key uint64) {
 	t.curr.Load().Increment(key)
-	t.door.Allow(key)
+	t.door.Load().Allow(key)
 }
 
 func (t *TinyLFU) Admit(new, old *model.Entry) bool {
 	newKey := new.MapKey()
 	oldKey := old.MapKey()
 
-	if !t.door.Allow(newKey) {
+	if !t.door.Load().Allow(newKey) {
 		return true
 	}
 
@@ -56,15 +57,8 @@ func (t *TinyLFU) Admit(new, old *model.Entry) bool {
 }
 
 func (t *TinyLFU) Rotate() {
-	// current -> previous
-	curr := t.curr.Load()
-	t.prev.Store(curr)
-
-	// current -> new current (new seeds)
-	t.curr.Store(newCountMinSketch())
-
-	// doorkeeper -> new doorkeeper
-	t.door = newDoorkeeper(doorkeeperCapacity)
+	t.prev.Store(t.curr.Swap(newCountMinSketch()))
+	t.door.Store(newDoorkeeper(doorkeeperCapacity))
 }
 
 func (t *TinyLFU) estimate(key uint64) uint32 {
