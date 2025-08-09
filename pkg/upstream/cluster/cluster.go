@@ -3,7 +3,6 @@ package cluster
 import (
 	"context"
 	"errors"
-
 	"math/rand"
 	"sync/atomic"
 	"time"
@@ -33,6 +32,7 @@ type Cluster struct {
 func New(ctx context.Context, cfg config.Config) (*Cluster, error) {
 	all := make(map[string]*slot, len(cfg.Upstream().Cluster.Backends))
 	healthy := make([]*slot, 0, len(cfg.Upstream().Cluster.Backends))
+
 	for _, bCfg := range cfg.Upstream().Cluster.Backends {
 		lim := newTokenLimiter(bCfg.Rate, max(1, bCfg.Rate/10))
 		b := NewBackend(ctx, bCfg)
@@ -42,12 +42,14 @@ func New(ctx context.Context, cfg config.Config) (*Cluster, error) {
 		all[(*b).Name()] = s
 		healthy = append(healthy, s)
 	}
+
 	var c Cluster
 	c.all = all
 	c.healthy.Store(&healthy)
-	c.runDeadMonitor(ctx)
-	c.runThrottleMonitor(ctx)
-	c.runHealthyIdleMonitor(ctx)
+	go c.runDeadMonitor(ctx)
+	go c.runThrottleMonitor(ctx)
+	go c.runHealthyIdleMonitor(ctx)
+
 	log.Info().Msg("[app] upstream cluster was initialized")
 	return &c, nil
 }
