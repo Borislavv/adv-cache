@@ -87,9 +87,7 @@ func (c *Cluster) runThrottleMonitor(ctx context.Context) {
 					rate = float64(fail) / float64(req)
 				}
 				if rate > cfg.ErrorRateThreshold {
-					log.Warn().Str("backend", s.be.Name()).
-						Float64("error_rate_10s", rate).
-						Msg("[upstream-cluster] outlier quarantine")
+					log.Warn().Str("backend", s.be.Name()).Float64("error_rate_10s", rate).Msg("[upstream-cluster] outlier quarantine")
 					_ = c.Quarantine(s.be.Name())
 					continue
 				}

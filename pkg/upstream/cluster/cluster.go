@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math/rand"
+	"net/http"
 	"sync/atomic"
 	"time"
 
@@ -34,7 +35,7 @@ func New(ctx context.Context, cfg config.Config) (*Cluster, error) {
 	healthy := make([]*slot, 0, len(cfg.Upstream().Cluster.Backends))
 
 	for _, bCfg := range cfg.Upstream().Cluster.Backends {
-		lim := newTokenLimiter(bCfg.Rate, max(1, bCfg.Rate/10))
+		lim := newTokenLimiter(bCfg.Rate, max(1, bCfg.Rate/10)) // if rate is zero -> disabled
 		b := NewBackend(ctx, bCfg)
 		s := &slot{be: b, lim: lim}
 		s.state.Store(int32(Healthy))
@@ -68,7 +69,7 @@ func (c *Cluster) Fetch(rule *config.Rule, inCtx *fasthttp.RequestCtx, inReq *fa
 ) {
 	ptr := c.healthy.Load()
 	if ptr == nil || len(*ptr) == 0 {
-		return nil, nil, nil, ErrNoBackends
+		return nil, nil, defaultReleaser, ErrNoBackends
 	}
 	hs := *ptr
 
@@ -88,7 +89,7 @@ func (c *Cluster) Fetch(rule *config.Rule, inCtx *fasthttp.RequestCtx, inReq *fa
 		pick = b
 	}
 
-	now := time.Now()
+	now := time.Now().UnixNano()
 	if !pick.lim.allow(now) {
 		// fast RR fallback: one probe
 		k := int((cur + 1) % n)
@@ -99,14 +100,13 @@ func (c *Cluster) Fetch(rule *config.Rule, inCtx *fasthttp.RequestCtx, inReq *fa
 		pick = alt
 	}
 
-	start := time.Now()
 	outReq, outResp, releaser, err = pick.be.Fetch(rule, inCtx, inReq)
-	if err != nil {
-		pick.recordOutcome(start, false)
-		return nil, nil, defaultReleaser, fasthttp.ErrNoFreeConns
+	if err != nil || outResp.StatusCode() > http.StatusInternalServerError {
+		pick.recordOutcome(now, false)
+	} else {
+		pick.recordOutcome(now, true)
 	}
-	pick.recordOutcome(start, true)
-	return nil, nil, defaultReleaser, fasthttp.ErrNoFreeConns
+	return outReq, outResp, releaser, err
 }
 
 // --- Control-plane methods (COW, no hot-path locks) ---

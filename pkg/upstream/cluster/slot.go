@@ -33,9 +33,9 @@ type secCounters struct {
 }
 
 // recordOutcome is hot-path, allocation-free.
-func (s *slot) recordOutcome(start time.Time, ok bool) {
+func (s *slot) recordOutcome(start int64, ok bool) {
 	// EWMA latency update (lock-free single-writer assumption not guaranteed; use CAS loop)
-	dur := time.Since(start).Nanoseconds()
+	dur := time.Now().UnixNano() - start
 	for {
 		p := s.ewmaNanos.Load()
 		if p == 0 {
@@ -52,12 +52,11 @@ func (s *slot) recordOutcome(start time.Time, ok bool) {
 	}
 
 	// 10s sliding window counters
-	now := time.Now().Unix()
-	idx := int(now % 10)
+	idx := int(start % 10)
 	cell := &s.win[idx]
 	csec := cell.sec.Load()
-	if csec != now {
-		if cell.sec.CompareAndSwap(csec, now) {
+	if csec != start {
+		if cell.sec.CompareAndSwap(csec, start) {
 			cell.req.Store(0)
 			cell.fail.Store(0)
 		}

@@ -1,4 +1,3 @@
-
 package cluster
 
 import (
@@ -10,10 +9,10 @@ import (
 // Refilled every tick of wall-second (monotonic via time.Now).
 // Allows small burst (configured), and fast-fail when empty.
 type tokenLimiter struct {
-	rate   uint32 // tokens per second (steady)
-	burst  uint32 // max bucket capacity
-	nowSec atomic.Int64
-	tokens atomic.Int64
+	rate     uint32       // tokens per second (steady)
+	burst    uint32       // max bucket capacity
+	nowNanos atomic.Int64 // unix nano
+	tokens   atomic.Int64
 }
 
 func newTokenLimiter(rate, burst int) *tokenLimiter {
@@ -24,26 +23,24 @@ func newTokenLimiter(rate, burst int) *tokenLimiter {
 		burst = 1
 	}
 	l := &tokenLimiter{rate: uint32(rate), burst: uint32(burst)}
-	sec := time.Now().Unix()
-	l.nowSec.Store(sec)
+	l.nowNanos.Store(time.Now().UnixNano())
 	l.tokens.Store(int64(burst))
 	return l
 }
 
 // allow tries to consume one token.
 // It never allocates and never blocks. Returns true if permitted.
-func (l *tokenLimiter) allow(now time.Time) bool {
+func (l *tokenLimiter) allow(nanos int64) bool {
 	if l.rate == 0 {
 		// disabled limiter => always allow
 		return true
 	}
-	sec := now.Unix()
-	last := l.nowSec.Load()
-	if sec != last {
+	last := l.nowNanos.Load()
+	if nanos != last {
 		// try to advance the second and refill
-		if l.nowSec.CompareAndSwap(last, sec) {
+		if l.nowNanos.CompareAndSwap(last, nanos) {
 			// compute new tokens with min(capacity, tokens + rate*(delta))
-			delta := sec - last
+			delta := nanos - last
 			add := int64(uint64(l.rate) * uint64(delta))
 			for {
 				cur := l.tokens.Load()
