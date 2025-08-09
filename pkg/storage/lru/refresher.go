@@ -126,7 +126,7 @@ func (r *Refresh) runDedupErrorLogger() {
 			prev = atomic.Pointer[map[string]int]{}
 			cur  = atomic.Pointer[map[string]int]{}
 		)
-		curMap := make(map[string]int, 2048)
+		curMap := make(map[string]int, 48)
 		cur.Store(&curMap)
 
 		each5Secs := utils.NewTicker(r.ctx, time.Second*5)

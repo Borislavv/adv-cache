@@ -178,16 +178,20 @@ func (c *CacheProxyController) logError(err error) {
 
 func (c *CacheProxyController) runErrorLogger() {
 	go func() {
-		var prev map[string]int
-		dedupMap := make(map[string]int, 2048)
-		each5Secs := utils.NewTicker(c.ctx, time.Second*5)
+		var (
+			prev = atomic.Pointer[map[string]int]{}
+			cur  = atomic.Pointer[map[string]int]{}
+		)
+		curMap := make(map[string]int, 48)
+		cur.Store(&curMap)
 
+		each5Secs := utils.NewTicker(c.ctx, time.Second*5)
 		writeTrigger := make(chan struct{}, 1)
 		defer close(writeTrigger)
 
 		go func() {
 			for range writeTrigger {
-				for err, count := range prev {
+				for err, count := range *prev.Load() {
 					log.Error().Msgf("[dedup-err-logger][5s] %s (count=%d)", err, count)
 				}
 			}
@@ -198,10 +202,11 @@ func (c *CacheProxyController) runErrorLogger() {
 			case <-c.ctx.Done():
 				return
 			case err := <-c.errorsCh:
-				dedupMap[err.Error()]++
+				(*cur.Load())[err.Error()]++
 			case <-each5Secs:
-				prev = dedupMap
-				dedupMap = make(map[string]int, len(prev))
+				prev.Store(cur.Load())
+				newMap := make(map[string]int, len(*prev.Load()))
+				cur.Store(&newMap)
 				writeTrigger <- struct{}{}
 			}
 		}
