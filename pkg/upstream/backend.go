@@ -16,8 +16,7 @@ import (
 )
 
 var (
-	healthCheckPath         = []byte("/k8s/probe")
-	emptyReleaserFn         = func(*fasthttp.Request, *fasthttp.Response) {}
+	defaultReleaser         = func(*fasthttp.Request, *fasthttp.Response) {}
 	ErrNotHealthyStatusCode = errors.New("bad status code")
 )
 
@@ -155,7 +154,7 @@ func (b *BackendNode) Fetch(rule *config.Rule, inCtx *fasthttp.RequestCtx, inReq
 	 */
 	if err = httpClient.DoTimeout(outReq, outResp, timeout); err != nil {
 		releaser(outReq, outResp)
-		return nil, nil, emptyReleaserFn, err
+		return nil, nil, defaultReleaser, err
 	}
 
 	/**

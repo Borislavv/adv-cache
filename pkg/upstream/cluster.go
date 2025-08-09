@@ -216,7 +216,7 @@ func (c *BackendCluster) Fetch(rule *config.Rule, ctx *fasthttp.RequestCtx, r *f
 ) {
 	slots := c.healthy.Load()
 	if len(*slots) == 0 {
-		return nil, nil, emptyReleaserFn, ErrNoBackends
+		return nil, nil, defaultReleaser, ErrNoBackends
 	}
 	slotsLen := uint64(len(*slots))
 
@@ -236,7 +236,7 @@ func (c *BackendCluster) Fetch(rule *config.Rule, ctx *fasthttp.RequestCtx, r *f
 		}
 	}
 
-	return nil, nil, emptyReleaserFn, ErrAllBackendsAreBusy
+	return nil, nil, defaultReleaser, ErrAllBackendsAreBusy
 }
 
 func (c *BackendCluster) provideFreeBackends() <-chan *backendSlot {
