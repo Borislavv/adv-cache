@@ -214,37 +214,29 @@ func (c *BackendCluster) Fetch(rule *config.Rule, ctx *fasthttp.RequestCtx, r *f
 	req *fasthttp.Request, resp *fasthttp.Response,
 	releaser func(*fasthttp.Request, *fasthttp.Response), err error,
 ) {
-	slot := c.getFreeBackend()
-	slot.requestCount.Add(1)
-	req, resp, releaser, err = slot.backend.Fetch(rule, ctx, r)
-	if err != nil || resp.StatusCode() >= http.StatusInternalServerError {
-		slot.errorCount.Add(1)
+	slots := c.healthy.Load()
+	if len(*slots) == 0 {
+		return nil, nil, emptyReleaserFn, ErrNoBackends
 	}
-	return req, resp, releaser, err
+	slotsLen := uint64(len(*slots))
 
-	//slots := c.healthy.Load()
-	//if len(*slots) == 0 {
-	//	return nil, nil, emptyReleaserFn, ErrNoBackends
-	//}
-	//slotsLen := uint64(len(*slots))
-	//
-	//for {
-	//	// peek next slot by round-robin
-	//	slot := (*slots)[int(c.cursor.Add(1)%slotsLen)]
-	//
-	//	select {
-	//	case <-slot.rate.Load().Chan():
-	//		slot.requestCount.Add(1)
-	//		req, resp, releaser, err = slot.backend.Fetch(rule, ctx, r)
-	//		if err != nil || resp.StatusCode() >= http.StatusInternalServerError {
-	//			slot.errorCount.Add(1)
-	//		}
-	//		return req, resp, releaser, err
-	//	default:
-	//	}
-	//}
+	for {
+		// peek next slot by round-robin
+		slot := (*slots)[int(c.cursor.Add(1)%slotsLen)]
 
-	//return nil, nil, emptyReleaserFn, ErrAllBackendsAreBusy
+		select {
+		case <-slot.rate.Load().Chan():
+			slot.requestCount.Add(1)
+			req, resp, releaser, err = slot.backend.Fetch(rule, ctx, r)
+			if err != nil || resp.StatusCode() >= http.StatusInternalServerError {
+				slot.errorCount.Add(1)
+			}
+			return req, resp, releaser, err
+		default:
+		}
+	}
+
+	return nil, nil, emptyReleaserFn, ErrAllBackendsAreBusy
 }
 
 func (c *BackendCluster) provideFreeBackends() <-chan *backendSlot {
