@@ -94,9 +94,11 @@ func (c *CacheProxyController) Index(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	proxied.Add(1)
 	if err := c.handleTroughProxy(ctx); err != nil {
 		c.respondServiceIsUnavailable(ctx, err)
+		errered.Add(1)
+	} else {
+		proxied.Add(1)
 	}
 }
 

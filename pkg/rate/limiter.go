@@ -6,12 +6,14 @@ import (
 )
 
 type Limiter struct {
-	ch chan struct{}
+	ctx context.Context
+	ch  chan struct{}
 	*rate.Limiter
 }
 
 func NewLimiter(ctx context.Context, limit, burst int) *Limiter {
 	l := &Limiter{
+		ctx:     ctx,
 		ch:      make(chan struct{}),
 		Limiter: rate.NewLimiter(rate.Limit(limit), burst),
 	}
@@ -35,6 +37,10 @@ func NewLimiter(ctx context.Context, limit, burst int) *Limiter {
 		}
 	}()
 	return l
+}
+
+func (l *Limiter) Ctx() context.Context {
+	return l.ctx
 }
 
 func (l *Limiter) Chan() <-chan struct{} {

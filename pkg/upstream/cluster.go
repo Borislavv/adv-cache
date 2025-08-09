@@ -4,20 +4,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
-	"sync/atomic"
-
 	"github.com/rs/zerolog/log"
 	"github.com/valyala/fasthttp"
+	"runtime"
+	"sync"
+	"sync/atomic"
 
 	"github.com/Borislavv/advanced-cache/pkg/config"
 )
 
 var (
 	ErrNoHealthyBackends = errors.New("no healthy backends available")
+	ErrNoFreeBackends    = errors.New("all backends are busy")
 )
 
 type BackendCluster struct {
+	ctx     context.Context
+	cfg     config.Config
 	cursor  atomic.Uint64
 	healthy atomic.Pointer[[]*backendSlot] // immutable healthy list
 
@@ -25,11 +28,14 @@ type BackendCluster struct {
 	all  map[string]*backendSlot
 	sick map[string]*backendSlot
 	dead map[string]*backendSlot
+
+	freeBackCh <-chan *backendSlot
 }
 
 func Cluster(ctx context.Context, cfg config.Config) (*BackendCluster, error) {
 	length := len(cfg.Upstream().Cluster.Backends)
 	c := &BackendCluster{
+		ctx: ctx, cfg: cfg,
 		all:  make(map[string]*backendSlot, length),
 		sick: make(map[string]*backendSlot),
 		dead: make(map[string]*backendSlot),
@@ -37,38 +43,65 @@ func Cluster(ctx context.Context, cfg config.Config) (*BackendCluster, error) {
 
 	slots := make([]*backendSlot, 0, length)
 	for _, backendCfg := range cfg.Upstream().Cluster.Backends {
-		s := newBackendSlot(NewBackend(ctx, backendCfg))
-		c.all[s.backend.ID()] = s
-		slots = append(slots, s)
+		var slot *backendSlot
+		backend := NewBackend(ctx, backendCfg)
+		if err := PrewarmBackend(ctx, backend); err != nil {
+			slot = newBackendSlot(ctx, backend, stateSick)
+			log.Warn().Err(err).Str("id", backend.ID()).Msgf("[upstream-init] slot '%s' added into cluster as sick", backend.id)
+		} else {
+			slot = newBackendSlot(ctx, backend, stateHealthy)
+			log.Info().Str("id", backend.ID()).Msgf("[upstream-init] slot '%s' added into cluster as healthy", backend.id)
+		}
+
+		c.all[backend.ID()] = slot
+		slots = append(slots, slot)
 	}
 	if len(slots) == 0 {
 		return nil, ErrNoHealthyBackends
 	}
 	c.healthy.Store(&slots)
+
 	SetGaugeHealthy(len(slots))
+	StartHealthChecks(ctx, c)
+	c.freeBackCh = c.provideFreeBackends()
 
 	return c, nil
 }
 
+func (c *BackendCluster) provideFreeBackends() <-chan *backendSlot {
+	outCh := make(chan *backendSlot, runtime.GOMAXPROCS(0)*4)
+	for _, slot := range *c.healthy.Load() {
+		go func(slot *backendSlot) {
+			for range slot.rate.Load().Chan() {
+				outCh <- slot
+			}
+		}(slot)
+	}
+	return outCh
+}
+
+func (c *BackendCluster) getFreeBackend() (*backendSlot, error) {
+	// TODO make switcher through cfg
+	return <-c.freeBackCh, nil
+	//select {
+	//case slot := <-c.freeBackCh:
+	//	return slot, nil
+	//default:
+	//	return nil, ErrNoFreeBackends
+	//}
+}
+
 func (c *BackendCluster) Fetch(rule *config.Rule, ctx *fasthttp.RequestCtx, req *fasthttp.Request) (*fasthttp.Request, *fasthttp.Response, func(*fasthttp.Request, *fasthttp.Response), error) {
-	slots := c.healthy.Load()
-	if len(*slots) == 0 {
-		return nil, nil, nil, ErrNoHealthyBackends
-	}
-
-	cursor := c.cursor.Add(1)
-	start := int(cursor % uint64(len(*slots)))
-
-	for i := 0; i < len(*slots); i++ {
-		s := (*slots)[(start+i)%len(*slots)]
-		if s.rateLimiter.Throttle() {
-			continue
+	if slot, err := c.getFreeBackend(); err != nil {
+		return nil, nil, defaultReleaser, err
+	} else {
+		slot.reqCount.Add(1)
+		outReq, outResp, done, ferr := slot.backend.Fetch(rule, ctx, req)
+		if ferr != nil {
+			slot.errCount.Add(1)
 		}
-		outReq, outResp, done, err := s.backend.Fetch(rule, ctx, req)
-		s.Track(err)
-		return outReq, outResp, done, err
+		return outReq, outResp, done, ferr
 	}
-	return nil, nil, nil, ErrNoHealthyBackends
 }
 
 func (c *BackendCluster) Promote(id string) error {
@@ -76,11 +109,11 @@ func (c *BackendCluster) Promote(id string) error {
 	defer c.mu.Unlock()
 	slot, ok := c.sick[id]
 	if !ok {
-		return fmt.Errorf("backend %q not found in sick list", id)
+		return fmt.Errorf("backend '%s' not found in sick list", id)
 	}
 	delete(c.sick, id)
-	c.addToHealthy(slot)
 	slot.promote()
+	c.addToHealthy(slot)
 	return nil
 }
 
@@ -88,14 +121,14 @@ func (c *BackendCluster) Quarantine(id string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	slot, ok := c.all[id]
-	if !ok || !slot.casState(stateHealthy, stateSick) {
+	if !ok || !slot.stateCAS(stateHealthy, stateSick) {
 		return fmt.Errorf("cannot quarantine backend %q", id)
 	}
 	c.removeFromHealthy(slot)
+	slot.quarantine()
 	c.sick[id] = slot
 	IncGaugeSick()
 	DecGaugeHealthy()
-	log.Info().Str("id", id).Msg("[upstream-cluster] backend quarantined")
 	return nil
 }
 
@@ -103,14 +136,15 @@ func (c *BackendCluster) Kill(id string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	slot, ok := c.sick[id]
-	if !ok || !slot.casState(stateSick, stateDead) {
+	if !ok || !slot.stateCAS(stateSick, stateDead) {
 		return fmt.Errorf("cannot kill backend %q", id)
 	}
 	delete(c.sick, id)
+	slot.kill()
 	c.dead[id] = slot
 	IncGaugeDead()
 	DecGaugeSick()
-	log.Info().Str("id", id).Msg("[upstream-healthcheck] backend killed")
+	log.Info().Str("id", id).Msgf("[upstream-healthcheck] backend '%s' killed", id)
 	return nil
 }
 
@@ -118,14 +152,15 @@ func (c *BackendCluster) Resurrect(id string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	slot, ok := c.dead[id]
-	if !ok || !slot.casState(stateDead, stateHealthy) {
+	if !ok || !slot.stateCAS(stateDead, stateHealthy) {
 		return fmt.Errorf("cannot resurrect backend %q", id)
 	}
 	delete(c.dead, id)
+	slot.resurrect()
 	c.addToHealthy(slot)
 	DecGaugeDead()
 	IncGaugeHealthy()
-	log.Info().Str("id", id).Msg("[upstream-healthcheck] backend resurrected")
+	log.Info().Str("id", id).Msgf("[upstream-healthcheck] backend '%s' resurrected", id)
 	return nil
 }
 
@@ -133,14 +168,15 @@ func (c *BackendCluster) Bury(id string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	slot, ok := c.dead[id]
-	if !ok || !slot.casState(stateDead, stateBuried) {
+	if !ok || !slot.stateCAS(stateDead, stateBuried) {
 		return fmt.Errorf("cannot bury backend %q", id)
 	}
 	delete(c.dead, id)
 	delete(c.all, id)
+	slot.bury()
 	DecGaugeDead()
 	IncGaugeBuried()
-	log.Info().Str("id", id).Msg("[upstream-killer] backend buried")
+	log.Info().Str("id", id).Msgf("[upstream-killer] backend '%s' buried", id)
 	return nil
 }
 
