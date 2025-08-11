@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"github.com/brianvoe/gofakeit/v6"
 	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
@@ -27,6 +28,9 @@ type Config interface {
 
 	IsEnabled() bool
 	SetEnabled(v bool)
+
+	CheckWhetherCfgWasReloadedInterval() int64
+	SetCheckWhetherCfgWasReloadedInterval(v int64)
 
 	Runtime() *Runtime
 	SetRuntime(v *Runtime)
@@ -90,20 +94,21 @@ type Env struct {
 }
 
 type CacheBox struct {
-	Env      string           `yaml:"env"`
-	Enabled  bool             `yaml:"enabled"`
-	Logs     *Logs            `yaml:"logs"`
-	Runtime  *Runtime         `yaml:"runtime"`
-	Api      *Api             `yaml:"api"`
-	Upstream *Upstream        `yaml:"upstream"`
-	Data     *Data            `yaml:"data"`
-	Storage  *Storage         `yaml:"storage"`
-	Eviction *Eviction        `yaml:"eviction"`
-	Refresh  *Refresh         `yaml:"refresh"`
-	ForceGC  *ForceGC         `yaml:"forceGC"`
-	Metrics  *Metrics         `yaml:"metrics"`
-	K8S      *K8S             `yaml:"k8s"`
-	Rules    map[string]*Rule `yaml:"rules"`
+	Env                 string           `yaml:"env"`
+	Enabled             bool             `yaml:"enabled"`
+	CheckReloadInterval time.Duration    `yaml:"cfg_reload_check_interval"`
+	Logs                *Logs            `yaml:"logs"`
+	Runtime             *Runtime         `yaml:"runtime"`
+	Api                 *Api             `yaml:"api"`
+	Upstream            *Upstream        `yaml:"upstream"`
+	Data                *Data            `yaml:"data"`
+	Storage             *Storage         `yaml:"storage"`
+	Eviction            *Eviction        `yaml:"eviction"`
+	Refresh             *Refresh         `yaml:"refresh"`
+	ForceGC             *ForceGC         `yaml:"forceGC"`
+	Metrics             *Metrics         `yaml:"metrics"`
+	K8S                 *K8S             `yaml:"k8s"`
+	Rules               map[string]*Rule `yaml:"rules"`
 }
 
 type Api struct {
@@ -143,14 +148,18 @@ type Logs struct {
 }
 
 type Upstream struct {
+	Policy  string   `yaml:"policy"`
 	Cluster *Cluster `yaml:"cluster"`
 }
 
 type Cluster struct {
-	Backends []*Backend `yaml:"backends"`
+	Backends       []*Backend `yaml:"backends"`
+	AtomicBackends []*atomic.Pointer[Backend]
 }
 
 type Backend struct {
+	ID                       string        // virtual field, autofill
+	Enabled                  bool          `yaml:"enabled"`
 	Name                     string        `yaml:"name"`
 	Scheme                   string        `yaml:"scheme"` // http or https
 	SchemeBytes              []byte        // virtual field, Scheme converted to []byte
@@ -163,6 +172,34 @@ type Backend struct {
 	UseMaxTimeoutHeaderBytes []byte        // The same value but converted into slice bytes.
 	Healthcheck              string        `yaml:"healthcheck"` // Healthcheck or readiness probe path
 	HealthcheckBytes         []byte        // The same value but converted into slice bytes.
+}
+
+// Clone - deep copy, obviously returns a new pointer.
+func (b *Backend) Clone() *Backend {
+	newb := *b
+
+	gofakeit.FirstName()
+
+	newSchemeBytes := make([]byte, len(b.SchemeBytes))
+	copy(newSchemeBytes, b.SchemeBytes)
+	newb.SchemeBytes = newSchemeBytes
+
+	newHostBytes := make([]byte, len(b.HostBytes))
+	copy(newHostBytes, b.HostBytes)
+	newb.HostBytes = newHostBytes
+
+	newUseMaxTimeoutHeaderBytes := make([]byte, len(b.UseMaxTimeoutHeaderBytes))
+	copy(newUseMaxTimeoutHeaderBytes, b.UseMaxTimeoutHeaderBytes)
+	newb.UseMaxTimeoutHeaderBytes = newUseMaxTimeoutHeaderBytes
+
+	newHealthcheckBytes := make([]byte, len(b.HealthcheckBytes))
+	copy(newHealthcheckBytes, b.HealthcheckBytes)
+	newb.HealthcheckBytes = newHealthcheckBytes
+
+	newb.Timeout = time.Duration(b.Timeout.Nanoseconds())
+	newb.MaxTimeout = time.Duration(b.Timeout.Nanoseconds())
+
+	return &newb
 }
 
 type Dump struct {
@@ -285,11 +322,16 @@ func LoadConfig(path string) (*AtomicCache, error) {
 		rule.CacheValue.HeadersMap = valueHeadersMap
 	}
 
+	cfg.Cache.Upstream.Cluster.AtomicBackends = make([]*atomic.Pointer[Backend], 0, len(cfg.Cache.Upstream.Cluster.Backends))
 	for i, _ := range cfg.Cache.Upstream.Cluster.Backends {
 		cfg.Cache.Upstream.Cluster.Backends[i].SchemeBytes = []byte(cfg.Cache.Upstream.Cluster.Backends[i].Scheme)
 		cfg.Cache.Upstream.Cluster.Backends[i].HostBytes = []byte(cfg.Cache.Upstream.Cluster.Backends[i].Host)
 		cfg.Cache.Upstream.Cluster.Backends[i].UseMaxTimeoutHeaderBytes = []byte(cfg.Cache.Upstream.Cluster.Backends[i].UseMaxTimeoutHeader)
 		cfg.Cache.Upstream.Cluster.Backends[i].HealthcheckBytes = []byte(cfg.Cache.Upstream.Cluster.Backends[i].Healthcheck)
+
+		currentBackendAtomicPtr := &atomic.Pointer[Backend]{}
+		currentBackendAtomicPtr.Store(cfg.Cache.Upstream.Cluster.Backends[i])
+		cfg.Cache.Upstream.Cluster.AtomicBackends = append(cfg.Cache.Upstream.Cluster.AtomicBackends, currentBackendAtomicPtr)
 	}
 
 	return makeConfigAtomic(cfg), nil

@@ -9,7 +9,6 @@ import (
 // Note: you need provide just one argument of inCtx or inReq.
 type Upstream interface {
 	Fetch(rule *config.Rule, inCtx *fasthttp.RequestCtx, inReq *fasthttp.Request) (
-		outReq *fasthttp.Request, outResp *fasthttp.Response,
-		releaser func(*fasthttp.Request, *fasthttp.Response), err error,
+		outReq *fasthttp.Request, outResp *fasthttp.Response, releaser func(*fasthttp.Request, *fasthttp.Response), err error,
 	)
 }

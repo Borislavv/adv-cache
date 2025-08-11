@@ -1,7 +1,6 @@
 package upstream
 
 import (
-	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -87,16 +86,14 @@ type Backend interface {
 
 type BackendNode struct {
 	id        string
-	ctx       context.Context
 	cfg       *atomic.Pointer[config.Backend]
 	transport *http.Transport
 }
 
 // NewBackend creates a new instance of BackendNode.
-func NewBackend(ctx context.Context, cfg *config.Backend, name string) *BackendNode {
+func NewBackend(cfg *config.Backend) *BackendNode {
 	backend := &BackendNode{
-		ctx: ctx,
-		id:  name,
+		id:  cfg.Name,
 		cfg: &atomic.Pointer[config.Backend]{},
 	}
 	backend.cfg.Store(cfg)
@@ -107,8 +104,7 @@ func NewBackend(ctx context.Context, cfg *config.Backend, name string) *BackendN
 // Note: that rule is optional and if not provided response will not delete unavailable headers for store.
 // Also remember that you need provide only one argument: inCtx or inReq.
 func (b *BackendNode) Fetch(rule *config.Rule, inCtx *fasthttp.RequestCtx, inReq *fasthttp.Request) (
-	outReq *fasthttp.Request, outResp *fasthttp.Response,
-	releaser func(*fasthttp.Request, *fasthttp.Response), err error,
+	outReq *fasthttp.Request, outResp *fasthttp.Response, releaser func(*fasthttp.Request, *fasthttp.Response), err error,
 ) {
 	/**
 	 * Load config of current version.

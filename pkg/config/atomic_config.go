@@ -5,42 +5,45 @@ import (
 )
 
 type AtomicCache struct {
-	env      *atomic.Pointer[string]
-	enabled  *atomic.Bool
-	api      *atomic.Pointer[Api]
-	upstream *atomic.Pointer[Upstream]
-	runtime  *atomic.Pointer[Runtime]
-	data     *atomic.Pointer[Data]
-	refresh  *atomic.Pointer[Refresh]
-	eviction *atomic.Pointer[Eviction]
-	storage  *atomic.Pointer[Storage]
-	logs     *atomic.Pointer[Logs]
-	k8s      *atomic.Pointer[K8S]
-	metrics  *atomic.Pointer[Metrics]
-	forceGC  *atomic.Pointer[ForceGC]
-	rules    map[string]*atomic.Pointer[Rule]
+	env                 *atomic.Pointer[string]
+	enabled             *atomic.Bool
+	checkReloadInterval *atomic.Int64 // nanoseconds -> time.Duration(checkReloadInterval)
+	api                 *atomic.Pointer[Api]
+	upstream            *atomic.Pointer[Upstream]
+	runtime             *atomic.Pointer[Runtime]
+	data                *atomic.Pointer[Data]
+	refresh             *atomic.Pointer[Refresh]
+	eviction            *atomic.Pointer[Eviction]
+	storage             *atomic.Pointer[Storage]
+	logs                *atomic.Pointer[Logs]
+	k8s                 *atomic.Pointer[K8S]
+	metrics             *atomic.Pointer[Metrics]
+	forceGC             *atomic.Pointer[ForceGC]
+	rules               map[string]*atomic.Pointer[Rule]
 }
 
 func makeConfigAtomic(config *Cache) *AtomicCache {
 	atomicCfg := &AtomicCache{
-		env:      &atomic.Pointer[string]{},
-		enabled:  &atomic.Bool{},
-		api:      &atomic.Pointer[Api]{},
-		upstream: &atomic.Pointer[Upstream]{},
-		runtime:  &atomic.Pointer[Runtime]{},
-		data:     &atomic.Pointer[Data]{},
-		refresh:  &atomic.Pointer[Refresh]{},
-		eviction: &atomic.Pointer[Eviction]{},
-		storage:  &atomic.Pointer[Storage]{},
-		logs:     &atomic.Pointer[Logs]{},
-		k8s:      &atomic.Pointer[K8S]{},
-		metrics:  &atomic.Pointer[Metrics]{},
-		forceGC:  &atomic.Pointer[ForceGC]{},
-		rules:    make(map[string]*atomic.Pointer[Rule], len(config.Cache.Rules)),
+		env:                 &atomic.Pointer[string]{},
+		enabled:             &atomic.Bool{},
+		checkReloadInterval: &atomic.Int64{},
+		api:                 &atomic.Pointer[Api]{},
+		upstream:            &atomic.Pointer[Upstream]{},
+		runtime:             &atomic.Pointer[Runtime]{},
+		data:                &atomic.Pointer[Data]{},
+		refresh:             &atomic.Pointer[Refresh]{},
+		eviction:            &atomic.Pointer[Eviction]{},
+		storage:             &atomic.Pointer[Storage]{},
+		logs:                &atomic.Pointer[Logs]{},
+		k8s:                 &atomic.Pointer[K8S]{},
+		metrics:             &atomic.Pointer[Metrics]{},
+		forceGC:             &atomic.Pointer[ForceGC]{},
+		rules:               make(map[string]*atomic.Pointer[Rule], len(config.Cache.Rules)),
 	}
 
 	atomicCfg.env.Store(&config.Cache.Env)
 	atomicCfg.enabled.Store(config.Cache.Enabled)
+	atomicCfg.checkReloadInterval.Store(config.Cache.CheckReloadInterval.Nanoseconds())
 	atomicCfg.api.Store(config.Cache.Api)
 	atomicCfg.upstream.Store(config.Cache.Upstream)
 	atomicCfg.runtime.Store(config.Cache.Runtime)
@@ -92,6 +95,13 @@ func (c *AtomicCache) SetEnabled(v bool) {
 	c.enabled.Store(v)
 }
 
+func (c *AtomicCache) CheckWhetherCfgWasReloadedInterval() int64 {
+	return c.checkReloadInterval.Load()
+}
+func (c *AtomicCache) SetCheckWhetherCfgWasReloadedInterval(v int64) {
+	c.checkReloadInterval.Store(v)
+}
+
 func (c *AtomicCache) Runtime() *Runtime {
 	return c.runtime.Load()
 }
@@ -111,6 +121,10 @@ func (c *AtomicCache) Upstream() *Upstream {
 }
 func (c *AtomicCache) SetUpstream(v *Upstream) {
 	c.upstream.Store(v)
+}
+
+func (c *AtomicCache) Backends() []*atomic.Pointer[Backend] {
+	return c.upstream.Load().Cluster.AtomicBackends
 }
 
 func (c *AtomicCache) Data() *Data {

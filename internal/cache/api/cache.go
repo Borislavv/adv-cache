@@ -292,10 +292,10 @@ func (c *CacheProxyController) runLoggerMetricsWriter() {
 
 				if i == logIntervalSecs {
 					elapsed := time.Since(prev)
-					duration := time.Duration(int(avgDuration))
+					dur := time.Duration(int(avgDuration))
 					rps := float64(totalNum) / elapsed.Seconds()
 
-					if duration == 0 && rps == 0 {
+					if dur == 0 && rps == 0 {
 						continue
 					}
 
@@ -313,19 +313,19 @@ func (c *CacheProxyController) runLoggerMetricsWriter() {
 							Str("rps", strconv.Itoa(int(rps))).
 							Str("served", strconv.Itoa(int(totalNum))).
 							Str("periodMs", strconv.Itoa(logIntervalSecs*1000)).
-							Str("avgDuration", duration.String()).
+							Str("avgDuration", dur.String()).
 							Str("elapsed", elapsed.String())
 					}
 
 					if c.cfg.IsEnabled() {
 						logEvent.Msgf(
-							"[%s][%s] served %d requests (rps: %.f, avg.dur.: %s hits: %d, misses: %d, errered: %d)",
-							target, elapsed.String(), totalNum, rps, duration.String(), hitsNum, missesNum, errorsNum,
+							"[%s][5s] served %d requests (rps: %.f, avg.dur.: %s hits: %d, misses: %d, errered: %d)",
+							target, totalNum, rps, dur.String(), hitsNum, missesNum, errorsNum,
 						)
 					} else {
 						logEvent.Msgf(
-							"[%s][%s] served %d requests (rps: %.f, avg.dur.: %s total: %d, proxied: %d, errered: %d)",
-							target, elapsed.String(), totalNum, rps, duration.String(), totalNum, proxiedNum, errorsNum,
+							"[%s][5s] served %d requests (rps: %.f, avg.dur.: %s total: %d, proxied: %d, errered: %d)",
+							target, totalNum, rps, dur.String(), totalNum, proxiedNum, errorsNum,
 						)
 					}
 

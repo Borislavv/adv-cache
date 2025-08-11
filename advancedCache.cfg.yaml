@@ -1,9 +1,10 @@
 cache:
   env: "prod"
   enabled: true
+  cfg_reload_check_interval: "1s"
 
   logs:
-    level: "info"
+    level: "debug"
     stats: true # Should log metrics in /std/out?
 
   runtime:
@@ -14,6 +15,12 @@ cache:
     port: "8020"
 
   upstream:
+    # Allowed policies:
+    #  1. 'await' - awaits available slot and performs request.
+    #     This policy is friendly for cases when all backends are dead, will return ErrNoHealthyBackends error.
+    #  2. 'deny'  - will immediately discard request by returning ErrNoAvailableBackends error.
+    #     Best performance, lowest memory and CPU usage due to we do not stack goroutines in the Scheduler (moreover each routine it is at least allocation).
+    policy: "await" # allowed: "await", "deny"
     cluster:
       backends:
         - host: "localhost:8080"
