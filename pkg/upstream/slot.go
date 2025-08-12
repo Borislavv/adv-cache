@@ -102,7 +102,7 @@ func newBackendSlot(ctx context.Context, cfg *config.Backend, outRate chan<- *ba
 		timestamp:  timestamp{RWMutex: sync.RWMutex{}},
 	}
 
-	go slot.renewRateProvider(cfg.Rate)
+	go slot.renewRateProvider(cfg.Rate, "init/shutdown")
 
 	return slot
 }
@@ -123,24 +123,24 @@ func (s *backendSlot) probe() error {
 	return nil
 }
 
-func (s *backendSlot) shouldCureByProbes() bool {
+func (s *backendSlot) shouldCureByProbes() (probes int64, should bool) {
 	s.counters.RLock()
 	defer s.counters.RUnlock()
-	return s.counters.sucProbes > probesInRow
+	return s.counters.sucProbes, s.counters.sucProbes > probesInRow
 }
 
-func (s *backendSlot) shouldQuarantineByProbes() bool {
+func (s *backendSlot) shouldQuarantineByProbes() (probes int64, should bool) {
 	s.counters.RLock()
 	defer s.counters.RUnlock()
-	return s.counters.errProbes > probesInRow
+	return s.counters.errProbes, s.counters.errProbes > probesInRow
 }
 
-func (s *backendSlot) shouldKill() bool {
+func (s *backendSlot) shouldKill() (downtime time.Duration, should bool) {
 	s.timestamp.RLock()
 	killedAt := s.timestamp.killedAt
 	s.timestamp.RUnlock()
 	if killedAt == 0 {
-		return false
+		return 0, false
 	}
 
 	s.counters.RLock()
@@ -150,17 +150,17 @@ func (s *backendSlot) shouldKill() bool {
 
 	hasNotPositiveProbes := sucProbes == 0
 	wasProbesThresholdOvercome := errProbes > probesInRow
-	downtime := time.Duration(killedAt - time.Now().UnixNano())
+	downtime = time.Duration(time.Now().UnixNano() - killedAt)
 
-	return wasProbesThresholdOvercome && hasNotPositiveProbes && downtime > downtimeForKill
+	return downtime, wasProbesThresholdOvercome && hasNotPositiveProbes && downtime > downtimeForKill
 }
 
-func (s *backendSlot) shouldBury() bool {
+func (s *backendSlot) shouldBury() (downtime time.Duration, should bool) {
 	s.timestamp.RLock()
 	killedAt := s.timestamp.killedAt
 	s.timestamp.RUnlock()
 	if killedAt == 0 {
-		return false
+		return 0, false
 	}
 
 	s.counters.RLock()
@@ -170,15 +170,15 @@ func (s *backendSlot) shouldBury() bool {
 
 	hasNotPositiveProbes := sucProbes == 0
 	wasProbesThresholdOvercome := errProbes > probesInRow
-	downtime := time.Duration(killedAt - time.Now().UnixNano())
+	downtime = time.Duration(time.Now().UnixNano() - killedAt)
 
-	return wasProbesThresholdOvercome && hasNotPositiveProbes && downtime > downtimeForBury
+	return downtime, wasProbesThresholdOvercome && hasNotPositiveProbes && downtime > downtimeForBury
 }
 
-func (s *backendSlot) shouldResurrect() bool {
+func (s *backendSlot) shouldResurrect() (probesInRow int64, should bool) {
 	s.counters.RLock()
 	defer s.counters.RUnlock()
-	return s.counters.sucProbes > probesInRow
+	return s.counters.sucProbes, s.counters.sucProbes > probesInRow
 }
 
 func (s *backendSlot) isIdle() bool {
@@ -203,158 +203,113 @@ func (s *backendSlot) isThrottled() bool {
 	return s.counters.throttles > 0
 }
 
-func (s *backendSlot) mayBeThrottled() bool {
+func (s *backendSlot) shouldThrottle() (throttles int64, should bool) {
 	s.counters.RLock()
 	defer s.counters.RUnlock()
-	return s.counters.throttles < maxThrottles && s.errRate() > errMinRateThreshold
+	return s.counters.throttles, s.counters.throttles < maxThrottles && s.errRate() > errMinRateThreshold
 }
 
-func (s *backendSlot) mayBeUnThrottled() bool {
+func (s *backendSlot) shouldUnthrottle() (throttles int64, should bool) {
 	s.counters.RLock()
 	defer s.counters.RUnlock()
-	return s.total.Load() != 0 && s.counters.throttles > 0 && s.errRate() < errMinRateThreshold
+	return s.counters.throttles, s.total.Load() != 0 && s.counters.throttles > 0 && s.errRate() < errMinRateThreshold
 }
 
 // cure - moves slot from sick to healthy state
-func (s *backendSlot) cure() bool {
+func (s *backendSlot) cure(why string) bool {
 	old := slotState(s.state.Load())
 	if old != sick {
 		return false
 	}
 
-	name := s.backend.Name()
-	if s.state.CompareAndSwap(int32(sick), int32(healthy)) {
-		s.throttle(maxThrottles - 1)
+	s.state.Store(int32(healthy))
 
-		s.total.Store(0)
-		s.errors.Store(0)
+	log.Info().Msgf("[upstream] backend '%s' was cured (sick -> healthy) due to %s, throttling now...", s.backend.Name(), why)
 
-		s.counters.Lock()
-		s.counters.sucProbes = 0
-		s.counters.errProbes = 0
-		s.counters.Unlock()
+	s.throttle("he was cured, smooth commissioning", maxThrottles-1)
 
-		s.timestamp.Lock()
-		s.timestamp.sickedAt = 0
-		s.timestamp.killedAt = 0
-		s.timestamp.Unlock()
+	s.timestamp.Lock()
+	s.timestamp.sickedAt = 0
+	s.timestamp.killedAt = 0
+	s.timestamp.Unlock()
 
-		log.Info().Msgf("[upstream] backend '%s' was cured (sick -> healthy)", name)
-		return true
-	} else {
-		log.Info().Msgf("[upstream] backend '%s' was not cured because CAS failed", name)
-		return false
-	}
+	return true
 }
 
 // quarantine - moves slot from healthy to sick state
-func (s *backendSlot) quarantine() bool {
+func (s *backendSlot) quarantine(why string) bool {
 	old := slotState(s.state.Load())
 	if old != healthy {
 		return false
 	}
 
-	name := s.backend.Name()
-	if s.state.CompareAndSwap(int32(healthy), int32(sick)) {
-		s.closeRateProvider()
+	s.state.Store(int32(sick))
 
-		s.total.Store(0)
-		s.errors.Store(0)
+	log.Info().Msgf("[upstream] backend '%s' was quarantined (healthy -> sick) due to %s, closing provider...", s.backend.Name(), why)
 
-		s.counters.Lock()
-		s.counters.sucProbes = 0
-		s.counters.errProbes = 0
-		s.counters.Unlock()
+	s.closeRateProvider()
 
-		s.timestamp.Lock()
-		s.timestamp.killedAt = 0
-		s.timestamp.Unlock()
+	s.timestamp.Lock()
+	s.timestamp.killedAt = 0
+	s.timestamp.Unlock()
 
-		s.timestamp.Lock()
-		s.timestamp.sickedAt = time.Now().UnixNano()
-		s.timestamp.Unlock()
-		log.Info().Msgf("[upstream] backend '%s' was quarantined (healthy -> sick)", name)
-		return true
-	} else {
-		log.Info().Msgf("[upstream] backend '%s' was not quarantined because CAS failed", name)
-		return false
-	}
+	s.timestamp.Lock()
+	s.timestamp.sickedAt = time.Now().UnixNano()
+	s.timestamp.Unlock()
+
+	return true
 }
 
 // kill - moves slot from sick to dead state
-func (s *backendSlot) kill() bool {
+func (s *backendSlot) kill(why string) bool {
 	old := slotState(s.state.Load())
 	if old != sick {
 		return false
 	}
 
+	s.state.Store(int32(dead))
+
+	log.Info().Msgf("[upstream] backend '%s' was killed (sick -> dead) due to %s, closing provider...", s.backend.Name(), why)
+
 	s.closeRateProvider()
 
-	name := s.backend.Name()
-	if s.state.CompareAndSwap(int32(sick), int32(dead)) {
-		s.total.Store(0)
-		s.errors.Store(0)
+	s.timestamp.Lock()
+	s.timestamp.killedAt = time.Now().UnixNano()
+	s.timestamp.Unlock()
 
-		s.counters.Lock()
-		s.counters.sucProbes = 0
-		s.counters.errProbes = 0
-		s.counters.Unlock()
-
-		s.timestamp.Lock()
-		s.timestamp.killedAt = time.Now().UnixNano()
-		s.timestamp.Unlock()
-
-		log.Info().Msgf("[upstream] backend '%s' was killed (sick -> dead)", name)
-		return true
-	} else {
-		log.Info().Msgf("[upstream] backend '%s' was not killed because CAS failed", name)
-		return false
-	}
+	return true
 }
 
 // resurrect - moves slot from dead to healthy state
-func (s *backendSlot) resurrect() bool {
+func (s *backendSlot) resurrect(why string) bool {
 	old := slotState(s.state.Load())
 	if old != dead {
 		return false
 	}
 
-	name := s.backend.Name()
-	if s.state.CompareAndSwap(int32(dead), int32(sick)) {
-		s.throttle(maxThrottles - 1)
+	s.state.Store(int32(sick))
 
-		s.total.Store(0)
-		s.errors.Store(0)
+	log.Info().Msgf("[upstream] backend '%s' was resurrected (dead -> sick) due to %s, throttling now...", s.backend.Name(), why)
 
-		s.counters.Lock()
-		s.counters.sucProbes = 0
-		s.counters.errProbes = 0
-		s.counters.Unlock()
+	s.throttle("he was resurrected, smooth commissioning", maxThrottles-1)
 
-		s.timestamp.Lock()
-		s.timestamp.sickedAt = 0
-		s.timestamp.killedAt = 0
-		s.timestamp.Unlock()
+	s.timestamp.Lock()
+	s.timestamp.sickedAt = 0
+	s.timestamp.killedAt = 0
+	s.timestamp.Unlock()
 
-		log.Info().Msgf("[upstream] backend '%s' was resurrected (dead -> healthy)", name)
-		return true
-	} else {
-		log.Info().Msgf("[upstream] backend '%s' was not resurrected because CAS failed", name)
-		return false
-	}
+	return true
 }
 
 // throttle - reduces rateLimit of released tokens for given percent from origin config value.
-func (s *backendSlot) throttle(newThrottles ...int64) {
-	s.counters.Lock()
-	defer s.counters.Unlock()
-
+func (s *backendSlot) throttle(why string, newThrottles ...int64) {
 	var repeatNum = s.throttles + 1
 	if len(newThrottles) > 1 || (len(newThrottles) == 1 && (newThrottles[0] > maxThrottles || newThrottles[0] < 0)) {
 		panic("throttle: wrong usage of newThrottles param")
 	} else if len(newThrottles) == 1 {
 		repeatNum = newThrottles[0]
 	}
+
 	const hundred float64 = 100
 	or := float64(s.originRate)
 	sp := or / hundred
@@ -370,16 +325,22 @@ func (s *backendSlot) throttle(newThrottles ...int64) {
 			old += 1
 		}
 		s.throttles = old
-		log.Info().Msgf("[upstream] throttling backend '%s', current rateLimit %d", s.backend.Name(), rt)
-		go s.renewRateProvider(rt)
+
+		log.Info().Msgf("[upstream] throttling backend '%s' due to %s (newRate=%d)", s.backend.Name(), why, rt)
+
+		s.counters.Lock()
+		s.total.Store(0)
+		s.errors.Store(0)
+		s.counters.sucProbes = 0
+		s.counters.errProbes = 0
+		s.counters.Unlock()
+
+		go s.renewRateProvider(rt, "throttling")
 	}
 }
 
 // throttle - reduces rateLimit of released tokens for given percent from origin config value.
-func (s *backendSlot) unthrottle() {
-	s.counters.Lock()
-	defer s.counters.Unlock()
-
+func (s *backendSlot) unthrottle(why string) {
 	s.jitter.RLock()
 	lm := s.jitter.Limit()
 	s.jitter.RUnlock()
@@ -394,8 +355,17 @@ func (s *backendSlot) unthrottle() {
 
 	if s.throttles > 0 {
 		s.throttles--
-		log.Info().Msgf("[upstream] unthrottling backend '%s' due to low error rateLimit", s.backend.Name())
-		go s.renewRateProvider(int(rt))
+
+		log.Info().Msgf("[upstream] unthrottling backend '%s' due to %s", s.backend.Name(), why)
+
+		s.counters.Lock()
+		s.total.Store(0)
+		s.errors.Store(0)
+		s.counters.sucProbes = 0
+		s.counters.errProbes = 0
+		s.counters.Unlock()
+
+		go s.renewRateProvider(int(rt), "unthrottling")
 	}
 }
 
@@ -414,31 +384,36 @@ func (s *backendSlot) closeRateProvider() {
 	providerCloser := s.provider.cancelProvider
 	s.provider.Unlock()
 	providerCloser()
+
+	s.counters.Lock()
+	s.total.Store(0)
+	s.errors.Store(0)
+	s.counters.sucProbes = 0
+	s.counters.errProbes = 0
+	s.counters.Unlock()
 }
 
-func (c *BackendCluster) bury(slot *backendSlot) {
+func (c *BackendCluster) bury(slot *backendSlot, reason string) {
 	c.mu.Lock()
 	delete(c.all, slot.backend.ID())
 	slot.closeRateProvider()
 	c.mu.Unlock()
-}
 
-//////////////////////////////////////////////////////////////////
-//							Workers								//
-//////////////////////////////////////////////////////////////////
+	log.Info().Msgf("[upstream] backend '%s' was buried due to %s (not accessable any more)", slot.backend.Name(), reason)
+}
 
 // renewRateProvider - singleton worker (may exist only one instance)
 // Creates a new one rateLimit provider and displaces previous by closing him rateLimit limiter.
-func (s *backendSlot) renewRateProvider(rt int) {
-	log.Info().Msgf("[upstream] backend '%s' rateLimit %d, provider has been started", s.backend.Name(), rt)
-	defer log.Info().Msgf("[upstream] backend '%s' rateLimit %d, provider has been stopped", s.backend.Name(), rt)
+func (s *backendSlot) renewRateProvider(limit int, reason string) {
+	log.Info().Msgf("[upstream] backend '%s' rate limit %d, provider has been started due to %s", s.backend.Name(), limit, reason)
+	defer log.Info().Msgf("[upstream] backend '%s' rateLimit %d, provider has been stopped due to %s", s.backend.Name(), limit, reason)
 
 	healthyBackendsNum.Add(1)
 	defer healthyBackendsNum.Add(-1)
 
 	ctx, cancel := context.WithCancel(s.ctx)
 
-	newLimiter := rate.NewLimiter(ctx, rt, rt)
+	newLimiter := rate.NewLimiter(ctx, limit, limit)
 	s.jitter.Lock()
 	oldLimiter := s.jitter.Limiter
 	s.jitter.Limiter = newLimiter

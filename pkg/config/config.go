@@ -160,9 +160,8 @@ type Cluster struct {
 }
 
 type Backend struct {
-	ID                       string        // virtual field, autofill
+	ID                       string        `yaml:"id"`
 	Enabled                  bool          `yaml:"enabled"`
-	Name                     string        `yaml:"name"`
 	Scheme                   string        `yaml:"scheme"` // http or https
 	SchemeBytes              []byte        // virtual field, Scheme converted to []byte
 	Host                     string        `yaml:"host"` // backend.example.com

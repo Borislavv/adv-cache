@@ -1,17 +1,16 @@
 cache:
   env: "dev"
   enabled: true
-  cfg_reload_check_interval: "1s"
 
   logs:
-    level: "debug"
+    level: "info"
     stats: true # Should log metrics in /std/out?
 
   runtime:
-    gomaxprocs: 6
+    gomaxprocs: 12
 
   api:
-    name: "advCache.starTeam:8080"
+    name: "advCache.starTeam"
     port: "8020"
 
   upstream:
@@ -21,19 +20,33 @@ cache:
     #  2. 'deny'  - will immediately discard request by returning ErrNoAvailableBackends error.
     #     Best performance, lowest memory and CPU usage due to we do not stack goroutines in the Scheduler (moreover each routine it is at least allocation).
     policy: "await" # allowed: "await", "deny"
+    #    backend:
+    #      ID: "advCache"
+    #      enabled: true
+    #      host: "localhost:8020"
+    #      scheme: "http"
+    #      rate: 250000
+    #      timeout: "5s"
+    #      max_timeout: "3m"
+    #      use_max_timeout_header: "X-Google-Bot"
+    #      healthcheck: "/k8s/probe"
     cluster:
       backends:
-        - host: "localhost:8080"
+        - id: "advCache"
+          enabled: true
+          host: "localhost:8080"
           scheme: "http"
           rate: 250000
           timeout: "5s"
           max_timeout: "3m"
           use_max_timeout_header: "X-Google-Bot"
           healthcheck: "/k8s/probe"
-        - host: "seo-master.lux.kube.xbet.lan"
+        - id: "seoLux"
+          enabled: false
+          host: "seo-master.lux.kube.xbet.lan"
           scheme: "https"
-          rate: 250000
-          timeout: "10s"
+          rate: 150
+          timeout: "5s"
           max_timeout: "3m"
           use_max_timeout_header: "X-Google-Bot"
           healthcheck: "/healthcheck"
@@ -60,7 +73,7 @@ cache:
   refresh:
     enabled: true     # Should this be run?
     ttl: "24h"        # Will be used be default with 200 status code.
-    rate: 80          # Rate limiting reqs to backend per second.
+    rate: 8           # Rate limiting reqs to backend per second.
     scan_rate: 10000  # Rate limiting of num scans items per second.
     beta: 0.4         # Controls randomness in refresh timing to avoid thundering herd (from 0 to 1).
     coefficient: 0.5  # Starts attempts to renew data after TTL*coefficient=50% (12h if whole TTL is 24h)
@@ -80,9 +93,9 @@ cache:
     /api/v2/pagedata:
       refresh:
         enabled: true     # Enabled refresh of this path.
-        ttl: "1h"         # Will be used be default with 200 status code.
+        ttl: "12h"         # Will be used be default with 200 status code.
         beta: 0.4         # Controls randomness in refresh timing to avoid thundering herd (from 0 to 1).
-        coefficient: 0.2  # Starts attempts to renew data after TTL*coefficient=50% (12h if whole TTL is 24h)
+        coefficient: 0.5  # Starts attempts to renew data after TTL*coefficient=50% (12h if whole TTL is 24h)
       cache_key:
         query: # Match query parameters by prefix.
           - project[id]
@@ -99,7 +112,6 @@ cache:
           - Cache-Control
           - Vary
           - Strict-Transport-Security
-          - Content-Length
           - Cache-Control
           - X-Content-Digest
           - X-Request-ID

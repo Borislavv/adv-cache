@@ -3,10 +3,10 @@ package upstream
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/rs/zerolog/log"
 	"github.com/valyala/fasthttp"
-	"runtime"
 	"sync"
 	"sync/atomic"
 )
@@ -20,6 +20,7 @@ const (
 
 var (
 	ErrNoBackendsConfigured = errors.New("no backends configured")
+	ErrNoRatesConfigured    = errors.New("no backend rates configured")
 	ErrNoHealthyBackends    = errors.New("no healthy backends")
 	ErrAllBackendsAreBusy   = errors.New("all backends are busy")
 )
@@ -34,8 +35,8 @@ type BackendCluster struct {
 	slotCh <-chan *backendSlot
 
 	// has all backends by their IDs
-	mu  sync.RWMutex
-	all map[string]*backendSlot
+	mu  sync.RWMutex            // mutex under all map
+	all map[string]*backendSlot // slots by backend id
 }
 
 func NewBackendCluster(ctx context.Context, cfg config.Config) (*BackendCluster, error) {
@@ -102,25 +103,39 @@ func (c *BackendCluster) initBackends(ctx context.Context, backendsCfg []*config
 		return ErrNoBackendsConfigured
 	}
 
-	all := make(map[string]*backendSlot, numBackends)
-	slotCh := make(chan *backendSlot, runtime.GOMAXPROCS(0)*4)
-	c.slotCh = slotCh
-	c.all = all
+	slotsChCap := 0
+	for i := 0; i < numBackends; i++ {
+		slotsChCap += backendsCfg[i].Rate
+	}
+	if slotsChCap <= 0 {
+		return ErrNoRatesConfigured
+	}
+
+	allSlotsByID := make(map[string]*backendSlot, numBackends)
+	slotsCh := make(chan *backendSlot, slotsChCap)
 
 	for _, backendCfg := range backendsCfg {
-		slot := newBackendSlot(ctx, backendCfg, slotCh)
-		name := slot.backend.Name()
-		if healthcheckErr := slot.probe(); healthcheckErr != nil {
-			slot.quarantine()
-			log.Warn().Msgf("[upstream] backend '%s' add as sick: %s", name, healthcheckErr.Error())
-		} else {
-			log.Info().Msgf("[upstream] backend '%s' add as healthy", name)
+		if _, found := allSlotsByID[backendCfg.ID]; found {
+			return fmt.Errorf("config has duplicate backends '%s'", backendCfg.ID)
 		}
-		all[name] = slot
+		slot := newBackendSlot(ctx, backendCfg, slotsCh)
+		if healthcheckErr := slot.probe(); healthcheckErr != nil {
+			if slot.quarantine("failed probe while init.") {
+				log.Warn().Msgf("[upstream] backend '%s' add as sick: %s", slot.backend.Name(), healthcheckErr.Error())
+			} else {
+				return fmt.Errorf("failed to move new backend '%s' into quarantine", slot.backend.Name())
+			}
+		} else {
+			log.Info().Msgf("[upstream] backend '%s' add as healthy", slot.backend.Name())
+		}
+		allSlotsByID[slot.backend.id] = slot
 	}
-	if len(all) == 0 {
+	if len(allSlotsByID) == 0 {
 		return ErrNoHealthyBackends
 	}
+
+	c.all = allSlotsByID
+	c.slotCh = slotsCh
 
 	return nil
 }

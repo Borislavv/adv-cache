@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"context"
+	"fmt"
 	"github.com/Borislavv/advanced-cache/pkg/utils"
 	"github.com/rs/zerolog/log"
 	"time"
@@ -46,8 +47,8 @@ func (c *BackendCluster) checkHealthyIdle() {
 		}
 		go func(slot *backendSlot) {
 			_ = slot.probe()
-			if slot.shouldQuarantineByProbes() {
-				slot.quarantine()
+			if probes, shouldQuarantine := slot.shouldQuarantineByProbes(); shouldQuarantine {
+				slot.quarantine(fmt.Sprintf("%d failed probes in a row", probes))
 			}
 		}(slot)
 	}
@@ -62,10 +63,10 @@ func (c *BackendCluster) checkQuarantine() {
 		}
 		go func(slot *backendSlot) {
 			_ = slot.probe()
-			if slot.shouldCureByProbes() {
-				slot.cure()
-			} else if slot.shouldKill() {
-				slot.kill()
+			if probes, shouldCure := slot.shouldCureByProbes(); shouldCure {
+				slot.cure(fmt.Sprintf("%d success probes in a row", probes))
+			} else if downtime, shouldKill := slot.shouldKill(); shouldKill {
+				slot.kill(fmt.Sprintf("%s in downtime", downtime.String()))
 			}
 		}(slot)
 	}
@@ -81,10 +82,10 @@ func (c *BackendCluster) checkDead() {
 
 		go func(slot *backendSlot) {
 			_ = slot.probe()
-			if slot.shouldResurrect() {
-				slot.resurrect()
-			} else if slot.shouldBury() {
-				c.bury(slot)
+			if probes, shouldResurrect := slot.shouldResurrect(); shouldResurrect {
+				slot.resurrect(fmt.Sprintf("%d success probes in a row", probes))
+			} else if downtime, shouldBury := slot.shouldBury(); shouldBury {
+				c.bury(slot, fmt.Sprintf("%s in downtime", downtime.String()))
 			}
 		}(slot)
 	}
@@ -100,15 +101,21 @@ func (c *BackendCluster) checkErrRate() {
 
 		errRate := slot.errRate()
 		if errRate >= errMaxRateThreshold {
-			slot.quarantine()
+			why := fmt.Sprintf("too high error rate=%.f%%", errRate*100)
+			slot.quarantine(why)
 		} else if errRate < errMaxRateThreshold && errRate >= errMinRateThreshold {
-			if slot.mayBeThrottled() {
-				slot.throttle()
+			if throttles, shouldThrottle := slot.shouldThrottle(); shouldThrottle {
+				why := fmt.Sprintf("high error rate=%.f%%", errRate*100)
+				slot.throttle(why)
 			} else {
-				slot.quarantine() // should be unthrottled after quarantine or killed otherwise
+				why := fmt.Sprintf("max throttles percent %d%% was reached", throttles*10)
+				slot.quarantine(why)
 			}
-		} else if slot.mayBeUnThrottled() && errRate < errMinRateThreshold {
-			slot.unthrottle()
+		} else if errRate < errMinRateThreshold {
+			if throttles, shouldUnthrottle := slot.shouldUnthrottle(); shouldUnthrottle {
+				why := fmt.Sprintf("low error rate, backend throttled for %d%% at now", throttles*10)
+				slot.unthrottle(why)
+			}
 		}
 	}
 	c.mu.RUnlock()

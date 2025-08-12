@@ -93,7 +93,7 @@ type BackendNode struct {
 // NewBackend creates a new instance of BackendNode.
 func NewBackend(cfg *config.Backend) *BackendNode {
 	backend := &BackendNode{
-		id:  cfg.Name,
+		id:  cfg.ID,
 		cfg: &atomic.Pointer[config.Backend]{},
 	}
 	backend.cfg.Store(cfg)
