@@ -40,28 +40,28 @@ type backendSlot struct {
 	nocopy.NoCopy
 	ctx            context.Context
 	cancelProvider atomic.Pointer[context.CancelFunc]
-	originRate     int                             // want to have been able to back off to origin value
-	state          atomic.Int32                    // current state
-	total          atomic.Int64                    // num of requests
-	errors         atomic.Int64                    // num of errors
-	throttles      atomic.Int64                    // num of throttles
-	sucProbes      atomic.Int64                    // num of success probes in a row
-	errProbes      atomic.Int64                    // num of errorred probes in a row
-	cfg            *atomic.Pointer[config.Backend] // hot reloadable config (cannot be modified outside)
-	rate           atomic.Pointer[rate.Limiter]    // atomic for hot switch of rate limiter on slot
-	backend        *BackendNode                    // atomic for hot switch backends on config reload
-	outRate        chan<- *backendSlot             // need to send current pointer on available rate slot (providing itself on execution requests)
-	sickedAt       atomic.Int64                    // unix nano
-	killedAt       atomic.Int64                    // unix nano
+	originRate     int                          // want to have been able to back off to origin value
+	state          atomic.Int32                 // current state
+	total          atomic.Int64                 // num of requests
+	errors         atomic.Int64                 // num of errors
+	throttles      atomic.Int64                 // num of throttles
+	sucProbes      atomic.Int64                 // num of success probes in a row
+	errProbes      atomic.Int64                 // num of errorred probes in a row
+	rate           atomic.Pointer[rate.Limiter] // atomic for hot switch of rate limiter on slot
+	cfg            *config.Backend
+	backend        *BackendNode
+	outRate        chan<- *backendSlot // need to send current pointer on available rate slot (providing itself on execution requests)
+	sickedAt       atomic.Int64        // unix nano
+	killedAt       atomic.Int64        // unix nano
 }
 
 // newBackendSlot - makes new backends slot for cluster
-func newBackendSlot(ctx context.Context, cfg *atomic.Pointer[config.Backend], outRate chan<- *backendSlot) *backendSlot {
+func newBackendSlot(ctx context.Context, cfg *config.Backend, outRate chan<- *backendSlot) *backendSlot {
 	slot := &backendSlot{
 		ctx:            ctx,
 		cancelProvider: atomic.Pointer[context.CancelFunc]{},
 		cfg:            cfg,
-		originRate:     cfg.Load().Rate,
+		originRate:     cfg.Rate,
 		rate:           atomic.Pointer[rate.Limiter]{},
 		state:          atomic.Int32{},
 		total:          atomic.Int64{},
@@ -76,9 +76,9 @@ func newBackendSlot(ctx context.Context, cfg *atomic.Pointer[config.Backend], ou
 
 	ctx, cancel := context.WithCancel(ctx)
 	slot.cancelProvider.Store(&cancel)
-	slot.backend = NewBackend(cfg.Load())
+	slot.backend = NewBackend(cfg)
 
-	go slot.renewRateProvider(cfg.Load().Rate)
+	go slot.renewRateProvider(cfg.Rate)
 
 	return slot
 }
@@ -181,7 +181,7 @@ func (s *backendSlot) cure() bool {
 		log.Info().Msgf("[upstream][cluster] backend '%s' was cured (sick -> healthy)", name)
 		return true
 	} else {
-		log.Debug().Msgf("[upstream][cluster] backend '%s' was not cured because CAS failed", name)
+		log.Info().Msgf("[upstream][cluster] backend '%s' was not cured because CAS failed", name)
 		return false
 	}
 }
@@ -207,7 +207,7 @@ func (s *backendSlot) quarantine() bool {
 		log.Info().Msgf("[upstream][cluster] backend '%s' was quarantined (healthy -> sick)", name)
 		return true
 	} else {
-		log.Debug().Msgf("[upstream][cluster] backend '%s' was not quarantined because CAS failed", name)
+		log.Info().Msgf("[upstream][cluster] backend '%s' was not quarantined because CAS failed", name)
 		return false
 	}
 }
@@ -232,7 +232,7 @@ func (s *backendSlot) kill() bool {
 		log.Info().Msgf("[upstream][cluster] backend '%s' was killed (sick -> dead)", name)
 		return true
 	} else {
-		log.Debug().Msgf("[upstream][cluster] backend '%s' was not killed because CAS failed", name)
+		log.Info().Msgf("[upstream][cluster] backend '%s' was not killed because CAS failed", name)
 		return false
 	}
 }
@@ -257,7 +257,7 @@ func (s *backendSlot) resurrect() bool {
 		log.Info().Msgf("[upstream][cluster] backend '%s' was resurrected (dead -> healthy)", name)
 		return true
 	} else {
-		log.Debug().Msgf("[upstream][cluster] backend '%s' was not resurrected because CAS failed", name)
+		log.Info().Msgf("[upstream][cluster] backend '%s' was not resurrected because CAS failed", name)
 		return false
 	}
 }
@@ -305,7 +305,7 @@ func (s *backendSlot) unthrottle() {
 			log.Info().Msgf("[upstream][cluster] unthrottling backend '%s' due to low error rate", s.backend.Name())
 			go s.renewRateProvider(int(rt))
 		} else {
-			log.Debug().Msgf("[upstream][cluster] unthrottling backend '%s' failed by CAS", s.backend.Name())
+			log.Info().Msgf("[upstream][cluster] unthrottling backend '%s' failed by CAS", s.backend.Name())
 		}
 	}
 }

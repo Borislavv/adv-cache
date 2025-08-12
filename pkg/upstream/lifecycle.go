@@ -23,7 +23,7 @@ func (c *BackendCluster) monitor(ctx context.Context) {
 	each5Sec := utils.NewTicker(ctx, time.Second*5)
 	eachMinute := utils.NewTicker(ctx, time.Minute)
 
-	const minuteIters = 12
+	const minuteItersBy5Secs = 12
 	i := 0
 	for {
 		select {
@@ -33,7 +33,7 @@ func (c *BackendCluster) monitor(ctx context.Context) {
 			go c.checkHealthyIdle()
 			go c.checkQuarantine()
 			go c.showBackendsState()
-			if i >= minuteIters {
+			if i >= minuteItersBy5Secs {
 				go c.checkErrRate()
 			} else {
 				go c.checkErrRateAndResetErrRate()

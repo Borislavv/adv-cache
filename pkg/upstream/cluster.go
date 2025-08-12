@@ -39,43 +39,17 @@ type BackendCluster struct {
 }
 
 func NewBackendCluster(ctx context.Context, cfg config.Config) (*BackendCluster, error) {
-	backendsCfg := cfg.Upstream().Cluster.Backends
-	numBackends := len(backendsCfg)
-	if numBackends == 0 {
-		return nil, ErrNoBackendsConfigured
-	}
-
-	all := make(map[string]*backendSlot, numBackends)
-	slotCh := make(chan *backendSlot, runtime.GOMAXPROCS(0)*4)
-
-	for _, backendCfg := range backendsCfg {
-		atomicCfg := atomic.Pointer[config.Backend]{}
-		atomicCfg.Store(backendCfg)
-
-		slot := newBackendSlot(ctx, &atomicCfg, slotCh)
-		name := slot.backend.Name()
-		if healthcheckErr := slot.probe(); healthcheckErr != nil {
-			slot.quarantine()
-			log.Warn().Msgf("[upstream][cluster] backend '%s' add as sick: %s", name, healthcheckErr.Error())
-		} else {
-			log.Info().Msgf("[upstream][cluster] backend '%s' add as healthy", name)
-		}
-		all[name] = slot
-	}
-	if len(all) == 0 {
-		return nil, ErrNoHealthyBackends
-	}
-
 	cluster := &BackendCluster{
 		ctx:           ctx,
-		slotCh:        slotCh,
-		all:           all,
 		isAwaitPolicy: atomic.Bool{},
 	}
-	isAwaitPolicy := policy(cfg.Upstream().Policy) == await
-	cluster.isAwaitPolicy.Store(isAwaitPolicy)
 
-	go cluster.monitor(ctx)
+	if err := cluster.initBackends(ctx, cfg.Upstream().Cluster.Backends); err != nil {
+		return nil, err
+	} else {
+		cluster.isAwaitPolicy.Store(policy(cfg.Upstream().Policy) == await)
+		go cluster.monitor(ctx)
+	}
 
 	return cluster, nil
 }
@@ -120,4 +94,33 @@ func (c *BackendCluster) hasNotHealthyBackends() bool {
 
 func (c *BackendCluster) shouldWaitAvailableSlot() bool {
 	return c.isAwaitPolicy.Load()
+}
+
+func (c *BackendCluster) initBackends(ctx context.Context, backendsCfg []*config.Backend) error {
+	numBackends := len(backendsCfg)
+	if numBackends == 0 {
+		return ErrNoBackendsConfigured
+	}
+
+	all := make(map[string]*backendSlot, numBackends)
+	slotCh := make(chan *backendSlot, runtime.GOMAXPROCS(0)*4)
+	c.slotCh = slotCh
+	c.all = all
+
+	for _, backendCfg := range backendsCfg {
+		slot := newBackendSlot(ctx, backendCfg, slotCh)
+		name := slot.backend.Name()
+		if healthcheckErr := slot.probe(); healthcheckErr != nil {
+			slot.quarantine()
+			log.Warn().Msgf("[upstream][cluster] backend '%s' add as sick: %s", name, healthcheckErr.Error())
+		} else {
+			log.Info().Msgf("[upstream][cluster] backend '%s' add as healthy", name)
+		}
+		all[name] = slot
+	}
+	if len(all) == 0 {
+		return ErrNoHealthyBackends
+	}
+
+	return nil
 }
