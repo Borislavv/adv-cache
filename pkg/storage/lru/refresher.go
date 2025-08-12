@@ -65,8 +65,8 @@ func (r *Refresh) Run() {
 }
 
 func (r *Refresh) runInstances() {
-	scanRateCh := rate.NewLimiter(r.ctx, r.cfg.Refresh().ScanRate, r.cfg.Refresh().ScanRate).Chan()
-	upstreamRateCh := rate.NewLimiter(r.ctx, r.cfg.Refresh().Rate, r.cfg.Refresh().Rate).Chan()
+	scanRateCh := rate.NewLimiter(r.ctx, r.cfg.Refresh().ScanRate).Chan()
+	upstreamRateCh := rate.NewLimiter(r.ctx, r.cfg.Refresh().Rate).Chan()
 
 	for id := 0; id < workersNum; id++ {
 		go func(id int) {

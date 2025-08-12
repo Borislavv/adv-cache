@@ -81,16 +81,16 @@ func (c *BackendCluster) Fetch(rule *config.Rule, inCtx *fasthttp.RequestCtx, in
 func (c *BackendCluster) fetch(slot *backendSlot, rule *config.Rule, inCtx *fasthttp.RequestCtx, inReq *fasthttp.Request) (
 	outReq *fasthttp.Request, outResp *fasthttp.Response, releaser func(*fasthttp.Request, *fasthttp.Response), err error,
 ) {
-	slot.total.Add(1)
+	slot.hotPathCounters.total.Add(1)
 	outReq, outResp, releaser, err = slot.backend.Fetch(rule, inCtx, inReq)
 	if err != nil || outResp.StatusCode() > fasthttp.StatusInternalServerError {
-		slot.errors.Add(1)
+		slot.hotPathCounters.errors.Add(1)
 	}
 	return
 }
 
 func (c *BackendCluster) hasNotHealthyBackends() bool {
-	return healthyBackendsNum.Load() <= 0
+	return healthyBackends.Load() <= 0
 }
 
 func (c *BackendCluster) shouldWaitAvailableSlot() bool {
@@ -118,17 +118,23 @@ func (c *BackendCluster) initBackends(ctx context.Context, backendsCfg []*config
 		if _, found := allSlotsByID[backendCfg.ID]; found {
 			return fmt.Errorf("config has duplicate backends '%s'", backendCfg.ID)
 		}
-		slot := newBackendSlot(ctx, backendCfg, slotsCh)
+
+		allSlotsByID[backendCfg.ID] = newBackendSlot(ctx, backendCfg, slotsCh)
+		slot, found := allSlotsByID[backendCfg.ID]
+		if !found {
+			return fmt.Errorf("cannot find added backend '%s'", backendCfg.ID)
+		}
+
 		if healthcheckErr := slot.probe(); healthcheckErr != nil {
-			if slot.quarantine("failed probe while init.") {
+			if slot.quarantine("failed probe while init.", true) {
 				log.Warn().Msgf("[upstream] backend '%s' add as sick: %s", slot.backend.Name(), healthcheckErr.Error())
 			} else {
-				return fmt.Errorf("failed to move new backend '%s' into quarantine", slot.backend.Name())
+				return fmt.Errorf("workflow error, failed to move new backend '%s' into quarantine", slot.backend.Name())
 			}
-		} else {
-			log.Info().Msgf("[upstream] backend '%s' add as healthy", slot.backend.Name())
+			continue
 		}
-		allSlotsByID[slot.backend.id] = slot
+
+		log.Info().Msgf("[upstream] backend '%s' add as healthy", slot.backend.Name())
 	}
 	if len(allSlotsByID) == 0 {
 		return ErrNoHealthyBackends

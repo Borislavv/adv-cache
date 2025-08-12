@@ -6,19 +6,16 @@ import (
 )
 
 type Limiter struct {
-	cancel context.CancelFunc
-	ch     chan struct{}
-	l      ratelimit.Limiter
-	limit  int
+	ch    chan struct{}
+	l     ratelimit.Limiter
+	limit int
 }
 
-func NewLimiter(gCtx context.Context, limit, burst int) *Limiter {
-	ctx, cancel := context.WithCancel(gCtx)
+func NewLimiter(ctx context.Context, limit int) *Limiter {
 	limiter := &Limiter{
-		cancel: cancel,
-		limit:  limit,
-		ch:     make(chan struct{}),
-		l:      ratelimit.New(limit),
+		limit: limit,
+		ch:    make(chan struct{}),
+		l:     ratelimit.New(limit),
 	}
 	go limiter.provider(ctx)
 	return limiter
@@ -46,8 +43,4 @@ func (l *Limiter) Limit() int {
 
 func (l *Limiter) Chan() <-chan struct{} {
 	return l.ch
-}
-
-func (l *Limiter) Stop() {
-	l.cancel()
 }

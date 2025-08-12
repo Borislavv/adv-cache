@@ -9,7 +9,6 @@ import (
 	"github.com/valyala/fasthttp"
 	"net"
 	"net/http"
-	"sync/atomic"
 	"time"
 	"unsafe"
 )
@@ -65,19 +64,11 @@ var httpClient = &fasthttp.Client{
 	MaxResponseBodySize: 0,
 }
 
-// Backend is the subset of methods the balancer depends on. Methods must backend
-// thread‑safe.
-//
-// Imposing a very small surface keeps the cluster independent from the concrete
-// backend implementation.
-//
-//nolint:interfacebloat // explicit on purpose
 type Backend interface {
 	ID() string
 	Name() string
 	IsHealthy() error
 	Cfg() *config.Backend
-	Update(cfg *config.Backend) error
 	Fetch(rule *config.Rule, inCtx *fasthttp.RequestCtx, inReq *fasthttp.Request) (
 		outReq *fasthttp.Request, outResp *fasthttp.Response,
 		releaser func(*fasthttp.Request, *fasthttp.Response), err error,
@@ -86,18 +77,13 @@ type Backend interface {
 
 type BackendNode struct {
 	id        string
-	cfg       *atomic.Pointer[config.Backend]
+	cfg       *config.Backend
 	transport *http.Transport
 }
 
 // NewBackend creates a new instance of BackendNode.
 func NewBackend(cfg *config.Backend) *BackendNode {
-	backend := &BackendNode{
-		id:  cfg.ID,
-		cfg: &atomic.Pointer[config.Backend]{},
-	}
-	backend.cfg.Store(cfg)
-	return backend
+	return &BackendNode{id: cfg.ID, cfg: cfg}
 }
 
 // Fetch actually performs the HTTP request to backend and parses the response.
@@ -106,11 +92,6 @@ func NewBackend(cfg *config.Backend) *BackendNode {
 func (b *BackendNode) Fetch(rule *config.Rule, inCtx *fasthttp.RequestCtx, inReq *fasthttp.Request) (
 	outReq *fasthttp.Request, outResp *fasthttp.Response, releaser func(*fasthttp.Request, *fasthttp.Response), err error,
 ) {
-	/**
-	 * Load config of current version.
-	 */
-	cfg := b.cfg.Load()
-
 	/**
 	 * Acquire request and response.
 	 */
@@ -134,15 +115,15 @@ func (b *BackendNode) Fetch(rule *config.Rule, inCtx *fasthttp.RequestCtx, inReq
 	} else {
 		inCtx.Request.CopyTo(outReq)
 	}
-	outReq.URI().SetSchemeBytes(cfg.SchemeBytes) // http or https
-	outReq.URI().SetHostBytes(cfg.HostBytes)     // backend.example.com
+	outReq.URI().SetSchemeBytes(b.cfg.SchemeBytes) // http or https
+	outReq.URI().SetHostBytes(b.cfg.HostBytes)     // backend.example.com
 
 	/**
 	 * Determines, whether it should use a regular timeout or the maximum value.
 	 */
-	var timeout = cfg.Timeout
-	if len(outReq.Header.PeekBytes(cfg.UseMaxTimeoutHeaderBytes)) > 0 {
-		timeout = cfg.MaxTimeout
+	var timeout = b.cfg.Timeout
+	if len(outReq.Header.PeekBytes(b.cfg.UseMaxTimeoutHeaderBytes)) > 0 {
+		timeout = b.cfg.MaxTimeout
 	}
 
 	/**
@@ -193,17 +174,14 @@ func (b *BackendNode) ID() string {
 }
 
 func (b *BackendNode) Name() string {
-	cfg := b.cfg.Load()
-	return fmt.Sprintf("%s (%s://%s)", b.id, cfg.Scheme, cfg.Host)
+	return fmt.Sprintf("%s (%s://%s)", b.id, b.cfg.Scheme, b.cfg.Host)
 }
 
 func (b *BackendNode) Cfg() *config.Backend {
-	return b.cfg.Load()
+	return b.cfg
 }
 
 func (b *BackendNode) IsHealthy() error {
-	cfg := b.cfg.Load()
-
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)
 
@@ -211,21 +189,16 @@ func (b *BackendNode) IsHealthy() error {
 	defer fasthttp.ReleaseResponse(resp)
 
 	uri := req.URI()
-	uri.SetSchemeBytes(cfg.SchemeBytes)    // "http" / "https"
-	uri.SetHostBytes(cfg.HostBytes)        // backend.example.com
-	uri.SetPathBytes(cfg.HealthcheckBytes) // /k8s/probe or /healthcheck for example
+	uri.SetSchemeBytes(b.cfg.SchemeBytes)    // "http" / "https"
+	uri.SetHostBytes(b.cfg.HostBytes)        // backend.example.com
+	uri.SetPathBytes(b.cfg.HealthcheckBytes) // /k8s/probe or /healthcheck for example
 
 	req.Header.SetMethod(fasthttp.MethodGet)
-	if err := httpClient.DoTimeout(req, resp, cfg.Timeout); err != nil {
+	if err := httpClient.DoTimeout(req, resp, b.cfg.Timeout); err != nil {
 		return err
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
 		return ErrNotHealthyStatusCode
 	}
-	return nil
-}
-
-func (b *BackendNode) Update(cfg *config.Backend) error {
-	b.cfg.Store(cfg)
 	return nil
 }

@@ -47,9 +47,12 @@ func (c *BackendCluster) checkHealthyIdle() {
 		}
 		go func(slot *backendSlot) {
 			_ = slot.probe()
+
+			slot.Lock()
 			if probes, shouldQuarantine := slot.shouldQuarantineByProbes(); shouldQuarantine {
-				slot.quarantine(fmt.Sprintf("%d failed probes in a row", probes))
+				slot.quarantine(fmt.Sprintf("%d failed probes in a row", probes), false)
 			}
+			slot.Unlock()
 		}(slot)
 	}
 	c.mu.RUnlock()
@@ -63,11 +66,14 @@ func (c *BackendCluster) checkQuarantine() {
 		}
 		go func(slot *backendSlot) {
 			_ = slot.probe()
+
+			slot.Lock()
 			if probes, shouldCure := slot.shouldCureByProbes(); shouldCure {
-				slot.cure(fmt.Sprintf("%d success probes in a row", probes))
-			} else if downtime, shouldKill := slot.shouldKill(); shouldKill {
-				slot.kill(fmt.Sprintf("%s in downtime", downtime.String()))
+				slot.cure(fmt.Sprintf("%d success probes in a row", probes), false)
+			} else if fallTime, shouldKill := slot.shouldKill(); shouldKill {
+				slot.kill(fmt.Sprintf("%s of fall time", fallTime.String()), false)
 			}
+			slot.Unlock()
 		}(slot)
 	}
 	c.mu.RUnlock()
@@ -82,50 +88,64 @@ func (c *BackendCluster) checkDead() {
 
 		go func(slot *backendSlot) {
 			_ = slot.probe()
+
+			slot.Lock()
 			if probes, shouldResurrect := slot.shouldResurrect(); shouldResurrect {
-				slot.resurrect(fmt.Sprintf("%d success probes in a row", probes))
-			} else if downtime, shouldBury := slot.shouldBury(); shouldBury {
-				c.bury(slot, fmt.Sprintf("%s in downtime", downtime.String()))
+				slot.resurrect(fmt.Sprintf("%d success probes in a row", probes), false)
+			} else if fallTime, shouldBury := slot.shouldBury(); shouldBury {
+				c.bury(slot, fmt.Sprintf("%s of fall time", fallTime.String()), false)
 			}
+			slot.Unlock()
 		}(slot)
 	}
 	c.mu.RUnlock()
 }
 
-func (c *BackendCluster) checkErrRate() {
+func (c *BackendCluster) checkErrRate(reset bool) {
 	c.mu.RLock()
 	for _, slot := range c.all {
-		if slot.isIdle() || !slot.hasHealthyState() {
-			continue // checkHealthyIdle() worker will handle this slot
-		}
+		if !slot.isIdle() && slot.hasHealthyState() {
+			go func(slot *backendSlot) {
+				slot.Lock()
+				defer slot.Unlock()
 
-		errRate := slot.errRate()
-		if errRate >= errMaxRateThreshold {
-			why := fmt.Sprintf("too high error rate=%.f%%", errRate*100)
-			slot.quarantine(why)
-		} else if errRate < errMaxRateThreshold && errRate >= errMinRateThreshold {
-			if throttles, shouldThrottle := slot.shouldThrottle(); shouldThrottle {
-				why := fmt.Sprintf("high error rate=%.f%%", errRate*100)
-				slot.throttle(why)
-			} else {
-				why := fmt.Sprintf("max throttles percent %d%% was reached", throttles*10)
-				slot.quarantine(why)
-			}
-		} else if errRate < errMinRateThreshold {
-			if throttles, shouldUnthrottle := slot.shouldUnthrottle(); shouldUnthrottle {
-				why := fmt.Sprintf("low error rate, backend throttled for %d%% at now", throttles*10)
-				slot.unthrottle(why)
-			}
-		}
-	}
-	c.mu.RUnlock()
-}
+				if reset {
+					defer func() {
+						slot.hotPathCounters.total.Store(0)
+						slot.hotPathCounters.errors.Store(0)
+					}()
+				}
 
-func (c *BackendCluster) resetErrRate() {
-	c.mu.RLock()
-	for _, slot := range c.all {
-		slot.total.Store(0)
-		slot.errors.Store(0)
+				errRate := slot.errRate()
+				if errRate >= errMaxRateThreshold {
+					why := fmt.Sprintf("too high error rate=%.f%%", errRate*100)
+					slot.quarantine(why, false)
+					return
+				}
+
+				if errRate < errMaxRateThreshold && errRate >= errMinRateThreshold {
+					if throttles, shouldThrottle := slot.shouldThrottle(); shouldThrottle {
+						why := fmt.Sprintf("high error rate=%.f%%", errRate*100)
+						slot.throttle(why)
+					} else {
+						why := fmt.Sprintf("max throttles percent %d%% was reached", throttles*10)
+						slot.quarantine(why, false)
+					}
+					return
+				}
+
+				if errRate < errMinRateThreshold {
+					if throttles, shouldUnthrottle := slot.shouldUnthrottle(); shouldUnthrottle {
+						why := fmt.Sprintf("low error rate, backend throttled for %d%% at now", throttles*10)
+						slot.unthrottle(why)
+					}
+					return
+				}
+			}(slot)
+		} else if reset {
+			slot.hotPathCounters.total.Store(0)
+			slot.hotPathCounters.errors.Store(0)
+		}
 	}
 	c.mu.RUnlock()
 }
@@ -137,10 +157,11 @@ func (c *BackendCluster) watchMinuteErrRateAndReset() {
 		case <-c.ctx.Done():
 			return
 		case <-time.After(time.Second * 10):
-			c.checkErrRate()
 			if i = i - 1; i <= 0 {
-				c.resetErrRate()
+				c.checkErrRate(true)
 				return
+			} else {
+				c.checkErrRate(false)
 			}
 		}
 	}
@@ -149,33 +170,42 @@ func (c *BackendCluster) watchMinuteErrRateAndReset() {
 func (c *BackendCluster) showBackendsState() {
 	c.mu.RLock()
 	for _, slot := range c.all {
-		var (
-			bName     = slot.upstream.backend.Name()
-			bState    = slotState(slot.state.Load()).String()
-			total     = slot.total.Load()
-			errors    = slot.errors.Load()
-			errRate   float64
-			sucProbes int64
-			errProbes int64
-			rateLimit int
-		)
+		go func(slot *backendSlot) {
+			slot.RLock()
+			defer slot.RUnlock()
 
-		slot.counters.RLock()
-		sucProbes = slot.sucProbes
-		errProbes = slot.errProbes
-		slot.counters.RUnlock()
+			var (
+				total  = slot.hotPathCounters.total.Load()
+				errors = slot.hotPathCounters.errors.Load()
+			)
 
-		slot.jitter.RLock()
-		rateLimit = slot.jitter.Limit()
-		slot.jitter.RUnlock()
-
-		if total > 0 {
-			errRate = float64(errors) / float64(total)
-		}
-
-		log.Info().Msgf("[upstream] backend '%s' is %s (sucProbs=%d, errProbs=%d, errRate=%.f%%{reqs=%d, errs=%d}, availRate=%d)",
-			bName, bState, sucProbes, errProbes, errRate*100, total, errors, rateLimit,
-		)
+			log.Info().Msgf(
+				"[upstream][%s] %s={probes: {succes=%d, error=%d}, rate: {err=%.f%%, total=%d, errors=%d, limit=%drps}}",
+				slot.state.String(), slot.upstream.backend.id, slot.counters.sucProbes, slot.counters.errProbes,
+				safeDivide(float64(errors), float64(total))*100, total, errors, slot.jitter.limit,
+			)
+		}(slot)
 	}
+	c.showHealthinessState()
 	c.mu.RUnlock()
+}
+
+func (c *BackendCluster) showHealthinessState() {
+	hb := healthyBackends.Load()
+	if hb > 0 {
+		var postfix string
+		if hb > 1 {
+			postfix = "s"
+		}
+		log.Info().Msgf("[upstream][cluster] has %d healthy backend%s (total=%d)", hb, postfix, len(c.all))
+	} else {
+		log.Info().Msgf("[upstream][cluster] hasn't healthy backends (total=%d)", len(c.all))
+	}
+}
+
+func safeDivide(a, b float64) float64 {
+	if b == 0 {
+		return 0
+	}
+	return a / b
 }

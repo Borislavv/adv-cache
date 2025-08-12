@@ -220,7 +220,7 @@ func (e *Entry) DumpBuffer(r *fasthttp.RequestCtx) {
 		buf.Write(pair[1])
 	}
 
-	fmt.Println("buffer--->>>>", buf.String())
+	fmt.Println("DumpBuffer: ", buf.String())
 }
 
 func (e *Entry) Fingerprint() [16]byte {
