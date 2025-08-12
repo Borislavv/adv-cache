@@ -263,12 +263,12 @@ func (s *backendSlot) resurrect() bool {
 }
 
 // throttle - reduces rate of released tokens for given percent from origin config value.
-func (s *backendSlot) throttle(throttlesRepeat ...int64) {
+func (s *backendSlot) throttle(newThrottles ...int64) {
 	var repeatNum = s.throttles.Load() + 1
-	if len(throttlesRepeat) > 1 || (len(throttlesRepeat) == 1 && (throttlesRepeat[0] > maxThrottles || throttlesRepeat[0] < 0)) {
-		panic("throttle: wrong usage of throttlesRepeat param")
-	} else if len(throttlesRepeat) == 1 {
-		repeatNum = throttlesRepeat[0]
+	if len(newThrottles) > 1 || (len(newThrottles) == 1 && (newThrottles[0] > maxThrottles || newThrottles[0] < 0)) {
+		panic("throttle: wrong usage of newThrottles param")
+	} else if len(newThrottles) == 1 {
+		repeatNum = newThrottles[0]
 	}
 	const hundred float64 = 100
 	or := float64(s.originRate)
