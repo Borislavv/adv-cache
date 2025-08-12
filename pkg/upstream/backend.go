@@ -158,6 +158,9 @@ func (b *BackendNode) Fetch(rule *config.Rule, inCtx *fasthttp.RequestCtx, inReq
 	 */
 	b.filterHeaders(rule, outResp)
 
+	/**
+	 * Respond with non-default releaser or outReq and outResp will be leaked from fasthttp internal pools!
+	 */
 	return outReq, outResp, releaser, nil
 }
 

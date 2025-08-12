@@ -37,7 +37,7 @@ type Cache struct {
 	cfg           config.Config
 	ctx           context.Context
 	cancel        context.CancelFunc
-	cluster       upstream.Upstream
+	backend       upstream.Upstream
 	db            storage.Storage
 	probe         liveness.Prober
 	server        server.Http
@@ -53,14 +53,18 @@ func NewApp(ctx context.Context, cfg config.Config, probe liveness.Prober, isInt
 		}
 	}()
 
-	var cluster upstream.Upstream
-	if cluster, err = upstream.NewBackendCluster(ctx, cfg); err != nil {
-		log.Error().Err(err).Msg("[app] failed to make a new upstream cluster")
-		return nil, err
+	var backend upstream.Upstream
+	if cfg.Upstream().Cluster != nil {
+		if backend, err = upstream.NewBackendCluster(ctx, cfg); err != nil {
+			log.Error().Err(err).Msg("[app] failed to make a new upstream backend")
+			return nil, err
+		}
+	} else {
+		backend = upstream.NewBackend(cfg.Upstream().Backend)
 	}
 
-	db := lru.NewStorage(ctx, cfg, cluster)
-	srv, err := server.New(ctx, cfg, db, cluster, probe, metrics.New())
+	db := lru.NewStorage(ctx, cfg, backend)
+	srv, err := server.New(ctx, cfg, db, backend, probe, metrics.New())
 	if err != nil {
 		cancel()
 		return nil, err
@@ -73,7 +77,7 @@ func NewApp(ctx context.Context, cfg config.Config, probe liveness.Prober, isInt
 		probe:         probe,
 		db:            db,
 		server:        srv,
-		cluster:       cluster,
+		backend:       backend,
 		isInteractive: isInteractive,
 	}, nil
 }

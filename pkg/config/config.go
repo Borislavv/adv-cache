@@ -18,55 +18,56 @@ const (
 
 type Config interface {
 	IsProd() bool
-	SetAsProd()
-
-	IsDev() bool
-	SetAsDev()
-
-	IsTest() bool
-	SetAsTest()
-
 	IsEnabled() bool
 	SetEnabled(v bool)
-
-	CheckWhetherCfgWasReloadedInterval() int64
-	SetCheckWhetherCfgWasReloadedInterval(v int64)
-
 	Runtime() *Runtime
-	SetRuntime(v *Runtime)
-
 	Api() *Api
-	SetApi(v *Api)
-
 	Upstream() *Upstream
-	SetUpstream(v *Upstream)
-
 	Data() *Data
-	SetData(v *Data)
-
 	Refresh() *Refresh
-	SetRefresh(v *Refresh)
-
 	Eviction() *Eviction
-	SetEviction(v *Eviction)
-
 	Storage() *Storage
-	SetStorage(v *Storage)
-
-	Logs() *Logs
-	SetLogs(v *Logs)
-
 	K8S() *K8S
-	SetK8S(v *K8S)
-
-	Metrics() *Metrics
-	SetMetrics(v *Metrics)
-
 	ForceGC() *ForceGC
-	SetForceGC(v *ForceGC)
+	Rule(path string) (*Rule, bool)
+}
 
-	Rule(path string) (*atomic.Pointer[Rule], bool)
-	SetRule(path string, v *Rule) bool
+func (c *Cache) IsEnabled() bool {
+	return c.Cache.AtomicEnabled.Load()
+}
+func (c *Cache) SetEnabled(v bool) {
+	c.Cache.AtomicEnabled.Store(v)
+}
+func (c *Cache) Runtime() *Runtime {
+	return c.Cache.Runtime
+}
+func (c *Cache) Api() *Api {
+	return c.Cache.Api
+}
+func (c *Cache) Upstream() *Upstream {
+	return c.Cache.Upstream
+}
+func (c *Cache) Data() *Data {
+	return c.Cache.Data
+}
+func (c *Cache) Refresh() *Refresh {
+	return c.Cache.Refresh
+}
+func (c *Cache) Eviction() *Eviction {
+	return c.Cache.Eviction
+}
+func (c *Cache) Storage() *Storage {
+	return c.Cache.Storage
+}
+func (c *Cache) K8S() *K8S {
+	return c.Cache.K8S
+}
+func (c *Cache) ForceGC() *ForceGC {
+	return c.Cache.ForceGC
+}
+func (c *Cache) Rule(path string) (*Rule, bool) {
+	v, ok := c.Cache.Rules[path]
+	return v, ok
 }
 
 type TraefikIntermediateConfig struct {
@@ -94,8 +95,9 @@ type Env struct {
 }
 
 type CacheBox struct {
-	Env                 string           `yaml:"env"`
-	Enabled             bool             `yaml:"enabled"`
+	Env                 string `yaml:"env"`
+	Enabled             bool   `yaml:"enabled"`
+	AtomicEnabled       atomic.Bool
 	CheckReloadInterval time.Duration    `yaml:"cfg_reload_check_interval"`
 	Logs                *Logs            `yaml:"logs"`
 	Runtime             *Runtime         `yaml:"runtime"`
@@ -150,11 +152,11 @@ type Logs struct {
 type Upstream struct {
 	Policy  string   `yaml:"policy"`
 	Cluster *Cluster `yaml:"cluster"`
+	Backend *Backend `yaml:"backend"`
 }
 
 type Cluster struct {
-	Backends       []*Backend `yaml:"backends"`
-	AtomicBackends []*atomic.Pointer[Backend]
+	Backends []*Backend `yaml:"backends"`
 }
 
 type Backend struct {
@@ -274,7 +276,7 @@ type RuleValue struct {
 	HeadersMap map[string]struct{} // Virtual field
 }
 
-func LoadConfig(path string) (*AtomicCache, error) {
+func LoadConfig(path string) (*Cache, error) {
 	dir, err := os.Getwd()
 	if err != nil {
 		return nil, err
@@ -299,6 +301,8 @@ func LoadConfig(path string) (*AtomicCache, error) {
 		return nil, fmt.Errorf("unmarshal yaml from %s: %w", path, err)
 	}
 
+	cfg.Cache.AtomicEnabled.Store(cfg.Cache.Enabled)
+
 	for rulePath, rule := range cfg.Cache.Rules {
 		rule.PathBytes = []byte(rulePath)
 
@@ -322,17 +326,21 @@ func LoadConfig(path string) (*AtomicCache, error) {
 		rule.CacheValue.HeadersMap = valueHeadersMap
 	}
 
-	cfg.Cache.Upstream.Cluster.AtomicBackends = make([]*atomic.Pointer[Backend], 0, len(cfg.Cache.Upstream.Cluster.Backends))
-	for i, _ := range cfg.Cache.Upstream.Cluster.Backends {
-		cfg.Cache.Upstream.Cluster.Backends[i].SchemeBytes = []byte(cfg.Cache.Upstream.Cluster.Backends[i].Scheme)
-		cfg.Cache.Upstream.Cluster.Backends[i].HostBytes = []byte(cfg.Cache.Upstream.Cluster.Backends[i].Host)
-		cfg.Cache.Upstream.Cluster.Backends[i].UseMaxTimeoutHeaderBytes = []byte(cfg.Cache.Upstream.Cluster.Backends[i].UseMaxTimeoutHeader)
-		cfg.Cache.Upstream.Cluster.Backends[i].HealthcheckBytes = []byte(cfg.Cache.Upstream.Cluster.Backends[i].Healthcheck)
-
-		currentBackendAtomicPtr := &atomic.Pointer[Backend]{}
-		currentBackendAtomicPtr.Store(cfg.Cache.Upstream.Cluster.Backends[i])
-		cfg.Cache.Upstream.Cluster.AtomicBackends = append(cfg.Cache.Upstream.Cluster.AtomicBackends, currentBackendAtomicPtr)
+	if cfg.Cache.Upstream.Cluster != nil {
+		for i, _ := range cfg.Cache.Upstream.Cluster.Backends {
+			cfg.Cache.Upstream.Cluster.Backends[i].SchemeBytes = []byte(cfg.Cache.Upstream.Cluster.Backends[i].Scheme)
+			cfg.Cache.Upstream.Cluster.Backends[i].HostBytes = []byte(cfg.Cache.Upstream.Cluster.Backends[i].Host)
+			cfg.Cache.Upstream.Cluster.Backends[i].UseMaxTimeoutHeaderBytes = []byte(cfg.Cache.Upstream.Cluster.Backends[i].UseMaxTimeoutHeader)
+			cfg.Cache.Upstream.Cluster.Backends[i].HealthcheckBytes = []byte(cfg.Cache.Upstream.Cluster.Backends[i].Healthcheck)
+		}
+	} else if cfg.Cache.Upstream.Backend != nil {
+		cfg.Cache.Upstream.Backend.SchemeBytes = []byte(cfg.Cache.Upstream.Backend.Scheme)
+		cfg.Cache.Upstream.Backend.HostBytes = []byte(cfg.Cache.Upstream.Backend.Host)
+		cfg.Cache.Upstream.Backend.UseMaxTimeoutHeaderBytes = []byte(cfg.Cache.Upstream.Backend.UseMaxTimeoutHeader)
+		cfg.Cache.Upstream.Backend.HealthcheckBytes = []byte(cfg.Cache.Upstream.Backend.Healthcheck)
+	} else {
+		return nil, fmt.Errorf("no backend configured")
 	}
 
-	return makeConfigAtomic(cfg), nil
+	return cfg, nil
 }

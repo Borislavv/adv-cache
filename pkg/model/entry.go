@@ -959,7 +959,7 @@ func EntryFromBytes(data []byte, cfg config.Config) (*Entry, error) {
 func MatchRule(cfg config.Config, path []byte) *config.Rule {
 	pathStr := unsafe.String(unsafe.SliceData(path), len(path))
 	if rule, ok := cfg.Rule(pathStr); ok {
-		return rule.Load()
+		return rule
 	}
 	return nil
 }
