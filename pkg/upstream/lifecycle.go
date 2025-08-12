@@ -20,27 +20,20 @@ var (
 
 // monitor - serves backends healthiness and availability (adds and takes load by rules)
 func (c *BackendCluster) monitor(ctx context.Context) {
-	each5Sec := utils.NewTicker(ctx, time.Second*5)
+	each5sec := utils.NewTicker(ctx, time.Second*5)
 	eachMinute := utils.NewTicker(ctx, time.Minute)
 
-	const minuteItersBy5Secs = 12
-	i := 0
 	for {
 		select {
 		case <-c.ctx.Done():
 			return
-		case <-each5Sec:
+		case <-each5sec:
 			go c.checkHealthyIdle()
 			go c.checkQuarantine()
 			go c.showBackendsState()
-			if i >= minuteItersBy5Secs {
-				go c.checkErrRate()
-			} else {
-				go c.checkErrRateAndResetErrRate()
-			}
-			i++
 		case <-eachMinute:
 			go c.checkDead()
+			go c.watchMinuteErrRateAndReset()
 		}
 	}
 }
@@ -121,7 +114,7 @@ func (c *BackendCluster) checkErrRate() {
 	c.mu.RUnlock()
 }
 
-func (c *BackendCluster) checkErrRateAndResetErrRate() {
+func (c *BackendCluster) resetErrRate() {
 	c.mu.RLock()
 	for _, slot := range c.all {
 		slot.total.Store(0)
@@ -130,18 +123,51 @@ func (c *BackendCluster) checkErrRateAndResetErrRate() {
 	c.mu.RUnlock()
 }
 
+func (c *BackendCluster) watchMinuteErrRateAndReset() {
+	i := 6
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-time.After(time.Second * 10):
+			c.checkErrRate()
+			if i = i - 1; i <= 0 {
+				c.resetErrRate()
+				return
+			}
+		}
+	}
+}
+
 func (c *BackendCluster) showBackendsState() {
 	c.mu.RLock()
 	for _, slot := range c.all {
-		var errRate float64
-		total := slot.total.Load()
+		var (
+			bName     = slot.upstream.backend.Name()
+			bState    = slotState(slot.state.Load()).String()
+			total     = slot.total.Load()
+			errors    = slot.errors.Load()
+			errRate   float64
+			sucProbes int64
+			errProbes int64
+			rateLimit int
+		)
+
+		slot.counters.RLock()
+		sucProbes = slot.sucProbes
+		errProbes = slot.errProbes
+		slot.counters.RUnlock()
+
+		slot.jitter.RLock()
+		rateLimit = slot.jitter.Limit()
+		slot.jitter.RUnlock()
+
 		if total > 0 {
-			errRate = float64(slot.errors.Load()) / float64(total)
+			errRate = float64(errors) / float64(total)
 		}
 
-		log.Info().Msgf("[upstream][cluster] backend '%s' is %s (sucProbs=%d, errProbs=%d, errRate=%.f%%{reqs=%d, errs=%d}, availRate=%d)",
-			slot.backend.Name(), slotState(slot.state.Load()).String(), slot.sucProbes.Load(), slot.errProbes.Load(),
-			errRate*100, slot.total.Load(), slot.errors.Load(), int64(slot.rate.Load().Limit()),
+		log.Info().Msgf("[upstream] backend '%s' is %s (sucProbs=%d, errProbs=%d, errRate=%.f%%{reqs=%d, errs=%d}, availRate=%d)",
+			bName, bState, sucProbes, errProbes, errRate*100, total, errors, rateLimit,
 		)
 	}
 	c.mu.RUnlock()

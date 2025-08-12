@@ -27,10 +27,10 @@ var (
 type BackendCluster struct {
 	ctx context.Context
 
-	// should we wait until rate limiter will emit a new one token and slot will be available?
+	// should we wait until rateLimit limiter will emit a new one token and slot will be available?
 	isAwaitPolicy atomic.Bool
 
-	// rate limited chan which provides random available backend slot
+	// rateLimit limited chan which provides random available backend slot
 	slotCh <-chan *backendSlot
 
 	// has all backends by their IDs
@@ -112,9 +112,9 @@ func (c *BackendCluster) initBackends(ctx context.Context, backendsCfg []*config
 		name := slot.backend.Name()
 		if healthcheckErr := slot.probe(); healthcheckErr != nil {
 			slot.quarantine()
-			log.Warn().Msgf("[upstream][cluster] backend '%s' add as sick: %s", name, healthcheckErr.Error())
+			log.Warn().Msgf("[upstream] backend '%s' add as sick: %s", name, healthcheckErr.Error())
 		} else {
-			log.Info().Msgf("[upstream][cluster] backend '%s' add as healthy", name)
+			log.Info().Msgf("[upstream] backend '%s' add as healthy", name)
 		}
 		all[name] = slot
 	}

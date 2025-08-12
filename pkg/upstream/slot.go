@@ -6,6 +6,7 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/rate"
 	"github.com/rs/zerolog/log"
 	"github.com/savsgio/gotils/nocopy"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -35,48 +36,71 @@ func (s slotState) String() string {
 	return "_undefined_"
 }
 
+type provider struct {
+	sync.Mutex
+	cancelProvider context.CancelFunc
+}
+
+type counters struct {
+	sync.RWMutex
+	originRate int   // want to have been able to back off to origin value
+	sucProbes  int64 // num of success probes in a row
+	errProbes  int64 // num of errorred probes in a row
+	throttles  int64 // num of throttles
+}
+
+// hot path counters
+type hpCounters struct {
+	total  atomic.Int64 // num of requests
+	errors atomic.Int64 // num of errors
+}
+
+type timestamp struct {
+	sync.RWMutex
+	sickedAt int64 // unix nano
+	killedAt int64 // unix nano
+}
+
+type jitter struct {
+	sync.RWMutex
+	*rate.Limiter
+}
+
+type upstream struct {
+	cfg     *config.Backend
+	backend *BackendNode
+}
+
+type downstream struct {
+	outRateCh chan<- *backendSlot
+}
+
 // backendSlot - cluster node (contains backends)
 type backendSlot struct {
 	nocopy.NoCopy
-	ctx            context.Context
-	cancelProvider atomic.Pointer[context.CancelFunc]
-	originRate     int                          // want to have been able to back off to origin value
-	state          atomic.Int32                 // current state
-	total          atomic.Int64                 // num of requests
-	errors         atomic.Int64                 // num of errors
-	throttles      atomic.Int64                 // num of throttles
-	sucProbes      atomic.Int64                 // num of success probes in a row
-	errProbes      atomic.Int64                 // num of errorred probes in a row
-	rate           atomic.Pointer[rate.Limiter] // atomic for hot switch of rate limiter on slot
-	cfg            *config.Backend
-	backend        *BackendNode
-	outRate        chan<- *backendSlot // need to send current pointer on available rate slot (providing itself on execution requests)
-	sickedAt       atomic.Int64        // unix nano
-	killedAt       atomic.Int64        // unix nano
+	ctx   context.Context
+	state atomic.Int32 // int32(slotState)
+	provider
+	hpCounters
+	counters
+	jitter
+	upstream
+	downstream
+	timestamp
 }
 
 // newBackendSlot - makes new backends slot for cluster
 func newBackendSlot(ctx context.Context, cfg *config.Backend, outRate chan<- *backendSlot) *backendSlot {
 	slot := &backendSlot{
-		ctx:            ctx,
-		cancelProvider: atomic.Pointer[context.CancelFunc]{},
-		cfg:            cfg,
-		originRate:     cfg.Rate,
-		rate:           atomic.Pointer[rate.Limiter]{},
-		state:          atomic.Int32{},
-		total:          atomic.Int64{},
-		errors:         atomic.Int64{},
-		throttles:      atomic.Int64{},
-		errProbes:      atomic.Int64{},
-		sucProbes:      atomic.Int64{},
-		sickedAt:       atomic.Int64{},
-		killedAt:       atomic.Int64{},
-		outRate:        outRate,
+		ctx:        ctx,
+		provider:   provider{},
+		counters:   counters{RWMutex: sync.RWMutex{}, originRate: cfg.Rate},
+		hpCounters: hpCounters{total: atomic.Int64{}, errors: atomic.Int64{}},
+		jitter:     jitter{Limiter: rate.NewLimiter(ctx, cfg.Rate, cfg.Rate)},
+		upstream:   upstream{cfg: cfg, backend: NewBackend(cfg)},
+		downstream: downstream{outRateCh: outRate},
+		timestamp:  timestamp{RWMutex: sync.RWMutex{}},
 	}
-
-	ctx, cancel := context.WithCancel(ctx)
-	slot.cancelProvider.Store(&cancel)
-	slot.backend = NewBackend(cfg)
 
 	go slot.renewRateProvider(cfg.Rate)
 
@@ -86,51 +110,75 @@ func newBackendSlot(ctx context.Context, cfg *config.Backend, outRate chan<- *ba
 // probe - checks whether backends is healthy
 func (s *backendSlot) probe() error {
 	if err := s.backend.IsHealthy(); err != nil {
-		s.sucProbes.Store(0)
-		s.errProbes.Add(1)
+		s.counters.Lock()
+		s.counters.sucProbes = 0
+		s.counters.errProbes += 1
+		s.counters.Unlock()
 		return err
 	}
-	s.sucProbes.Add(1)
-	s.errProbes.Store(0)
+	s.counters.Lock()
+	s.counters.sucProbes += 1
+	s.counters.errProbes = 0
+	s.counters.Unlock()
 	return nil
 }
 
 func (s *backendSlot) shouldCureByProbes() bool {
-	return s.sucProbes.Load() > probesInRow
+	s.counters.RLock()
+	defer s.counters.RUnlock()
+	return s.counters.sucProbes > probesInRow
 }
 
 func (s *backendSlot) shouldQuarantineByProbes() bool {
-	return s.errProbes.Load() > probesInRow
+	s.counters.RLock()
+	defer s.counters.RUnlock()
+	return s.counters.errProbes > probesInRow
 }
 
 func (s *backendSlot) shouldKill() bool {
-	killedAt := s.killedAt.Load()
+	s.timestamp.RLock()
+	killedAt := s.timestamp.killedAt
+	s.timestamp.RUnlock()
 	if killedAt == 0 {
 		return false
 	}
 
-	downtime := time.Duration(s.killedAt.Load() - time.Now().UnixNano())
-	hasProbesThreshold := s.errProbes.Load() > probesInRow
-	hasNotPositiveProbes := s.sucProbes.Load() == 0
+	s.counters.RLock()
+	sucProbes := s.counters.sucProbes
+	errProbes := s.counters.errProbes
+	s.counters.RUnlock()
 
-	return hasProbesThreshold && hasNotPositiveProbes && downtime > downtimeForKill
+	hasNotPositiveProbes := sucProbes == 0
+	wasProbesThresholdOvercome := errProbes > probesInRow
+	downtime := time.Duration(killedAt - time.Now().UnixNano())
+
+	return wasProbesThresholdOvercome && hasNotPositiveProbes && downtime > downtimeForKill
 }
 
 func (s *backendSlot) shouldBury() bool {
-	killedAt := s.killedAt.Load()
+	s.timestamp.RLock()
+	killedAt := s.timestamp.killedAt
+	s.timestamp.RUnlock()
 	if killedAt == 0 {
 		return false
 	}
 
-	downtime := time.Duration(s.killedAt.Load() - time.Now().UnixNano())
-	hasProbesThreshold := s.errProbes.Load() > probesInRow
-	hasNotPositiveProbes := s.sucProbes.Load() == 0
+	s.counters.RLock()
+	sucProbes := s.counters.sucProbes
+	errProbes := s.counters.errProbes
+	s.counters.RUnlock()
 
-	return hasProbesThreshold && hasNotPositiveProbes && downtime > downtimeForBury
+	hasNotPositiveProbes := sucProbes == 0
+	wasProbesThresholdOvercome := errProbes > probesInRow
+	downtime := time.Duration(killedAt - time.Now().UnixNano())
+
+	return wasProbesThresholdOvercome && hasNotPositiveProbes && downtime > downtimeForBury
 }
 
 func (s *backendSlot) shouldResurrect() bool {
-	return s.sucProbes.Load() > probesInRow
+	s.counters.RLock()
+	defer s.counters.RUnlock()
+	return s.counters.sucProbes > probesInRow
 }
 
 func (s *backendSlot) isIdle() bool {
@@ -150,15 +198,21 @@ func (s *backendSlot) hasDeadState() bool {
 }
 
 func (s *backendSlot) isThrottled() bool {
-	return s.throttles.Load() > 0
+	s.counters.RLock()
+	defer s.counters.RUnlock()
+	return s.counters.throttles > 0
 }
 
 func (s *backendSlot) mayBeThrottled() bool {
-	return s.throttles.Load() < maxThrottles && s.errRate() > errMinRateThreshold
+	s.counters.RLock()
+	defer s.counters.RUnlock()
+	return s.counters.throttles < maxThrottles && s.errRate() > errMinRateThreshold
 }
 
 func (s *backendSlot) mayBeUnThrottled() bool {
-	return !s.isIdle() && s.throttles.Load() > 0 && s.errRate() < errMinRateThreshold
+	s.counters.RLock()
+	defer s.counters.RUnlock()
+	return s.total.Load() != 0 && s.counters.throttles > 0 && s.errRate() < errMinRateThreshold
 }
 
 // cure - moves slot from sick to healthy state
@@ -168,20 +222,27 @@ func (s *backendSlot) cure() bool {
 		return false
 	}
 
-	s.throttle(maxThrottles - 1)
-	s.total.Store(0)
-	s.errors.Store(0)
-	s.sickedAt.Store(0)
-	s.killedAt.Store(0)
-	s.sucProbes.Store(0)
-	s.errProbes.Store(0)
-
 	name := s.backend.Name()
 	if s.state.CompareAndSwap(int32(sick), int32(healthy)) {
-		log.Info().Msgf("[upstream][cluster] backend '%s' was cured (sick -> healthy)", name)
+		s.throttle(maxThrottles - 1)
+
+		s.total.Store(0)
+		s.errors.Store(0)
+
+		s.counters.Lock()
+		s.counters.sucProbes = 0
+		s.counters.errProbes = 0
+		s.counters.Unlock()
+
+		s.timestamp.Lock()
+		s.timestamp.sickedAt = 0
+		s.timestamp.killedAt = 0
+		s.timestamp.Unlock()
+
+		log.Info().Msgf("[upstream] backend '%s' was cured (sick -> healthy)", name)
 		return true
 	} else {
-		log.Info().Msgf("[upstream][cluster] backend '%s' was not cured because CAS failed", name)
+		log.Info().Msgf("[upstream] backend '%s' was not cured because CAS failed", name)
 		return false
 	}
 }
@@ -193,21 +254,29 @@ func (s *backendSlot) quarantine() bool {
 		return false
 	}
 
-	s.closeRateProvider()
-	s.total.Store(0)
-	s.errors.Store(0)
-	s.sucProbes.Store(0)
-	s.errProbes.Store(0)
-	s.killedAt.Store(0)
-	s.sickedAt.Store(time.Now().UnixNano())
-
 	name := s.backend.Name()
 	if s.state.CompareAndSwap(int32(healthy), int32(sick)) {
-		s.sickedAt.Store(time.Now().UnixNano())
-		log.Info().Msgf("[upstream][cluster] backend '%s' was quarantined (healthy -> sick)", name)
+		s.closeRateProvider()
+
+		s.total.Store(0)
+		s.errors.Store(0)
+
+		s.counters.Lock()
+		s.counters.sucProbes = 0
+		s.counters.errProbes = 0
+		s.counters.Unlock()
+
+		s.timestamp.Lock()
+		s.timestamp.killedAt = 0
+		s.timestamp.Unlock()
+
+		s.timestamp.Lock()
+		s.timestamp.sickedAt = time.Now().UnixNano()
+		s.timestamp.Unlock()
+		log.Info().Msgf("[upstream] backend '%s' was quarantined (healthy -> sick)", name)
 		return true
 	} else {
-		log.Info().Msgf("[upstream][cluster] backend '%s' was not quarantined because CAS failed", name)
+		log.Info().Msgf("[upstream] backend '%s' was not quarantined because CAS failed", name)
 		return false
 	}
 }
@@ -220,19 +289,25 @@ func (s *backendSlot) kill() bool {
 	}
 
 	s.closeRateProvider()
-	s.total.Store(0)
-	s.errors.Store(0)
-	s.sucProbes.Store(0)
-	s.errProbes.Store(0)
-	s.killedAt.Store(time.Now().UnixNano())
 
 	name := s.backend.Name()
 	if s.state.CompareAndSwap(int32(sick), int32(dead)) {
-		s.killedAt.Store(time.Now().UnixNano())
-		log.Info().Msgf("[upstream][cluster] backend '%s' was killed (sick -> dead)", name)
+		s.total.Store(0)
+		s.errors.Store(0)
+
+		s.counters.Lock()
+		s.counters.sucProbes = 0
+		s.counters.errProbes = 0
+		s.counters.Unlock()
+
+		s.timestamp.Lock()
+		s.timestamp.killedAt = time.Now().UnixNano()
+		s.timestamp.Unlock()
+
+		log.Info().Msgf("[upstream] backend '%s' was killed (sick -> dead)", name)
 		return true
 	} else {
-		log.Info().Msgf("[upstream][cluster] backend '%s' was not killed because CAS failed", name)
+		log.Info().Msgf("[upstream] backend '%s' was not killed because CAS failed", name)
 		return false
 	}
 }
@@ -244,27 +319,37 @@ func (s *backendSlot) resurrect() bool {
 		return false
 	}
 
-	s.throttle(maxThrottles - 1)
-	s.total.Store(0)
-	s.errors.Store(0)
-	s.sickedAt.Store(0)
-	s.killedAt.Store(0)
-	s.sucProbes.Store(0)
-	s.errProbes.Store(0)
-
 	name := s.backend.Name()
 	if s.state.CompareAndSwap(int32(dead), int32(sick)) {
-		log.Info().Msgf("[upstream][cluster] backend '%s' was resurrected (dead -> healthy)", name)
+		s.throttle(maxThrottles - 1)
+
+		s.total.Store(0)
+		s.errors.Store(0)
+
+		s.counters.Lock()
+		s.counters.sucProbes = 0
+		s.counters.errProbes = 0
+		s.counters.Unlock()
+
+		s.timestamp.Lock()
+		s.timestamp.sickedAt = 0
+		s.timestamp.killedAt = 0
+		s.timestamp.Unlock()
+
+		log.Info().Msgf("[upstream] backend '%s' was resurrected (dead -> healthy)", name)
 		return true
 	} else {
-		log.Info().Msgf("[upstream][cluster] backend '%s' was not resurrected because CAS failed", name)
+		log.Info().Msgf("[upstream] backend '%s' was not resurrected because CAS failed", name)
 		return false
 	}
 }
 
-// throttle - reduces rate of released tokens for given percent from origin config value.
+// throttle - reduces rateLimit of released tokens for given percent from origin config value.
 func (s *backendSlot) throttle(newThrottles ...int64) {
-	var repeatNum = s.throttles.Load() + 1
+	s.counters.Lock()
+	defer s.counters.Unlock()
+
+	var repeatNum = s.throttles + 1
 	if len(newThrottles) > 1 || (len(newThrottles) == 1 && (newThrottles[0] > maxThrottles || newThrottles[0] < 0)) {
 		panic("throttle: wrong usage of newThrottles param")
 	} else if len(newThrottles) == 1 {
@@ -275,53 +360,60 @@ func (s *backendSlot) throttle(newThrottles ...int64) {
 	sp := or / hundred
 	rt := int(or - (sp * float64(defaultThrottleStep*repeatNum)))
 	if rt < 0 {
-		rt = 0
+		rt = 1
 	}
 
-	if old := s.throttles.Load(); old < maxThrottles {
+	if old := s.throttles; old < maxThrottles {
 		if repeatNum > 1 {
 			old = repeatNum
 		} else {
 			old += 1
 		}
-		s.throttles.Store(old) // must be applied anyway
-		log.Info().Msgf("[upstream][cluster] throttling backend '%s', current rate %d", s.backend.Name(), rt)
+		s.throttles = old
+		log.Info().Msgf("[upstream] throttling backend '%s', current rateLimit %d", s.backend.Name(), rt)
 		go s.renewRateProvider(rt)
 	}
 }
 
-// throttle - reduces rate of released tokens for given percent from origin config value.
+// throttle - reduces rateLimit of released tokens for given percent from origin config value.
 func (s *backendSlot) unthrottle() {
+	s.counters.Lock()
+	defer s.counters.Unlock()
+
+	s.jitter.RLock()
+	lm := s.jitter.Limit()
+	s.jitter.RUnlock()
+
 	const hundred float64 = 100
 	or := float64(s.originRate)
 	sp := or / hundred
-	rt := float64(s.rate.Load().Limit()) + (sp * float64(defaultThrottleStep))
+	rt := float64(lm) + (sp * float64(defaultThrottleStep))
 	if rt > or {
 		rt = or
 	}
 
-	if old := s.throttles.Load(); old > 0 {
-		if s.throttles.CompareAndSwap(old, old-1) {
-			log.Info().Msgf("[upstream][cluster] unthrottling backend '%s' due to low error rate", s.backend.Name())
-			go s.renewRateProvider(int(rt))
-		} else {
-			log.Info().Msgf("[upstream][cluster] unthrottling backend '%s' failed by CAS", s.backend.Name())
-		}
+	if s.throttles > 0 {
+		s.throttles--
+		log.Info().Msgf("[upstream] unthrottling backend '%s' due to low error rateLimit", s.backend.Name())
+		go s.renewRateProvider(int(rt))
 	}
 }
 
 func (s *backendSlot) errRate() float64 {
-	t := s.total.Load()
-	e := s.errors.Load()
-	if t == 0 {
+	total := s.total.Load()
+	errors := s.errors.Load()
+	if total == 0 {
 		return 0
 	}
-	return float64(e) / float64(t)
+	return float64(errors) / float64(total)
 }
 
 // closeRateProvider - is private io.Closer interface implementation.
 func (s *backendSlot) closeRateProvider() {
-	(*s.cancelProvider.Load())()
+	s.provider.Lock()
+	providerCloser := s.provider.cancelProvider
+	s.provider.Unlock()
+	providerCloser()
 }
 
 func (c *BackendCluster) bury(slot *backendSlot) {
@@ -336,30 +428,39 @@ func (c *BackendCluster) bury(slot *backendSlot) {
 //////////////////////////////////////////////////////////////////
 
 // renewRateProvider - singleton worker (may exist only one instance)
-// Creates a new one rate provider and displaces previous by closing him rate limiter.
+// Creates a new one rateLimit provider and displaces previous by closing him rateLimit limiter.
 func (s *backendSlot) renewRateProvider(rt int) {
-	log.Info().Msgf("[upstream][cluster] backend '%s' rate %d, provider has been started", s.backend.Name(), rt)
-	defer log.Info().Msgf("[upstream][cluster] backend '%s' rate %d, provider has been stopped", s.backend.Name(), rt)
+	log.Info().Msgf("[upstream] backend '%s' rateLimit %d, provider has been started", s.backend.Name(), rt)
+	defer log.Info().Msgf("[upstream] backend '%s' rateLimit %d, provider has been stopped", s.backend.Name(), rt)
 
 	healthyBackendsNum.Add(1)
 	defer healthyBackendsNum.Add(-1)
 
 	ctx, cancel := context.WithCancel(s.ctx)
 
-	l := rate.NewLimiter(ctx, rt, rt)
-	s.rate.Store(l)
+	newLimiter := rate.NewLimiter(ctx, rt, rt)
+	s.jitter.Lock()
+	oldLimiter := s.jitter.Limiter
+	s.jitter.Limiter = newLimiter
+	s.jitter.Unlock()
+	if oldLimiter != nil {
+		oldLimiter.Stop()
+	}
 
-	if previousCancel := *s.cancelProvider.Swap(&cancel); previousCancel != nil {
-		previousCancel() // close the previous rate provider
+	s.provider.Lock()
+	previousCancel := s.cancelProvider
+	s.cancelProvider = cancel
+	s.provider.Unlock()
+	if previousCancel != nil {
+		previousCancel()
 	}
 
 	for {
-		l.Take()
+		newLimiter.Take()
 		select {
 		case <-ctx.Done():
-			cancel()
 			return
-		case s.outRate <- s:
+		case s.outRateCh <- s:
 		}
 	}
 }
