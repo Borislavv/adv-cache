@@ -22,11 +22,10 @@ cache:
     policy: "await" # allowed: "await", "deny"
     # Cluster or backend (cluster has more priority if defined both)
     backend:
-      id: "seoLux"
-      enabled: true
-      host: "seo-master.lux.kube.xbet.lan"
+      id: "seoAms"
+      host: "seo-master.ams-web.kube.xbet.lan"
       scheme: "https"
-      rate: 150
+      rate: 50
       timeout: "5s"
       max_timeout: "3m"
       use_max_timeout_header: "X-Google-Bot"
