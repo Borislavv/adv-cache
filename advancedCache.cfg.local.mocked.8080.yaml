@@ -10,7 +10,7 @@ cache:
     gomaxprocs: 12
 
   api:
-    name: "advCache.starTeam"
+    name: "starTeam.advCache"
     port: "8020"
 
   upstream:
