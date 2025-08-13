@@ -1,8 +1,10 @@
 package middleware
 
-import "github.com/valyala/fasthttp"
+import (
+	"github.com/valyala/fasthttp"
+)
 
-var contentTypeValue = []byte("application/json")
+var applicationJsonBytes = []byte("application/json")
 
 type ApplicationJsonMiddleware struct{}
 
@@ -12,7 +14,9 @@ func NewApplicationJsonMiddleware() ApplicationJsonMiddleware {
 
 func (ApplicationJsonMiddleware) Middleware(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 	return func(ctx *fasthttp.RequestCtx) {
-		ctx.Response.Header.SetContentTypeBytes(contentTypeValue)
 		next(ctx)
+		if len(ctx.Response.Header.ContentType()) == 0 {
+			ctx.Response.Header.SetContentTypeBytes(applicationJsonBytes)
+		}
 	}
 }

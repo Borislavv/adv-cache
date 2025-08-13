@@ -131,6 +131,6 @@ func (s *HttpServer) controllers() []controller.HttpController {
 func (s *HttpServer) middlewares() []middleware2.HttpMiddleware {
 	return []middleware2.HttpMiddleware{
 		/** exec 1st. */ middleware2.NewApplicationJsonMiddleware(), // sets the Content-Type: application/json
-		/** exec 2nd. */ middleware2.NewFingerprintMiddleware(s.cfg), // sets the Server-Name: starTeam.advCache
+		/** exec 2nd. */ middleware2.NewServerNameMiddleware(s.cfg), // sets the Server-Name: starTeam.advCache
 	}
 }

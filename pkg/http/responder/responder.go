@@ -6,8 +6,8 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-func WriteFromResponse(ctx *fasthttp.RequestCtx, resp *fasthttp.Response, lastModified int64) {
-	write(ctx, resp, lastModified)
+func WriteFromResponse(ctx *fasthttp.RequestCtx, resp *fasthttp.Response, lastRevalidated int64) {
+	write(ctx, resp, lastRevalidated)
 }
 
 func WriteFromEntry(ctx *fasthttp.RequestCtx, entry *model.Entry) error {
@@ -20,12 +20,12 @@ func WriteFromEntry(ctx *fasthttp.RequestCtx, entry *model.Entry) error {
 	return nil
 }
 
-func write(ctx *fasthttp.RequestCtx, resp *fasthttp.Response, lastModified int64) {
+func write(ctx *fasthttp.RequestCtx, resp *fasthttp.Response, lastRevalidated int64) {
 	// Set up headers
 	resp.Header.CopyTo(&ctx.Response.Header)
 
 	// Set up Last-Modified header
-	header.SetLastModifiedValueFastHttp(ctx, lastModified)
+	header.SetLastRevalidatedValueFastHttp(ctx, lastRevalidated)
 
 	// Set up status code
 	ctx.SetStatusCode(resp.StatusCode())
