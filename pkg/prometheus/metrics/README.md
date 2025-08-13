@@ -1,4 +1,4 @@
-# Prometheus metrics
+# Prometheus metrics (uses Victoria/Metrics)
 
 Usage: 
 1. At first, we need create a new instance of metrics.Meter (interface: `metrics.Meter`).
