@@ -98,7 +98,7 @@ func newBackendSlot(ctx context.Context, cfg *config.Backend, outRate chan<- *ba
 		upstream:        upstream{cfg: cfg, backend: NewBackend(cfg)},
 	}
 
-	go slot.renewRateProvider(cfg.Rate, "init/shutdown")
+	go slot.renewRateProvider(cfg.Rate)
 
 	return slot
 }
@@ -316,7 +316,7 @@ func (s *backendSlot) throttle(why string, newThrottles ...int64) {
 		s.hotPathCounters.total.Store(0)
 		s.hotPathCounters.errors.Store(0)
 
-		go s.renewRateProvider(rt, "throttling")
+		go s.renewRateProvider(rt)
 	}
 }
 
@@ -341,7 +341,7 @@ func (s *backendSlot) unthrottle(why string) {
 		s.hotPathCounters.total.Store(0)
 		s.hotPathCounters.errors.Store(0)
 
-		go s.renewRateProvider(int(rt), "unthrottling")
+		go s.renewRateProvider(int(rt))
 	}
 }
 
@@ -352,22 +352,6 @@ func (s *backendSlot) errRate() float64 {
 		return 0
 	}
 	return float64(errors) / float64(total)
-}
-
-// closeRateProvider - is private io.Closer interface implementation.
-func (s *backendSlot) closeRateProvider(lock bool) {
-	if lock {
-		s.Lock()
-		defer s.Unlock()
-	}
-
-	providerCloser := s.provider.cancelProvider
-	providerCloser()
-
-	s.counters.sucProbes = 0
-	s.counters.errProbes = 0
-	s.hotPathCounters.total.Store(0)
-	s.hotPathCounters.errors.Store(0)
 }
 
 func (c *BackendCluster) bury(slot *backendSlot, reason string, lock bool) {
@@ -381,12 +365,13 @@ func (c *BackendCluster) bury(slot *backendSlot, reason string, lock bool) {
 
 // renewRateProvider - singleton worker (may exist only one instance)
 // Creates a new one rateLimit provider and displaces previous by closing him rateLimit limiter.
-func (s *backendSlot) renewRateProvider(limit int, reason string) {
-	log.Info().Msgf("[upstream] backend '%s' rate limit %d, provider has been started due to %s", s.backend.Name(), limit, reason)
-	defer log.Info().Msgf("[upstream] backend '%s' rateLimit %d, provider has been stopped due to %s", s.backend.Name(), limit, reason)
-
+func (s *backendSlot) renewRateProvider(limit int) {
 	s.Lock()
 	defer s.Unlock()
+
+	if s.jitter.limit == limit {
+		return
+	}
 
 	ctx, cancel := context.WithCancel(s.provider.originCtx)
 	previousCancel := s.provider.cancelProvider
@@ -394,8 +379,12 @@ func (s *backendSlot) renewRateProvider(limit int, reason string) {
 	s.jitter.limit = limit
 
 	go func() {
+		log.Info().Msgf("[upstream] backend '%s' rate limit %d, provider has been started", s.backend.Name(), limit)
+		defer log.Info().Msgf("[upstream] backend '%s' rate limit %d, provider has been stopped", s.backend.Name(), limit)
+
 		healthyBackends.Add(1)
 		defer healthyBackends.Add(-1)
+
 		rate := ratelimit.New(limit)
 		for {
 			rate.Take()
@@ -410,4 +399,22 @@ func (s *backendSlot) renewRateProvider(limit int, reason string) {
 	if previousCancel != nil {
 		previousCancel()
 	}
+}
+
+// closeRateProvider - is private io.Closer interface implementation.
+func (s *backendSlot) closeRateProvider(lock bool) {
+	if lock {
+		s.Lock()
+		defer s.Unlock()
+	}
+
+	providerCloser := s.provider.cancelProvider
+	if providerCloser != nil {
+		providerCloser()
+	}
+
+	s.counters.sucProbes = 0
+	s.counters.errProbes = 0
+	s.hotPathCounters.total.Store(0)
+	s.hotPathCounters.errors.Store(0)
 }
