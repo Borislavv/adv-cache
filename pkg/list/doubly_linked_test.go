@@ -1,10 +1,10 @@
 package list
 
 import (
+	"github.com/Borislavv/advanced-cache/pkg/ctime"
 	"math/rand"
 	"sync"
 	"testing"
-	"time"
 )
 
 // dummySized implements types.Sized for testing.
@@ -26,7 +26,7 @@ func TestList_ConcurrentOperations(t *testing.T) {
 	for i := 0; i < numGoroutines; i++ {
 		go func(id int) {
 			defer wg.Done()
-			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(id)))
+			rng := rand.New(rand.NewSource(ctime.UnixNano() + int64(id)))
 			var elements []*Element[dummySized]
 
 			for j := 0; j < numOpsPerGoroutine; j++ {

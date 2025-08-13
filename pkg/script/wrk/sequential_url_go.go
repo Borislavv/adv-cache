@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"github.com/Borislavv/advanced-cache/pkg/ctime"
 	"github.com/valyala/fasthttp"
 	"runtime"
 	"strconv"
@@ -100,7 +101,7 @@ func worker(wg *sync.WaitGroup) {
 func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
-	start := time.Now()
+	start := ctime.Now()
 	var wg sync.WaitGroup
 
 	for i := 0; i < workers; i++ {

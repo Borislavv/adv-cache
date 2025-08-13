@@ -5,10 +5,12 @@ import (
 	"flag"
 	"github.com/Borislavv/advanced-cache/internal/cache"
 	"github.com/Borislavv/advanced-cache/pkg/config"
+	"github.com/Borislavv/advanced-cache/pkg/ctime"
 	"github.com/Borislavv/advanced-cache/pkg/gc"
 	"github.com/Borislavv/advanced-cache/pkg/k8s/probe/liveness"
 	"github.com/Borislavv/advanced-cache/pkg/shutdown"
 	//	"github.com/Borislavv/advanced-cache/pkg/tui"
+	_ "github.com/Borislavv/advanced-cache/pkg/ctime"
 	"github.com/rs/zerolog/log"
 	"go.uber.org/automaxprocs/maxprocs"
 	"runtime"
@@ -71,6 +73,9 @@ func main() {
 	// Create a root context for gracefulShutdown shutdown and cancellation.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Cache for time.Now in order to avoid syscall
+	ctime.Start(time.Millisecond)
 
 	// Load the application configuration from env vars.
 	cfg, err := loadCfg(*customCfg)

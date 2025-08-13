@@ -3,6 +3,7 @@ package upstream
 import (
 	"context"
 	"github.com/Borislavv/advanced-cache/pkg/config"
+	"github.com/Borislavv/advanced-cache/pkg/ctime"
 	"github.com/rs/zerolog/log"
 	"go.uber.org/ratelimit"
 
@@ -237,7 +238,7 @@ func (s *backendSlot) quarantine(why string, lock bool) bool {
 	log.Info().Msgf("[upstream] backend '%s' was quarantined (healthy -> sick) due to %s, closing provider...", s.backend.Name(), why)
 	s.closeRateProvider(false)
 
-	s.timestamp.sickedAt = time.Now()
+	s.timestamp.sickedAt = ctime.Now()
 	s.timestamp.killedAt = time.Time{}
 
 	return true
@@ -258,7 +259,7 @@ func (s *backendSlot) kill(why string, lock bool) bool {
 
 	log.Info().Msgf("[upstream] backend '%s' was killed (sick -> dead) due to %s", s.backend.Name(), why)
 
-	s.timestamp.killedAt = time.Now()
+	s.timestamp.killedAt = ctime.Now()
 
 	return true
 }
@@ -279,7 +280,7 @@ func (s *backendSlot) resurrect(why string, lock bool) bool {
 	s.counters.sucProbes = 0
 	s.counters.errProbes = 0
 
-	s.timestamp.sickedAt = time.Now()
+	s.timestamp.sickedAt = ctime.Now()
 	s.timestamp.killedAt = time.Time{}
 
 	log.Info().Msgf("[upstream] backend '%s' was resurrected (dead -> sick) due to %s, quarantining now...", s.backend.Name(), why)

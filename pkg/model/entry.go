@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	bytes2 "github.com/Borislavv/advanced-cache/pkg/bytes"
+	"github.com/Borislavv/advanced-cache/pkg/ctime"
 	"github.com/rs/zerolog/log"
 	"math"
 	"math/rand/v2"
@@ -45,7 +46,7 @@ func (e *Entry) Init() *Entry {
 	e.rule = &atomic.Pointer[config.Rule]{}
 	e.payload = &atomic.Pointer[[]byte]{}
 	e.lruListElem = &atomic.Pointer[list.Element[*Entry]]{}
-	atomic.StoreInt64(&e.updatedAt, time.Now().UnixNano())
+	atomic.StoreInt64(&e.updatedAt, ctime.UnixNano())
 	return e
 }
 
@@ -246,7 +247,7 @@ func (e *Entry) SwapPayloads(another *Entry) {
 }
 
 func (e *Entry) touch() {
-	atomic.StoreInt64(&e.updatedAt, time.Now().UnixNano())
+	atomic.StoreInt64(&e.updatedAt, ctime.UnixNano())
 }
 
 func (e *Entry) isPayloadsAreEquals(a, b []byte) bool {
@@ -854,7 +855,7 @@ func (e *Entry) ShouldBeRefreshed(cfg config.Config) bool {
 	}
 
 	// время, прошедшее с последнего обновления
-	elapsed := time.Now().UnixNano() - atomic.LoadInt64(&e.updatedAt)
+	elapsed := ctime.UnixNano() - atomic.LoadInt64(&e.updatedAt)
 	minStale := int64(float64(ttl) * coefficient)
 
 	if minStale > elapsed {

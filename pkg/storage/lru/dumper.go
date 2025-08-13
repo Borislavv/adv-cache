@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/Borislavv/advanced-cache/pkg/ctime"
 	"github.com/Borislavv/advanced-cache/pkg/upstream"
 	"hash/crc32"
 	"io"
@@ -43,7 +44,7 @@ func NewDumper(cfg config.Config, storage Storage, backend upstream.Upstream) *D
 }
 
 func (d *Dump) Dump(ctx context.Context) error {
-	start := time.Now()
+	start := ctime.Now()
 	cfg := d.cfg.Data().Dump
 	if !d.cfg.IsEnabled() || !cfg.IsEnabled {
 		return errDumpNotEnabled
@@ -56,7 +57,7 @@ func (d *Dump) Dump(ctx context.Context) error {
 	if err := os.MkdirAll(versionDir, 0o755); err != nil {
 		return fmt.Errorf("create version dir: %w", err)
 	}
-	timestamp := time.Now().Format("20060102T150405")
+	timestamp := ctime.Now().Format("20060102T150405")
 	var wg sync.WaitGroup
 	var success, failures int32
 
@@ -146,7 +147,7 @@ func (d *Dump) LoadVersion(ctx context.Context, v string) error {
 }
 
 func (d *Dump) load(ctx context.Context, dir string) error {
-	start := time.Now()
+	start := ctime.Now()
 	cfg := d.cfg.Data().Dump
 
 	pattern := filepath.Join(dir, fmt.Sprintf("%s-shard-*.dump*", cfg.Name))

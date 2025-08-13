@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"github.com/Borislavv/advanced-cache/pkg/config"
+	"github.com/Borislavv/advanced-cache/pkg/ctime"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
 	"sync"
 	"time"
@@ -40,7 +41,7 @@ type clearStatusResponse struct {
 // Without ?token, returns a valid token (5min TTL).
 // With ?token, validates, clears storage, logs, and returns status.
 func (c *ClearController) HandleClear(ctx *fasthttp.RequestCtx) {
-	now := time.Now()
+	now := ctime.Now()
 	raw := string(ctx.QueryArgs().Peek("token"))
 
 	if raw == "" {
@@ -102,7 +103,7 @@ func (c *ClearController) HandleClear(ctx *fasthttp.RequestCtx) {
 			Str("method", string(ctx.Method())).
 			Str("path", string(ctx.Path())).
 			Str("user_agent", string(ctx.UserAgent())).
-			Time("time", time.Now())
+			Time("time", ctime.Now())
 	}
 	logEvent.Msg("storage cleared")
 

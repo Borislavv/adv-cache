@@ -1,9 +1,9 @@
 package list
 
 import (
+	"github.com/Borislavv/advanced-cache/pkg/ctime"
 	"math/rand"
 	"testing"
-	"time"
 )
 
 // BenchmarkList_PushFrontParallel checks throughput for PushFront under parallel load.
@@ -28,7 +28,7 @@ func BenchmarkList_MoveToFrontParallel(b *testing.B) {
 	}
 
 	b.RunParallel(func(pb *testing.PB) {
-		rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+		rng := rand.New(rand.NewSource(ctime.UnixNano()))
 		for pb.Next() {
 			idx := rng.Intn(len(elements))
 			l.MoveToFront(elements[idx])

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/Borislavv/advanced-cache/pkg/config"
+	"github.com/Borislavv/advanced-cache/pkg/ctime"
 	"github.com/Borislavv/advanced-cache/pkg/http/responder"
 	"github.com/Borislavv/advanced-cache/pkg/http/template"
 	"github.com/Borislavv/advanced-cache/pkg/model"
@@ -233,7 +234,7 @@ func (c *CacheProxyController) runLoggerMetricsWriter() {
 
 		const logIntervalSecs = 5
 		i := logIntervalSecs
-		prev := time.Now()
+		prev := ctime.Now()
 
 		for {
 			select {
@@ -318,7 +319,7 @@ func (c *CacheProxyController) runLoggerMetricsWriter() {
 					missesNum = 0
 					errorsNum = 0
 					proxiedNum = 0
-					prev = time.Now()
+					prev = ctime.Now()
 					i = 0
 				}
 				i++
