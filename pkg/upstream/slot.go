@@ -94,8 +94,8 @@ func newBackendSlot(ctx context.Context, cfg *config.Backend, outRate chan<- *ba
 		provider:        &provider{originCtx: ctx},
 		downstream:      downstream{outRateCh: outRate},
 		hotPathCounters: &hpCounters{total: atomic.Int64{}, errors: atomic.Int64{}},
-		jitter:          &jitter{originRate: cfg.Rate},
 		upstream:        upstream{cfg: cfg, backend: NewBackend(cfg)},
+		jitter:          &jitter{originRate: cfg.Rate},
 	}
 
 	go slot.renewRateProvider(cfg.Rate)
