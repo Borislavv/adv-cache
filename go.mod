@@ -18,6 +18,8 @@ require (
 )
 
 require (
+	github.com/benbjohnson/clock v1.3.0 // indirect
+	github.com/brianvoe/gofakeit/v6 v6.28.0 // indirect
 	github.com/chzyer/readline v1.5.1 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
@@ -28,5 +30,6 @@ require (
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fastrand v1.1.0 // indirect
 	github.com/valyala/histogram v1.2.0 // indirect
+	go.uber.org/ratelimit v0.3.1 // indirect
 	golang.org/x/sys v0.34.0 // indirect
 )

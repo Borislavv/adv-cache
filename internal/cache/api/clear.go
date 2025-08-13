@@ -16,13 +16,13 @@ import (
 
 type ClearController struct {
 	db      storage.Storage
-	cfg     *config.Cache
+	cfg     config.Config
 	mu      sync.Mutex
 	token   string
 	expires time.Time
 }
 
-func NewClearController(cfg *config.Cache, db storage.Storage) *ClearController {
+func NewClearController(cfg config.Config, db storage.Storage) *ClearController {
 	return &ClearController{cfg: cfg, db: db}
 }
 

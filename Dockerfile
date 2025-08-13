@@ -45,7 +45,7 @@ WORKDIR /advCache
 
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /app/advCache /advCache
-COPY advancedCache.cfg.yaml .
+COPY advCache.cfg.yaml .
 EXPOSE 8001
 
 ENTRYPOINT ["/advCache/advCache"]

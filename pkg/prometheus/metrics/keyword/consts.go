@@ -2,11 +2,10 @@ package keyword
 
 var (
 	/** Common */
-	AvgDuration = "avg_duration_ns"
-	RPS         = "rps"
-	Errored     = "errors"  // num of errors
-	Panicked    = "panics"  // num of panics
-	Proxied     = "proxies" // num of proxy requests
+	RPS      = "rps"
+	Errored  = "errors"  // num of errors
+	Panicked = "panics"  // num of panics
+	Proxied  = "proxies" // num of proxy requests
 	/* Cache specifically */
 	Hits                     = "cache_hits"
 	Misses                   = "cache_misses"
@@ -16,7 +15,6 @@ var (
 
 func MetricsCounters() []string {
 	return []string{
-		AvgDuration,
 		RPS,
 		Errored,
 		Panicked,

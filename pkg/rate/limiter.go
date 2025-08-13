@@ -2,39 +2,43 @@ package rate
 
 import (
 	"context"
-	"golang.org/x/time/rate"
+	"go.uber.org/ratelimit"
 )
 
 type Limiter struct {
-	ch chan struct{}
-	*rate.Limiter
+	ch    chan struct{}
+	l     ratelimit.Limiter
+	limit int
 }
 
-func NewLimiter(ctx context.Context, limit, burst int) *Limiter {
-	l := &Limiter{
-		ch:      make(chan struct{}),
-		Limiter: rate.NewLimiter(rate.Limit(limit), burst),
+func NewLimiter(ctx context.Context, limit int) *Limiter {
+	limiter := &Limiter{
+		limit: limit,
+		ch:    make(chan struct{}),
+		l:     ratelimit.New(limit),
 	}
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				close(l.ch)
-				return
-			default:
-				if err := l.Wait(ctx); err != nil {
-					return
-				}
+	go limiter.provider(ctx)
+	return limiter
+}
 
-				select {
-				case <-ctx.Done():
-					return
-				case l.ch <- struct{}{}:
-				}
-			}
+func (l *Limiter) provider(ctx context.Context) {
+	defer close(l.ch)
+	for {
+		l.l.Take()
+		select {
+		case <-ctx.Done():
+			return
+		case l.ch <- struct{}{}:
 		}
-	}()
-	return l
+	}
+}
+
+func (l *Limiter) Take() {
+	l.l.Take()
+}
+
+func (l *Limiter) Limit() int {
+	return l.limit
 }
 
 func (l *Limiter) Chan() <-chan struct{} {

@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	baseURL           = "http://0.0.0.0:8020"
+	baseURL           = "http://0.0.0.0:8022"
 	maxI              = 100000
 	startI            = 1
 	delay             = 0 * time.Millisecond // можно увеличить, чтобы не перегружать

@@ -56,7 +56,7 @@ func NewFastHTTPHandlerFunc(h http.Handler) fasthttp.RequestHandler {
 			}
 		}
 		if !haveContentType {
-			// From net/http.ResponseWriter.Write:
+			// Url net/http.ResponseWriter.Write:
 			// If the Header does not contain a Content-Type line, Write adds a Content-Type set
 			// to the result of passing the initial 512 bytes of written data to DetectContentType.
 			l := 512

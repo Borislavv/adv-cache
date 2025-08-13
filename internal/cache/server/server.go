@@ -5,12 +5,12 @@ import (
 	"errors"
 	"github.com/Borislavv/advanced-cache/internal/cache/api"
 	"github.com/Borislavv/advanced-cache/pkg/config"
+	httpserver2 "github.com/Borislavv/advanced-cache/pkg/http/server"
+	"github.com/Borislavv/advanced-cache/pkg/http/server/controller"
+	middleware2 "github.com/Borislavv/advanced-cache/pkg/http/server/middleware"
 	"github.com/Borislavv/advanced-cache/pkg/k8s/probe/liveness"
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
 	controller2 "github.com/Borislavv/advanced-cache/pkg/prometheus/metrics/controller"
-	httpserver "github.com/Borislavv/advanced-cache/pkg/server"
-	"github.com/Borislavv/advanced-cache/pkg/server/controller"
-	"github.com/Borislavv/advanced-cache/pkg/server/middleware"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
 	"github.com/Borislavv/advanced-cache/pkg/upstream"
 	"github.com/rs/zerolog/log"
@@ -31,12 +31,12 @@ type Http interface {
 // HttpServer implements Http, wraps all dependencies required for running the HTTP server.
 type HttpServer struct {
 	ctx           context.Context
-	cfg           *config.Cache
+	cfg           config.Config
 	db            storage.Storage
-	backend       upstream.Gateway
+	backend       upstream.Upstream
 	probe         liveness.Prober
 	metrics       metrics.Meter
-	server        httpserver.Server
+	server        httpserver2.Server
 	isServerAlive *atomic.Bool
 }
 
@@ -44,9 +44,9 @@ type HttpServer struct {
 // If any step fails, returns an error and performs cleanup.
 func New(
 	ctx context.Context,
-	cfg *config.Cache,
+	cfg config.Config,
 	db storage.Storage,
-	backend upstream.Gateway,
+	backend upstream.Upstream,
 	probe liveness.Prober,
 	meter metrics.Meter,
 ) (*HttpServer, error) {
@@ -106,7 +106,7 @@ func (s *HttpServer) spawnServer(wg *sync.WaitGroup) {
 // initServer creates the HTTP server instance, sets up controllers and middlewares, and stores the result.
 func (s *HttpServer) initServer() error {
 	// Compose server with controllers and middlewares.
-	if server, err := httpserver.New(s.ctx, s.cfg, s.controllers(), s.middlewares()); err != nil {
+	if server, err := httpserver2.New(s.ctx, s.cfg, s.controllers(), s.middlewares()); err != nil {
 		log.Err(err).Msg(InitFailedErrorMessage)
 		return errors.New(InitFailedErrorMessage)
 	} else {
@@ -119,17 +119,18 @@ func (s *HttpServer) initServer() error {
 // controllers returns all HTTP controllers for the server (endpoints/handlers).
 func (s *HttpServer) controllers() []controller.HttpController {
 	return []controller.HttpController{
-		liveness.NewController(s.probe),    // Liveness/healthcheck endpoint
-		controller2.NewPrometheusMetrics(), // Metrics endpoint
-		api.NewOnOffController(),           // Cache on-off controller
-		api.NewClearController(s.cfg, s.db),
-		api.NewCacheController(s.ctx, s.cfg, s.db, s.metrics, s.backend), // Main cache handler
+		liveness.NewController(s.probe),                                       // healthcheck probe endpoint
+		controller2.NewPrometheusMetrics(),                                    // metrics endpoint
+		api.NewOnOffController(s.cfg),                                         // on-off controller
+		api.NewClearController(s.cfg, s.db),                                   // clears cache
+		api.NewCacheProxyController(s.ctx, s.cfg, s.db, s.metrics, s.backend), // main cache handler
 	}
 }
 
 // middlewares returns the request middlewares for the server, executed in reverse order.
-func (s *HttpServer) middlewares() []middleware.HttpMiddleware {
-	return []middleware.HttpMiddleware{
-		/** exec 1st. */ middleware.NewApplicationJsonMiddleware(), // Sets Content-Type
+func (s *HttpServer) middlewares() []middleware2.HttpMiddleware {
+	return []middleware2.HttpMiddleware{
+		/** exec 1st. */ middleware2.NewApplicationJsonMiddleware(), // sets the Content-Type: application/json
+		/** exec 2nd. */ middleware2.NewServerNameMiddleware(s.cfg), // sets the Server-Name: starTeam.advCache
 	}
 }

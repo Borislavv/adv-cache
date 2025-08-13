@@ -3,7 +3,7 @@ package serverutils
 import (
 	"context"
 	"errors"
-	"github.com/Borislavv/advanced-cache/pkg/server/keyword"
+	"github.com/Borislavv/advanced-cache/pkg/http/server/keyword"
 	"github.com/valyala/fasthttp"
 )
 

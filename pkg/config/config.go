@@ -2,9 +2,11 @@ package config
 
 import (
 	"fmt"
+	"github.com/brianvoe/gofakeit/v6"
 	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 )
 
@@ -13,6 +15,60 @@ const (
 	Dev  = "dev"
 	Test = "test"
 )
+
+type Config interface {
+	IsProd() bool
+	IsEnabled() bool
+	SetEnabled(v bool)
+	Runtime() *Runtime
+	Api() *Api
+	Upstream() *Upstream
+	Data() *Data
+	Refresh() *Refresh
+	Eviction() *Eviction
+	Storage() *Storage
+	K8S() *K8S
+	ForceGC() *ForceGC
+	Rule(path string) (*Rule, bool)
+}
+
+func (c *Cache) IsEnabled() bool {
+	return c.Cache.AtomicEnabled.Load()
+}
+func (c *Cache) SetEnabled(v bool) {
+	c.Cache.AtomicEnabled.Store(v)
+}
+func (c *Cache) Runtime() *Runtime {
+	return c.Cache.Runtime
+}
+func (c *Cache) Api() *Api {
+	return c.Cache.Api
+}
+func (c *Cache) Upstream() *Upstream {
+	return c.Cache.Upstream
+}
+func (c *Cache) Data() *Data {
+	return c.Cache.Data
+}
+func (c *Cache) Refresh() *Refresh {
+	return c.Cache.Refresh
+}
+func (c *Cache) Eviction() *Eviction {
+	return c.Cache.Eviction
+}
+func (c *Cache) Storage() *Storage {
+	return c.Cache.Storage
+}
+func (c *Cache) K8S() *K8S {
+	return c.Cache.K8S
+}
+func (c *Cache) ForceGC() *ForceGC {
+	return c.Cache.ForceGC
+}
+func (c *Cache) Rule(path string) (*Rule, bool) {
+	v, ok := c.Cache.Rules[path]
+	return v, ok
+}
 
 type TraefikIntermediateConfig struct {
 	ConfigPath string `yaml:"configPath" mapstructure:"configPath"`
@@ -39,21 +95,27 @@ type Env struct {
 }
 
 type CacheBox struct {
-	Env         string           `yaml:"env"`
-	Enabled     bool             `yaml:"enabled"`
-	Runtime     *Runtime         `yaml:"runtime"`
-	Proxy       *Proxy           `yaml:"proxy"`
-	Persistence *Persistence     `yaml:"persistence"`
-	Refresh     *Refresh         `yaml:"refresh"`
-	Eviction    *Eviction        `yaml:"eviction"`
-	Storage     *Storage         `yaml:"storage"`
-	Logs        Logs             `yaml:"logs"`
-	K8S         K8S              `yaml:"k8s"`
-	Metrics     Metrics          `yaml:"metrics"`
-	ForceGC     ForceGC          `yaml:"forceGC"`
-	LifeTime    Lifetime         `yaml:"lifetime"`
-	Preallocate Preallocation    `yaml:"preallocate"`
-	Rules       map[string]*Rule `yaml:"rules"`
+	Env                 string `yaml:"env"`
+	Enabled             bool   `yaml:"enabled"`
+	AtomicEnabled       atomic.Bool
+	CheckReloadInterval time.Duration    `yaml:"cfg_reload_check_interval"`
+	Logs                *Logs            `yaml:"logs"`
+	Runtime             *Runtime         `yaml:"runtime"`
+	Api                 *Api             `yaml:"api"`
+	Upstream            *Upstream        `yaml:"upstream"`
+	Data                *Data            `yaml:"data"`
+	Storage             *Storage         `yaml:"storage"`
+	Eviction            *Eviction        `yaml:"eviction"`
+	Refresh             *Refresh         `yaml:"refresh"`
+	ForceGC             *ForceGC         `yaml:"forceGC"`
+	Metrics             *Metrics         `yaml:"metrics"`
+	K8S                 *K8S             `yaml:"k8s"`
+	Rules               map[string]*Rule `yaml:"rules"`
+}
+
+type Api struct {
+	Name string `yaml:"name"` // api server name
+	Port string `yaml:"port"` // port of api server
 }
 
 type Runtime struct {
@@ -87,19 +149,58 @@ type Logs struct {
 	Stats bool   `yaml:"stats"` // Should the statistic like num evictions, refreshes, rps, memory usage and so on be written in /std/out?
 }
 
-type Lifetime struct {
-	MaxReqDuration                  time.Duration `yaml:"max_req_dur"`               // If a request lifetime is longer than 100ms then request will be canceled by context.
-	EscapeMaxReqDurationHeader      string        `yaml:"escape_max_req_dur_header"` // If the header exists the timeout above will be skipped.
-	EscapeMaxReqDurationHeaderBytes []byte        // The same value but converted into slice bytes.
+type Upstream struct {
+	Policy  string   `yaml:"policy"`
+	Cluster *Cluster `yaml:"cluster"`
+	Backend *Backend `yaml:"backend"`
 }
 
-type Proxy struct {
-	Name    string        `yaml:"name"`
-	FromUrl []byte        // Reverse Proxy url (can be found in Caddyfile). URL to underlying backend.
-	From    string        `yaml:"from"`
-	To      string        `yaml:"to"`
-	Rate    int           `yaml:"rate"`    // Rate limiting reqs to backend per second.
-	Timeout time.Duration `yaml:"timeout"` // Timeout for requests to backend.
+type Cluster struct {
+	Backends []*Backend `yaml:"backends"`
+}
+
+type Backend struct {
+	ID                       string        `yaml:"id"`
+	Enabled                  bool          `yaml:"enabled"`
+	Scheme                   string        `yaml:"scheme"` // http or https
+	SchemeBytes              []byte        // virtual field, Scheme converted to []byte
+	Host                     string        `yaml:"host"` // backend.example.com
+	HostBytes                []byte        // virtual field, Host converted to []byte
+	Rate                     int           `yaml:"rate"`                   // Rate limiting reqs to backend per second.
+	Timeout                  time.Duration `yaml:"timeout"`                // Timeout for requests to backend.
+	MaxTimeout               time.Duration `yaml:"max_timeout"`            // MaxTimeout for requests which are escape Timeout through UseMaxTimeoutHeaderBytes.
+	UseMaxTimeoutHeader      string        `yaml:"use_max_timeout_header"` // If the header exists the timeout above will be skipped.
+	UseMaxTimeoutHeaderBytes []byte        // The same value but converted into slice bytes.
+	Healthcheck              string        `yaml:"healthcheck"` // Healthcheck or readiness probe path
+	HealthcheckBytes         []byte        // The same value but converted into slice bytes.
+}
+
+// Clone - deep copy, obviously returns a new pointer.
+func (b *Backend) Clone() *Backend {
+	newb := *b
+
+	gofakeit.FirstName()
+
+	newSchemeBytes := make([]byte, len(b.SchemeBytes))
+	copy(newSchemeBytes, b.SchemeBytes)
+	newb.SchemeBytes = newSchemeBytes
+
+	newHostBytes := make([]byte, len(b.HostBytes))
+	copy(newHostBytes, b.HostBytes)
+	newb.HostBytes = newHostBytes
+
+	newUseMaxTimeoutHeaderBytes := make([]byte, len(b.UseMaxTimeoutHeaderBytes))
+	copy(newUseMaxTimeoutHeaderBytes, b.UseMaxTimeoutHeaderBytes)
+	newb.UseMaxTimeoutHeaderBytes = newUseMaxTimeoutHeaderBytes
+
+	newHealthcheckBytes := make([]byte, len(b.HealthcheckBytes))
+	copy(newHealthcheckBytes, b.HealthcheckBytes)
+	newb.HealthcheckBytes = newHealthcheckBytes
+
+	newb.Timeout = time.Duration(b.Timeout.Nanoseconds())
+	newb.MaxTimeout = time.Duration(b.Timeout.Nanoseconds())
+
+	return &newb
 }
 
 type Dump struct {
@@ -111,14 +212,9 @@ type Dump struct {
 	Crc32Control bool   `yaml:"crc32_control_sum"`
 }
 
-type Persistence struct {
+type Data struct {
 	Dump *Dump `yaml:"dump"`
 	Mock *Mock `yaml:"mock"`
-}
-
-type Preallocation struct {
-	Shards   int `yaml:"num_shards"`
-	PerShard int `yaml:"per_shard"`
 }
 
 type Eviction struct {
@@ -127,8 +223,7 @@ type Eviction struct {
 }
 
 type Storage struct {
-	Type string `yaml:"type"` // "malloc"
-	Size uint   `yaml:"size"` // 21474836480=2gb(bytes)
+	Size uint `yaml:"size"`
 }
 
 type Refresh struct {
@@ -161,13 +256,7 @@ type RuleRefresh struct {
 	Coefficient float64 `yaml:"coefficient"` // Starts attempts to renew data after TTL*coefficient=50% (12h if whole TTL is 24h)
 }
 
-type Gzip struct {
-	Enabled   bool `yaml:"enabled"`
-	Threshold int  `yaml:"threshold"`
-}
-
 type Rule struct {
-	Gzip       Gzip         `yaml:"gzip"`
 	CacheKey   RuleKey      `yaml:"cache_key"`
 	CacheValue RuleValue    `yaml:"cache_value"`
 	Refresh    *RuleRefresh `yaml:"refresh"`
@@ -211,6 +300,8 @@ func LoadConfig(path string) (*Cache, error) {
 		return nil, fmt.Errorf("unmarshal yaml from %s: %w", path, err)
 	}
 
+	cfg.Cache.AtomicEnabled.Store(cfg.Cache.Enabled)
+
 	for rulePath, rule := range cfg.Cache.Rules {
 		rule.PathBytes = []byte(rulePath)
 
@@ -234,9 +325,21 @@ func LoadConfig(path string) (*Cache, error) {
 		rule.CacheValue.HeadersMap = valueHeadersMap
 	}
 
-	cfg.Cache.Proxy.FromUrl = []byte(cfg.Cache.Proxy.From)
-
-	cfg.Cache.LifeTime.EscapeMaxReqDurationHeaderBytes = []byte(cfg.Cache.LifeTime.EscapeMaxReqDurationHeader)
+	if cfg.Cache.Upstream.Cluster != nil {
+		for i, _ := range cfg.Cache.Upstream.Cluster.Backends {
+			cfg.Cache.Upstream.Cluster.Backends[i].SchemeBytes = []byte(cfg.Cache.Upstream.Cluster.Backends[i].Scheme)
+			cfg.Cache.Upstream.Cluster.Backends[i].HostBytes = []byte(cfg.Cache.Upstream.Cluster.Backends[i].Host)
+			cfg.Cache.Upstream.Cluster.Backends[i].UseMaxTimeoutHeaderBytes = []byte(cfg.Cache.Upstream.Cluster.Backends[i].UseMaxTimeoutHeader)
+			cfg.Cache.Upstream.Cluster.Backends[i].HealthcheckBytes = []byte(cfg.Cache.Upstream.Cluster.Backends[i].Healthcheck)
+		}
+	} else if cfg.Cache.Upstream.Backend != nil {
+		cfg.Cache.Upstream.Backend.SchemeBytes = []byte(cfg.Cache.Upstream.Backend.Scheme)
+		cfg.Cache.Upstream.Backend.HostBytes = []byte(cfg.Cache.Upstream.Backend.Host)
+		cfg.Cache.Upstream.Backend.UseMaxTimeoutHeaderBytes = []byte(cfg.Cache.Upstream.Backend.UseMaxTimeoutHeader)
+		cfg.Cache.Upstream.Backend.HealthcheckBytes = []byte(cfg.Cache.Upstream.Backend.Healthcheck)
+	} else {
+		return nil, fmt.Errorf("no backend configured")
+	}
 
 	return cfg, nil
 }

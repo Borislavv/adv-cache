@@ -1,5 +1,7 @@
 package model
 
-type Releaser func(queryHeaders *[][2][]byte, responseHeaders *[][2][]byte)
+import "github.com/valyala/fasthttp"
 
-var emptyReleaser Releaser = func(_, _ *[][2][]byte) {}
+type Releaser func(request *fasthttp.Request, response *fasthttp.Response)
+
+var emptyReleaser Releaser = func(request *fasthttp.Request, response *fasthttp.Response) {}

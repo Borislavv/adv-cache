@@ -29,10 +29,10 @@ type Map[V Value] struct {
 }
 
 // NewMap creates a new sharded map with preallocated shards and a default per-shard map capacity.
-func NewMap[V Value](ctx context.Context, defaultLen int) *Map[V] {
+func NewMap[V Value](ctx context.Context) *Map[V] {
 	m := &Map[V]{ctx: ctx}
 	for id := uint64(0); id < NumOfShards; id++ {
-		m.shards[id] = NewShard[V](id, defaultLen)
+		m.shards[id] = NewShard[V](id)
 	}
 	m.runMemRefresher()
 	return m

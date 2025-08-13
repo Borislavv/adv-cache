@@ -17,11 +17,11 @@ type Shard[V Value] struct {
 }
 
 // NewShard creates a new shard with its own lock, value map, and releaser pool.
-func NewShard[V Value](id uint64, defaultLen int) *Shard[V] {
+func NewShard[V Value](id uint64) *Shard[V] {
 	return &Shard[V]{
 		id:      id,
 		RWMutex: &sync.RWMutex{},
-		items:   make(map[uint64]V, defaultLen),
+		items:   make(map[uint64]V),
 	}
 }
 

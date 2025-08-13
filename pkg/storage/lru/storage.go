@@ -19,6 +19,7 @@ import (
 // It supports typical Get/Set operations with reference management.
 type Storage interface {
 	Run()
+	Close() error
 
 	// Get attempts to retrieve a cached response for the given request.
 	// Returns the response, a releaser for safe concurrent access, and a hit/miss flag.
@@ -53,23 +54,31 @@ type Storage interface {
 	Rand() (entry *model.Entry, ok bool)
 
 	WalkShards(ctx context.Context, fn func(key uint64, shard *sharded.Shard[*model.Entry]))
+
+	// Dumper functionality
+	Dump(ctx context.Context) error
+	Load(ctx context.Context) error
+	LoadVersion(ctx context.Context, v string) error
 }
 
 // InMemoryStorage is a Weight-aware, sharded InMemoryStorage cache with background eviction and refreshItem support.
 type InMemoryStorage struct {
 	ctx             context.Context            // Main context for lifecycle control
-	cfg             *config.Cache              // CacheBox configuration
+	cfg             config.Config              // AtomicCacheBox configuration
 	shardedMap      *sharded.Map[*model.Entry] // Sharded storage for cache entries
 	tinyLFU         *lfu.TinyLFU               // Helps hold more frequency used items in cache while eviction
-	backend         upstream.Gateway           // Remote backend server.
-	balancer        Balancer                   // Helps pick shards to evict from
-	mem             int64                      // Current Weight usage (bytes)
-	memoryThreshold int64                      // Threshold for triggering eviction (bytes)
+	upstream        upstream.Upstream          // Remote upstream server.
+	refresher       Refresher
+	balancer        Balancer // Helps pick shards to evict from
+	evictor         Evictor
+	dumper          Dumper
+	mem             int64 // Current Weight usage (bytes)
+	memoryThreshold int64 // Threshold for triggering eviction (bytes)
 }
 
 // NewStorage constructs a new InMemoryStorage cache instance and launches eviction and refreshItem routines.
-func NewStorage(ctx context.Context, cfg *config.Cache, backend upstream.Gateway) *InMemoryStorage {
-	shardedMap := sharded.NewMap[*model.Entry](ctx, cfg.Cache.Preallocate.PerShard)
+func NewStorage(ctx context.Context, cfg config.Config, upstream upstream.Upstream) *InMemoryStorage {
+	shardedMap := sharded.NewMap[*model.Entry](ctx)
 	balancer := NewBalancer(ctx, shardedMap)
 
 	db := (&InMemoryStorage{
@@ -77,18 +86,16 @@ func NewStorage(ctx context.Context, cfg *config.Cache, backend upstream.Gateway
 		cfg:             cfg,
 		shardedMap:      shardedMap,
 		balancer:        balancer,
-		backend:         backend,
+		upstream:        upstream,
 		tinyLFU:         lfu.NewTinyLFU(ctx),
-		memoryThreshold: int64(float64(cfg.Cache.Storage.Size) * cfg.Cache.Eviction.Threshold),
+		memoryThreshold: int64(float64(cfg.Storage().Size) * cfg.Eviction().Threshold),
 	}).init()
 
-	return db
-}
+	db.evictor = NewEvictor(ctx, cfg, db, db.balancer)
+	db.refresher = NewRefresher(ctx, cfg, db, upstream)
+	db.dumper = NewDumper(cfg, db, upstream)
 
-func (s *InMemoryStorage) Run() {
-	s.runLogger()
-	NewRefresher(s.ctx, s.cfg, s).Run()
-	NewEvictor(s.ctx, s.cfg, s, s.balancer).Run()
+	return db
 }
 
 func (s *InMemoryStorage) init() *InMemoryStorage {
@@ -98,6 +105,24 @@ func (s *InMemoryStorage) init() *InMemoryStorage {
 	})
 
 	return s
+}
+
+func (s *InMemoryStorage) Run() {
+	s.runLogger()
+	s.evictor.Run()
+	s.refresher.Run()
+}
+
+func (s *InMemoryStorage) Close() error {
+	if s.cfg.IsEnabled() && s.cfg.Data().Dump.IsEnabled {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute*3)
+		defer cancel()
+
+		if err := s.dumper.Dump(ctx); err != nil {
+			log.Err(err).Msg("[dump] failed to store cache dump")
+		}
+	}
+	return nil
 }
 
 func (s *InMemoryStorage) Clear() {
@@ -205,8 +230,13 @@ func (s *InMemoryStorage) touch(existing *model.Entry) {
 // update refreshes Weight accounting and InMemoryStorage position for an updated entry.
 func (s *InMemoryStorage) update(existing, new *model.Entry) {
 	existing.SwapPayloads(new)
-	existing.TouchUpdatedAt()
 	s.balancer.Update(existing)
+}
+
+func (s *InMemoryStorage) Dump(ctx context.Context) error { return s.dumper.Dump(ctx) }
+func (s *InMemoryStorage) Load(ctx context.Context) error { return s.dumper.Load(ctx) }
+func (s *InMemoryStorage) LoadVersion(ctx context.Context, v string) error {
+	return s.dumper.LoadVersion(ctx, v)
 }
 
 // runLogger emits detailed stats about evictions, Weight, and GC activity every 5 seconds if debugging is enabled.
@@ -227,7 +257,7 @@ func (s *InMemoryStorage) runLogger() *InMemoryStorage {
 					mem        = utils.FmtMem(realMem)
 					length     = strconv.Itoa(int(s.shardedMap.Len()))
 					gc         = strconv.Itoa(int(m.NumGC))
-					limit      = utils.FmtMem(int64(s.cfg.Cache.Storage.Size))
+					limit      = utils.FmtMem(int64(s.cfg.Storage().Size))
 					goroutines = strconv.Itoa(runtime.NumGoroutine())
 					alloc      = utils.FmtMem(int64(m.Alloc))
 				)
@@ -241,7 +271,7 @@ func (s *InMemoryStorage) runLogger() *InMemoryStorage {
 						Str("memStr", mem).
 						Str("len", length).
 						Str("gc", gc).
-						Str("memLimit", strconv.Itoa(int(s.cfg.Cache.Storage.Size))).
+						Str("memLimit", strconv.Itoa(int(s.cfg.Storage().Size))).
 						Str("memLimitStr", limit).
 						Str("goroutines", goroutines).
 						Str("alloc", strconv.Itoa(int(m.Alloc))).

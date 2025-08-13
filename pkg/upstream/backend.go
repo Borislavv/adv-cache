@@ -1,215 +1,206 @@
 package upstream
 
 import (
-	"bytes"
-	"context"
 	"crypto/tls"
+	"errors"
+	"fmt"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/pools"
 	"github.com/valyala/fasthttp"
-	"golang.org/x/time/rate"
 	"net"
 	"net/http"
-	"sync"
 	"time"
 	"unsafe"
 )
 
-var transport = &http.Transport{
-	// Max idle (keep-alive) connections across ALL hosts
-	MaxIdleConns: 10000,
-
-	// Max idle (keep-alive) connections per host
-	MaxIdleConnsPerHost: 1000,
-
-	// Max concurrent connections per host (optional)
-	MaxConnsPerHost: 0, // 0 = unlimited (use with caution)
-
-	IdleConnTimeout: 30 * time.Second,
-
-	// Optional: tune dialer
-	DialContext: (&net.Dialer{
-		Timeout:   30 * time.Second,
-		KeepAlive: 30 * time.Second,
-	}).DialContext,
-
-	DialTLS: func(network, addr string) (net.Conn, error) {
-		return tls.Dial("tcp", addr, &tls.Config{
-			InsecureSkipVerify: true, // или false — если нужен real cert check
-		})
-	},
-
-	// Optional: configure TLS handshake timeout, etc.
-	TLSHandshakeTimeout: 10 * time.Second,
-
-	// ExpectContinueTimeout: wait time for 100-continue
-	ExpectContinueTimeout: 1 * time.Second,
-}
-
-// Gateway defines the interface for a repository that provides SEO page data.
-type Gateway interface {
-	Fetch(
-		rule *config.Rule, path []byte, query []byte, queryHeaders *[][2][]byte,
-	) (
-		status int, headers *[][2][]byte, body []byte, releaseFn func(), err error,
-	)
-
-	RevalidatorMaker() func(
-		rule *config.Rule, path []byte, query []byte, queryHeaders *[][2][]byte,
-	) (
-		status int, headers *[][2][]byte, body []byte, releaseFn func(), err error,
-	)
-}
-
-// TODO implements support of cluster backends.
-
-// Backend implements the Backender interface.
-// It fetches and constructs SEO page data responses from an external backend.
-type Backend struct {
-	ctx         context.Context
-	cfg         *config.Cache // Global configuration (backend URL, etc)
-	transport   *http.Transport
-	clientsPool *sync.Pool
-	rateLimiter *rate.Limiter
-}
-
-// NewBackend creates a new instance of Backend.
-func NewBackend(ctx context.Context, cfg *config.Cache) *Backend {
-	return &Backend{
-		ctx: ctx,
-		cfg: cfg,
-		clientsPool: &sync.Pool{
-			New: func() interface{} {
-				return &http.Client{
-					Transport: transport,
-					Timeout:   10 * time.Second,
-				}
-			},
-		},
-		rateLimiter: rate.NewLimiter(
-			rate.Limit(cfg.Cache.Proxy.Rate),
-			cfg.Cache.Proxy.Rate/10,
-		),
-	}
-}
-
-func (s *Backend) Fetch(
-	rule *config.Rule, path []byte, query []byte, queryHeaders *[][2][]byte,
-) (
-	status int, headers *[][2][]byte, body []byte, releaseFn func(), err error,
-) {
-	if err = s.rateLimiter.Wait(s.ctx); err != nil {
-		return 0, nil, nil, emptyReleaseFn, err
-	}
-
-	return s.requestExternalBackend(rule, path, query, queryHeaders)
-}
-
-// RevalidatorMaker builds a new revalidator for model.Response by catching a request into closure for be able to call backend later.
-func (s *Backend) RevalidatorMaker() func(
-	rule *config.Rule, path []byte, query []byte, queryHeaders *[][2][]byte,
-) (
-	status int, headers *[][2][]byte, body []byte, releaseFn func(), err error,
-) {
-	return func(
-		rule *config.Rule, path []byte, query []byte, queryHeaders *[][2][]byte,
-	) (
-		status int, headers *[][2][]byte, body []byte, releaseFn func(), err error,
-	) {
-		return s.requestExternalBackend(rule, path, query, queryHeaders)
-	}
-}
-
 var (
-	emptyReleaseFn = func() {}
-	urlBufPool     = sync.Pool{
-		New: func() interface{} {
-			return new(bytes.Buffer)
-		},
-	}
-	queryPrefix = []byte("?")
+	defaultReleaser         = func(*fasthttp.Request, *fasthttp.Response) {}
+	ErrNotHealthyStatusCode = errors.New("bad status code")
 )
 
-// requestExternalBackend actually performs the HTTP request to backend and parses the response.
-func (s *Backend) requestExternalBackend(
-	rule *config.Rule, path []byte, query []byte, queryHeaders *[][2][]byte,
-) (status int, headers *[][2][]byte, body []byte, releaseFn func(), err error) {
+/* -------------------------------------------------------------------------- */
+/*                              shared constants                              */
+/* -------------------------------------------------------------------------- */
+
+// connsPerHost:
+//   - With HTTP/1.1 each in-flight request occupies one TCP connection.
+//   - We expect ≈ 5 k concurrent requests (500 k RPS × 10 ms p99 RTT).
+//   - ×2 head-room gives 10 k.
+
+// idleExtra:
+//   - A small cushion so bursts don’t immediately allocate new sockets.
+
+// headerLimit:
+//   - Protects against “run-away” Set-Cookie explosions; 32 KiB is plenty
+//     for 99 % of real-world APIs.
+const connsPerHost = 16392
+
+/* -------------------------------------------------------------------------- */
+/*                    HTTP/1.1 + opportunistic HTTP/2 client                  */
+/* -------------------------------------------------------------------------- */
+
+// httpClient is the work-horse RoundTripper (only: IPV4).
+var httpClient = &fasthttp.Client{
+	// TCP-pool
+	MaxConnsPerHost:     connsPerHost,
+	MaxIdleConnDuration: 60 * time.Second,
+	MaxConnWaitTimeout:  500 * time.Millisecond,
+	// keep-alive and DNS/SYN timeouts
+	Dial: func(addr string) (net.Conn, error) {
+		return (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).Dial("tcp", addr)
+	},
+	DialDualStack: false, // use only IPV4
+	// TLS-configuration
+	TLSConfig: &tls.Config{
+		MinVersion:         tls.VersionTLS12, // TLS1.2+ only
+		ClientSessionCache: tls.NewLRUClientSessionCache(connsPerHost * 1.5),
+	},
+	// Read/Write timeouts.
+	ReadTimeout:         500 * time.Millisecond,
+	WriteTimeout:        500 * time.Millisecond,
+	ReadBufferSize:      32784,
+	WriteBufferSize:     32784,
+	MaxResponseBodySize: 0,
+}
+
+type Backend interface {
+	ID() string
+	Name() string
+	IsHealthy() error
+	Cfg() *config.Backend
+	Fetch(rule *config.Rule, inCtx *fasthttp.RequestCtx, inReq *fasthttp.Request) (
+		outReq *fasthttp.Request, outResp *fasthttp.Response,
+		releaser func(*fasthttp.Request, *fasthttp.Response), err error,
+	)
+}
+
+type BackendNode struct {
+	id        string
+	cfg       *config.Backend
+	transport *http.Transport
+}
+
+// NewBackend creates a new instance of BackendNode.
+func NewBackend(cfg *config.Backend) *BackendNode {
+	return &BackendNode{id: cfg.ID, cfg: cfg}
+}
+
+// Fetch actually performs the HTTP request to backend and parses the response.
+// Note: that rule is optional and if not provided response will not delete unavailable headers for store.
+// Also remember that you need provide only one argument: inCtx or inReq.
+func (b *BackendNode) Fetch(rule *config.Rule, inCtx *fasthttp.RequestCtx, inReq *fasthttp.Request) (
+	outReq *fasthttp.Request, outResp *fasthttp.Response, releaser func(*fasthttp.Request, *fasthttp.Response), err error,
+) {
+	/**
+	 * Acquire request and response.
+	 */
+	outReq = fasthttp.AcquireRequest()
+	outResp = fasthttp.AcquireResponse()
+
+	/**
+	 * Sets upped releaser func.
+	 * Note: If you don't know why it is here, read more about sync.Pool, memory management and 'use after free' error.
+	 */
+	releaser = func(rq *fasthttp.Request, rsp *fasthttp.Response) {
+		fasthttp.ReleaseRequest(rq)
+		fasthttp.ReleaseResponse(rsp)
+	}
+
+	/**
+	 * Builds URI (at first COPIES request from source) fur acquired request.
+	 */
+	if inCtx == nil {
+		inReq.CopyTo(outReq)
+	} else {
+		inCtx.Request.CopyTo(outReq)
+	}
+	outReq.URI().SetSchemeBytes(b.cfg.SchemeBytes) // http or https
+	outReq.URI().SetHostBytes(b.cfg.HostBytes)     // backend.example.com
+
+	/**
+	 * Determines, whether it should use a regular timeout or the maximum value.
+	 */
+	var timeout = b.cfg.Timeout
+	if len(outReq.Header.PeekBytes(b.cfg.UseMaxTimeoutHeaderBytes)) > 0 {
+		timeout = b.cfg.MaxTimeout
+	}
+
+	/**
+	 * Execute request to an external backend.
+	 */
+	if err = httpClient.DoTimeout(outReq, outResp, timeout); err != nil {
+		releaser(outReq, outResp)
+		return nil, nil, defaultReleaser, err
+	}
+
+	/**
+	 * Filters response headers if rule !== nil (mutates response).
+	 */
+	b.filterHeaders(rule, outResp)
+
+	/**
+	 * Respond with non-default releaser or outReq and outResp will be leaked from fasthttp internal pools!
+	 */
+	return outReq, outResp, releaser, nil
+}
+
+func (b *BackendNode) filterHeaders(rule *config.Rule, resp *fasthttp.Response) {
+	if rule != nil {
+		allowedMap := rule.CacheValue.HeadersMap
+		if len(allowedMap) > 0 {
+			var kvBuf = pools.KeyValueSlicePool.Get().(*[][2][]byte)
+
+			resp.Header.All()(func(k, v []byte) bool {
+				if _, ok := allowedMap[unsafe.String(unsafe.SliceData(k), len(k))]; ok {
+					*kvBuf = append(*kvBuf, [2][]byte{k, v})
+				}
+				return true
+			})
+
+			resp.Header.Reset()
+			for _, kv := range *kvBuf {
+				resp.Header.AddBytesKV(kv[0], kv[1])
+			}
+
+			*kvBuf = (*kvBuf)[:0]
+			pools.KeyValueSlicePool.Put(kvBuf)
+		}
+	}
+}
+
+func (b *BackendNode) ID() string {
+	return b.id
+}
+
+func (b *BackendNode) Name() string {
+	return fmt.Sprintf("%s (%s://%s)", b.id, b.cfg.Scheme, b.cfg.Host)
+}
+
+func (b *BackendNode) Cfg() *config.Backend {
+	return b.cfg
+}
+
+func (b *BackendNode) IsHealthy() error {
 	req := fasthttp.AcquireRequest()
 	defer fasthttp.ReleaseRequest(req)
 
-	urlBuf := urlBufPool.Get().(*bytes.Buffer)
-	defer func() { urlBuf.Reset(); urlBufPool.Put(urlBuf) }()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseResponse(resp)
+
+	uri := req.URI()
+	uri.SetSchemeBytes(b.cfg.SchemeBytes)    // "http" / "https"
+	uri.SetHostBytes(b.cfg.HostBytes)        // backend.example.com
+	uri.SetPathBytes(b.cfg.HealthcheckBytes) // /k8s/probe or /healthcheck for example
 
 	req.Header.SetMethod(fasthttp.MethodGet)
-	urlBuf.Grow(len(s.cfg.Cache.Proxy.FromUrl) + len(path) + len(query) + 1)
-
-	if _, err = urlBuf.Write(s.cfg.Cache.Proxy.FromUrl); err != nil {
-		return 0, nil, nil, emptyReleaseFn, err
+	if err := httpClient.DoTimeout(req, resp, b.cfg.Timeout); err != nil {
+		return err
 	}
-	if _, err = urlBuf.Write(path); err != nil {
-		return 0, nil, nil, emptyReleaseFn, err
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return ErrNotHealthyStatusCode
 	}
-	if _, err = urlBuf.Write(queryPrefix); err != nil {
-		return 0, nil, nil, emptyReleaseFn, err
-	}
-	if _, err = urlBuf.Write(query); err != nil {
-		return 0, nil, nil, emptyReleaseFn, err
-	}
-	req.SetRequestURIBytes(urlBuf.Bytes())
-
-	var isBot bool
-	for _, kv := range *queryHeaders {
-		req.Header.SetBytesKV(kv[0], kv[1])
-		if bytes.Equal(kv[0], s.cfg.Cache.LifeTime.EscapeMaxReqDurationHeaderBytes) {
-			isBot = true
-		}
-	}
-
-	var timeout time.Duration
-	if isBot {
-		timeout = s.cfg.Cache.Proxy.Timeout
-	} else {
-		timeout = s.cfg.Cache.LifeTime.MaxReqDuration
-	}
-
-	resp := fasthttp.AcquireResponse()
-	if err = pools.BackendHttpClientPool.DoTimeout(req, resp, timeout); err != nil {
-		fasthttp.ReleaseResponse(resp)
-		return 0, nil, nil, emptyReleaseFn, err
-	}
-
-	headers = pools.KeyValueSlicePool.Get().(*[][2][]byte)
-
-	if rule != nil {
-		allowedHeadersMap := rule.CacheValue.HeadersMap
-		resp.Header.VisitAll(func(k, v []byte) {
-			if _, ok := allowedHeadersMap[unsafe.String(unsafe.SliceData(k), len(k))]; ok {
-				*headers = append(*headers, [2][]byte{k, v})
-			}
-		})
-	} else {
-		resp.Header.VisitAll(func(k, v []byte) {
-			*headers = append(*headers, [2][]byte{k, v})
-		})
-	}
-
-	buf := pools.BackendBodyBufferPool.Get().(*bytes.Buffer)
-
-	// make a final releaser func
-	releaseFn = func() {
-		*headers = (*headers)[:0]
-		pools.KeyValueSlicePool.Put(headers)
-
-		buf.Reset()
-		pools.BackendBodyBufferPool.Put(buf)
-
-		fasthttp.ReleaseResponse(resp)
-	}
-
-	if err = resp.BodyWriteTo(buf); err != nil {
-		releaseFn() // release on error
-		return 0, nil, nil, emptyReleaseFn, err
-	}
-
-	return resp.StatusCode(), headers, buf.Bytes(), releaseFn, nil
+	return nil
 }
