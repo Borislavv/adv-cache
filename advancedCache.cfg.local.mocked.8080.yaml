@@ -20,6 +20,7 @@ cache:
     #  2. 'deny'  - will immediately discard request by returning ErrNoAvailableBackends error.
     #     Best performance, lowest memory and CPU usage due to we do not stack goroutines in the Scheduler (moreover each routine it is at least allocation).
     policy: "await" # allowed: "await", "deny"
+    # Cluster or backend (cluster has more priority if defined both)
     backend:
       id: "seoLux"
       enabled: true

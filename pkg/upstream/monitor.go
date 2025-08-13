@@ -31,10 +31,9 @@ func (c *BackendCluster) monitor(ctx context.Context) {
 		case <-each5sec:
 			go c.checkHealthyIdle()
 			go c.checkQuarantine()
-			go c.showBackendsState()
 		case <-eachMinute:
-			go c.checkDead()
 			go c.watchMinuteErrRateAndReset()
+			go c.checkDead()
 		}
 	}
 }
@@ -101,13 +100,16 @@ func (c *BackendCluster) checkDead() {
 	c.mu.RUnlock()
 }
 
-func (c *BackendCluster) checkErrRate(reset bool) {
+func (c *BackendCluster) checkErrRate(reset bool, interval time.Duration) {
 	c.mu.RLock()
 	for _, slot := range c.all {
 		if !slot.isIdle() && slot.hasHealthyState() {
 			go func(slot *backendSlot) {
 				slot.Lock()
 				defer slot.Unlock()
+
+				// print backends state before reset and possible moves
+				c.showBackendState(slot, interval)
 
 				if reset {
 					defer func() {
@@ -147,47 +149,44 @@ func (c *BackendCluster) checkErrRate(reset bool) {
 			slot.hotPathCounters.errors.Store(0)
 		}
 	}
+	// shot total backends stat under single mutex lock
+	c.showHealthinessState()
 	c.mu.RUnlock()
 }
 
 func (c *BackendCluster) watchMinuteErrRateAndReset() {
-	i := 6
+	const (
+		itersBy5Sec = 12
+		interval    = time.Second * 5
+	)
+
+	i := itersBy5Sec
 	for {
 		select {
 		case <-c.ctx.Done():
 			return
-		case <-time.After(time.Second * 10):
-			if i = i - 1; i <= 0 {
-				c.checkErrRate(true)
+		case <-time.After(interval):
+			i = i - 1
+			elapsed := time.Duration(itersBy5Sec-i) * interval
+			c.checkErrRate(i <= 0, elapsed)
+			if i <= 0 {
 				return
-			} else {
-				c.checkErrRate(false)
 			}
 		}
 	}
 }
 
-func (c *BackendCluster) showBackendsState() {
-	c.mu.RLock()
-	for _, slot := range c.all {
-		go func(slot *backendSlot) {
-			slot.RLock()
-			defer slot.RUnlock()
+func (c *BackendCluster) showBackendState(slot *backendSlot, interval time.Duration) {
+	var (
+		total  = slot.hotPathCounters.total.Load()
+		errors = slot.hotPathCounters.errors.Load()
+	)
 
-			var (
-				total  = slot.hotPathCounters.total.Load()
-				errors = slot.hotPathCounters.errors.Load()
-			)
-
-			log.Info().Msgf(
-				"[upstream][%s] %s={probes: {succes=%d, error=%d}, rate: {err=%.f%%, total=%d, errors=%d, limit=%drps}}",
-				slot.state.String(), slot.upstream.backend.id, slot.counters.sucProbes, slot.counters.errProbes,
-				safeDivide(float64(errors), float64(total))*100, total, errors, slot.jitter.limit,
-			)
-		}(slot)
-	}
-	c.showHealthinessState()
-	c.mu.RUnlock()
+	log.Info().Msgf(
+		"[upstream][%s] %s={probes: {succes=%d, error=%d}, rate: {err=%.f%%, total=%d, errors=%d, limit=%dreqs/s, RPS=%.f}}",
+		slot.state.String(), slot.upstream.backend.id, slot.counters.sucProbes, slot.counters.errProbes,
+		safeDivide(float64(errors), float64(total))*100, total, errors, slot.jitter.limit, float64(total)/interval.Seconds(),
+	)
 }
 
 func (c *BackendCluster) showHealthinessState() {

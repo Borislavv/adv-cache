@@ -115,6 +115,10 @@ func (c *BackendCluster) initBackends(ctx context.Context, backendsCfg []*config
 	slotsCh := make(chan *backendSlot, slotsChCap)
 
 	for _, backendCfg := range backendsCfg {
+		if !backendCfg.Enabled {
+			continue
+		}
+
 		if _, found := allSlotsByID[backendCfg.ID]; found {
 			return fmt.Errorf("config has duplicate backends '%s'", backendCfg.ID)
 		}
