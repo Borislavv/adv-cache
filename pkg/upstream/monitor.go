@@ -158,8 +158,8 @@ func (c *BackendCluster) checkErrRate(reset bool, interval time.Duration) {
 
 func (c *BackendCluster) watchMinuteErrRateAndReset() {
 	const (
-		itersBy5Sec = 12
-		interval    = time.Second * 5
+		itersBy5Sec     = 12
+		fiveSecInterval = time.Second * 5
 	)
 
 	i := itersBy5Sec
@@ -167,9 +167,9 @@ func (c *BackendCluster) watchMinuteErrRateAndReset() {
 		select {
 		case <-c.ctx.Done():
 			return
-		case <-time.After(interval):
+		case <-time.After(fiveSecInterval):
 			i = i - 1
-			elapsed := time.Duration(itersBy5Sec-i) * interval
+			elapsed := time.Duration(itersBy5Sec-i) * fiveSecInterval
 			c.checkErrRate(i <= 0, elapsed)
 			if i <= 0 {
 				return
