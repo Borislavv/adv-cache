@@ -42,7 +42,7 @@ type Balancer interface {
 // - shardedMap is the underlying data storage (map of all entries).
 type Balance struct {
 	ctx        context.Context
-	shards     [sharded.NumOfShards]*ShardNode // Shard index → *ShardNode
+	shards     [sharded.TotalShards]*ShardNode // Shard index → *ShardNode
 	memList    *list.List[*ShardNode]          // Doubly-linked list of shards, ordered by Memory usage (most loaded at front)
 	shardedMap *sharded.Map[*model.Entry]      // Actual underlying storage of entries
 }
@@ -50,9 +50,9 @@ type Balance struct {
 var ptrBytesSize uint64 = 8
 
 func (b *Balance) Mem() int64 {
-	mem := int64(uint64(unsafe.Sizeof(*b)) + (sharded.NumOfShards * ptrBytesSize) + (uint64(b.memList.Len()) * ptrBytesSize))
+	mem := int64(uint64(unsafe.Sizeof(*b)) + (sharded.TotalShards * ptrBytesSize) + (uint64(b.memList.Len()) * ptrBytesSize))
 	if shard := b.shards[0]; shard != nil {
-		mem += int64(uint64(unsafe.Sizeof(*shard)) * sharded.NumOfShards)
+		mem += int64(uint64(unsafe.Sizeof(*shard)) * sharded.TotalShards)
 	}
 	return mem
 }

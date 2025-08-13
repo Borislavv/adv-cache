@@ -11,8 +11,7 @@ import (
 	"time"
 )
 
-const NumOfShards uint64 = 2049  // 2048 total shards (one for collisions)
-const ActiveShards uint64 = 2047 // 2047 active shards
+const TotalShards = 2048
 
 // Value must implement all cache entry interfaces: keying, sizing, and releasability.
 type Value interface {
@@ -25,13 +24,13 @@ type Map[V Value] struct {
 	ctx    context.Context
 	len    int64
 	mem    int64
-	shards [NumOfShards]*Shard[V]
+	shards [TotalShards]*Shard[V]
 }
 
 // NewMap creates a new sharded map with preallocated shards and a default per-shard map capacity.
 func NewMap[V Value](ctx context.Context) *Map[V] {
 	m := &Map[V]{ctx: ctx}
-	for id := uint64(0); id < NumOfShards; id++ {
+	for id := uint64(0); id < TotalShards; id++ {
 		m.shards[id] = NewShard[V](id)
 	}
 	m.runMemRefresher()
@@ -40,12 +39,7 @@ func NewMap[V Value](ctx context.Context) *Map[V] {
 
 // MapShardKey calculates the shard index for a given key.
 func MapShardKey(key uint64) uint64 {
-	// rewrite 0 idx to the last shard
-	if k := key % ActiveShards; k == 0 {
-		return ActiveShards + 1
-	} else {
-		return k
-	}
+	return key % TotalShards
 }
 
 // Set inserts or updates a value in the correct shard. Returns a releaser for ref counting.
@@ -60,7 +54,7 @@ func (smap *Map[V]) Get(key uint64) (value V, ok bool) {
 }
 
 func (smap *Map[V]) Rnd() (value V, ok bool) {
-	return smap.shards[uint64(rand.Intn(int(ActiveShards)))].GetRand()
+	return smap.shards[uint64(rand.Intn(TotalShards))].GetRand()
 }
 
 // Remove deletes a value by key, returning how much memory was freed and a pointer to its LRU/list element.
@@ -99,7 +93,7 @@ func (smap *Map[V]) Shard(key uint64) *Shard[V] {
 // The callback runs in a separate goroutine for each shard; fn should be goroutine-safe.
 func (smap *Map[V]) WalkShards(ctx context.Context, fn func(key uint64, shard *Shard[V])) {
 	var wg sync.WaitGroup
-	wg.Add(int(NumOfShards))
+	wg.Add(TotalShards)
 	defer wg.Wait()
 	for k, s := range smap.shards {
 		select {
@@ -114,7 +108,7 @@ func (smap *Map[V]) WalkShards(ctx context.Context, fn func(key uint64, shard *S
 	}
 }
 
-// Len returns the total number of elements in all shards (O(NumOfShards)).
+// Len returns the total number of elements in all shards (O(totalShards)).
 func (smap *Map[V]) Len() int64 {
 	return atomic.LoadInt64(&smap.len)
 }
