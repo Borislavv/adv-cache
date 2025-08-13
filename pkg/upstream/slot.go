@@ -164,8 +164,9 @@ func (s *backendSlot) shouldResurrect() (probes int64, should bool) {
 	return s.counters.sucProbes, s.counters.sucProbes > probesInRow
 }
 
-func (s *backendSlot) isIdle() bool {
-	return s.hotPathCounters.total.Load() == 0
+// isIdle - checks whether the number of total requests is lower than given threshold n.
+func (s *backendSlot) isIdle(n int64) bool {
+	return s.hotPathCounters.total.Load() <= n
 }
 
 func (s *backendSlot) hasHealthyState() bool {

@@ -40,8 +40,9 @@ func (c *BackendCluster) monitor(ctx context.Context) {
 
 func (c *BackendCluster) checkHealthyIdle() {
 	c.mu.RLock()
+	const numIdleReqs = 0
 	for _, slot := range c.all {
-		if !slot.isIdle() || !slot.hasHealthyState() { // not idle, skip due to this slot will handle by checkErrRate() worker
+		if !slot.isIdle(numIdleReqs) || !slot.hasHealthyState() { // not idle, skip due to this slot will handle by checkErrRate() worker
 			continue
 		}
 		go func(slot *backendSlot) {
@@ -102,8 +103,9 @@ func (c *BackendCluster) checkDead() {
 
 func (c *BackendCluster) checkErrRate(reset bool, interval time.Duration) {
 	c.mu.RLock()
+	const numIdleReqs = 50 // for make decision
 	for _, slot := range c.all {
-		if !slot.isIdle() && slot.hasHealthyState() {
+		if !slot.isIdle(numIdleReqs) && slot.hasHealthyState() {
 			go func(slot *backendSlot) {
 				slot.Lock()
 				defer slot.Unlock()
