@@ -61,6 +61,8 @@ var httpClient = &fasthttp.Client{
 	// Read/Write timeouts.
 	ReadTimeout:         500 * time.Millisecond,
 	WriteTimeout:        500 * time.Millisecond,
+	ReadBufferSize:      32784,
+	WriteBufferSize:     32784,
 	MaxResponseBodySize: 0,
 }
 
