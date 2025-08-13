@@ -83,7 +83,7 @@ func (c *BackendCluster) fetch(slot *backendSlot, rule *config.Rule, inCtx *fast
 ) {
 	slot.hotPathCounters.total.Add(1)
 	outReq, outResp, releaser, err = slot.backend.Fetch(rule, inCtx, inReq)
-	if err != nil || outResp.StatusCode() > fasthttp.StatusInternalServerError {
+	if err != nil || outResp.StatusCode() >= fasthttp.StatusInternalServerError {
 		slot.hotPathCounters.errors.Add(1)
 	}
 	return
