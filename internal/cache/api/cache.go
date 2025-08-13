@@ -25,12 +25,11 @@ import (
 const CacheGetPath = "/{any:*}"
 
 var (
-	total    = &atomic.Int64{}
-	hits     = &atomic.Int64{}
-	misses   = &atomic.Int64{}
-	proxied  = &atomic.Int64{}
-	errered  = &atomic.Int64{}
-	duration = &atomic.Int64{} // UnixNano
+	total   = &atomic.Int64{}
+	hits    = &atomic.Int64{}
+	misses  = &atomic.Int64{}
+	proxied = &atomic.Int64{}
+	errered = &atomic.Int64{}
 )
 
 var (
@@ -78,9 +77,6 @@ func (c *CacheProxyController) AddRoute(router *router.Router) {
 
 // Index is the main HTTP handler.
 func (c *CacheProxyController) Index(ctx *fasthttp.RequestCtx) {
-	var from = time.Now()
-	defer func() { duration.Add(time.Since(from).Nanoseconds()) }()
-
 	total.Add(1)
 	if c.cfg.IsEnabled() {
 		if err := c.handleTroughCache(ctx); err != nil {
@@ -218,13 +214,12 @@ func (c *CacheProxyController) runLoggerMetricsWriter() {
 		metricsTicker := utils.NewTicker(c.ctx, time.Second)
 
 		var (
-			// 5s логика
-			totalNum         int64
-			hitsNum          int64
-			missesNum        int64
-			errorsNum        int64
-			proxiedNum       int64
-			totalDurationNum int64
+			// 5s window
+			totalNum   int64
+			hitsNum    int64
+			missesNum  int64
+			errorsNum  int64
+			proxiedNum int64
 
 			accHourly   counters
 			acc12Hourly counters
@@ -261,14 +256,7 @@ func (c *CacheProxyController) runLoggerMetricsWriter() {
 				errorsNumLoc := errered.Load()
 				errered.Store(0)
 
-				totalDurationNumLoc := duration.Load()
-				duration.Store(0)
-
 				// metrics export
-				var avgDuration float64
-				if totalNumLoc > 0 {
-					avgDuration = float64(totalDurationNumLoc) / float64(totalNumLoc)
-				}
 				memUsage, length := c.cache.Stat()
 				c.metrics.SetCacheLength(uint64(length))
 				c.metrics.SetCacheMemory(uint64(memUsage))
@@ -277,25 +265,22 @@ func (c *CacheProxyController) runLoggerMetricsWriter() {
 				c.metrics.SetErrors(uint64(errorsNumLoc))
 				c.metrics.SetProxiedNum(uint64(proxiedNumLoc))
 				c.metrics.SetRPS(float64(totalNumLoc))
-				c.metrics.SetAvgResponseTime(avgDuration)
 
 				totalNum += totalNumLoc
 				hitsNum += hitsNumLoc
 				missesNum += missesNumLoc
 				errorsNum += errorsNumLoc
 				proxiedNum += proxiedNumLoc
-				totalDurationNum += totalDurationNumLoc
 
-				accHourly.add(totalNumLoc, hitsNumLoc, missesNumLoc, errorsNumLoc, proxiedNumLoc, totalDurationNumLoc)
-				acc12Hourly.add(totalNumLoc, hitsNumLoc, missesNumLoc, errorsNumLoc, proxiedNumLoc, totalDurationNumLoc)
-				acc24Hourly.add(totalNumLoc, hitsNumLoc, missesNumLoc, errorsNumLoc, proxiedNumLoc, totalDurationNumLoc)
+				accHourly.add(totalNumLoc, hitsNumLoc, missesNumLoc, errorsNumLoc, proxiedNumLoc)
+				acc12Hourly.add(totalNumLoc, hitsNumLoc, missesNumLoc, errorsNumLoc, proxiedNumLoc)
+				acc24Hourly.add(totalNumLoc, hitsNumLoc, missesNumLoc, errorsNumLoc, proxiedNumLoc)
 
 				if i == logIntervalSecs {
 					elapsed := time.Since(prev)
-					dur := time.Duration(int(avgDuration))
 					rps := float64(totalNum) / elapsed.Seconds()
 
-					if dur == 0 && rps == 0 {
+					if rps == 0 {
 						continue
 					}
 
@@ -313,19 +298,18 @@ func (c *CacheProxyController) runLoggerMetricsWriter() {
 							Str("rps", strconv.Itoa(int(rps))).
 							Str("served", strconv.Itoa(int(totalNum))).
 							Str("periodMs", strconv.Itoa(logIntervalSecs*1000)).
-							Str("avgDuration", dur.String()).
 							Str("elapsed", elapsed.String())
 					}
 
 					if c.cfg.IsEnabled() {
 						logEvent.Msgf(
-							"[%s][5s] served %d requests (rps: %.f, avg.dur.: %s hits: %d, misses: %d, errered: %d)",
-							target, totalNum, rps, dur.String(), hitsNum, missesNum, errorsNum,
+							"[%s][5s] served %d requests (rps: %.f, hits: %d, misses: %d, errered: %d)",
+							target, totalNum, rps, hitsNum, missesNum, errorsNum,
 						)
 					} else {
 						logEvent.Msgf(
-							"[%s][5s] served %d requests (rps: %.f, avg.dur.: %s total: %d, proxied: %d, errered: %d)",
-							target, totalNum, rps, dur.String(), totalNum, proxiedNum, errorsNum,
+							"[%s][5s] served %d requests (rps: %.f, total: %d, proxied: %d, errered: %d)",
+							target, totalNum, rps, totalNum, proxiedNum, errorsNum,
 						)
 					}
 
@@ -334,7 +318,6 @@ func (c *CacheProxyController) runLoggerMetricsWriter() {
 					missesNum = 0
 					errorsNum = 0
 					proxiedNum = 0
-					totalDurationNum = 0
 					prev = time.Now()
 					i = 0
 				}
@@ -357,25 +340,23 @@ func (c *CacheProxyController) runLoggerMetricsWriter() {
 }
 
 type counters struct {
-	total    int64
-	hits     int64
-	misses   int64
-	errors   int64
-	proxied  int64
-	duration int64
+	total   int64
+	hits    int64
+	misses  int64
+	errors  int64
+	proxied int64
 }
 
-func (c *counters) add(total, hits, misses, errors, proxied, dur int64) {
+func (c *counters) add(total, hits, misses, errors, proxied int64) {
 	c.total += total
 	c.hits += hits
 	c.misses += misses
 	c.errors += errors
 	c.proxied += proxied
-	c.duration += dur
 }
 
 func (c *counters) reset() {
-	c.total, c.hits, c.misses, c.errors, c.proxied, c.duration = 0, 0, 0, 0, 0, 0
+	c.total, c.hits, c.misses, c.errors, c.proxied = 0, 0, 0, 0, 0
 }
 
 func logLong(label string, c counters, cfg config.Config) {
@@ -383,14 +364,8 @@ func logLong(label string, c counters, cfg config.Config) {
 		return
 	}
 
-	var (
-		avgDur = time.Duration(0)
-		avgRPS float64
-	)
-
+	var avgRPS float64
 	if c.total > 0 {
-		avgDur = time.Duration(int(c.duration / c.total))
-
 		switch label {
 		case "1h":
 			avgRPS = float64(c.total) / 3600
@@ -411,10 +386,9 @@ func logLong(label string, c counters, cfg config.Config) {
 			Int64("misses", c.misses).
 			Int64("errered", c.errors).
 			Int64("proxied", c.proxied).
-			Float64("avgRPS", avgRPS).
-			Str("avgDuration", avgDur.String())
+			Float64("avgRPS", avgRPS)
 	}
 
-	logEvent.Msgf("[cache][%s] total=%d hits=%d misses=%d errered=%d proxied=%d avgRPS=%.2f avgDur=%s",
-		label, c.total, c.hits, c.misses, c.errors, c.proxied, avgRPS, avgDur.String())
+	logEvent.Msgf("[cache][%s] total=%d hits=%d misses=%d errered=%d proxied=%d avgRPS=%.2f",
+		label, c.total, c.hits, c.misses, c.errors, c.proxied, avgRPS)
 }

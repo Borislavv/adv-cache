@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	ConfigPath      = "advancedCache.cfg.yaml"
-	ConfigPathLocal = "advancedCache.cfg.local.yaml"
+	ConfigPath      = "advCache.cfg.yaml"
+	ConfigPathLocal = "advCache.cfg.local.yaml"
 )
 
 type Version struct {
