@@ -1,16 +1,14 @@
 package keyword
 
 var (
-	/** Common */
-	RPS      = "rps"
-	Errored  = "errors"  // num of errors
-	Panicked = "panics"  // num of panics
-	Proxied  = "proxies" // num of proxy requests
-	/* Cache specifically */
-	Hits                     = "cache_hits"
-	Misses                   = "cache_misses"
-	MapMemoryUsageMetricName = "cache_memory_usage"
-	MapLength                = "cache_length"
+	RPS                      = "adv_cache_rps"
+	Errored                  = "adv_cache_errors"  // num of errors
+	Panicked                 = "adv_cache_panics"  // num of panics
+	Proxied                  = "adv_cache_proxies" // num of proxy requests
+	Hits                     = "adv_cache_cache_hits"
+	Misses                   = "adv_cache_cache_misses"
+	MapMemoryUsageMetricName = "adv_cache_cache_memory_usage"
+	MapLength                = "adv_cache_cache_length"
 )
 
 func MetricsCounters() []string {
