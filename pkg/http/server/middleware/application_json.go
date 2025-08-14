@@ -4,10 +4,6 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-var (
-	hostK = []byte("Host")
-	hostV = []byte("0.0.0.0")
-)
 var applicationJsonBytes = []byte("application/json")
 
 type ApplicationJsonMiddleware struct{}
@@ -22,6 +18,5 @@ func (ApplicationJsonMiddleware) Middleware(next fasthttp.RequestHandler) fastht
 		if len(ctx.Response.Header.ContentType()) == 0 {
 			ctx.Response.Header.SetContentTypeBytes(applicationJsonBytes)
 		}
-		ctx.Response.Header.SetBytesKV(hostK, hostV)
 	}
 }
