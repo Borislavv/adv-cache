@@ -42,16 +42,6 @@ cache:
           max_timeout: "1m"
           use_max_timeout_header: "X-Google-Bot"
           healthcheck: "/healthcheck"
-        - id: "seoAmsWeb-remote"
-          enabled: true
-          host: "seo-master.ams-web.kube.xbet.lan"
-          scheme: "https"
-          rate: 500
-          timeout: "5s"
-          max_timeout: "1m"
-          use_max_timeout_header: "X-Google-Bot"
-          healthcheck: "/healthcheck"
-
 
   data:
     dump:
