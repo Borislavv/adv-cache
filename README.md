@@ -260,19 +260,6 @@ Key series (names from `pkg/prometheus/metrics/keyword`):
 
 ---
 
-## 🗺️ Roadmap / Good‑first improvements
-1. **Admission:** Hybrid windowed‑TinyLFU (W‑TinyLFU) with Doorkeeper → better protection against scan pollution.
-2. **Shard eviction accuracy:** Add optional *per‑entry age* signal to bias evictions within a heavy shard.
-3. **Time source:** cached `time.Now()` ticker for hot path (avoid syscalls where applicable).
-4. **Allocator pressure:** audit `[]byte` ↔ `string` conversions; prefer `Append` APIs; ensure VictoriaMetrics counters stay allocation‑free.
-5. **Backend cluster:** expose a **/cluster** debug endpoint with slot states; add *jittered* slow‑start ramp‑up.
-6. **Dump IO:** add parallel prefetch during load; mmap‑based reader (optional).
-7. **Config:** validate shard constants coherently (active vs collision shard) at boot; refuse invalid budgets.
-8. **Testing:** property‑based tests for key canonicalization; heavy race tests for eviction under churn.
-9. **API:** optional **cache namespaces** (multi‑tenant separation) = simple key prefixing.
-
----
-
 ## 📦 Build & deploy
 - **Dockerfile** provided; consider enabling `GODEBUG=gctrace=1` in staging to size memory budgets.
 - Run under a reverse proxy or as a sidecar; health probes ready.
