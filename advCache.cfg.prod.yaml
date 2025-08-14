@@ -105,6 +105,8 @@ cache:
           - Content-Encoding
           - Connection
           - Strict-Transport-Security
+          - Vary
+          - Cache-Control
           - X-Request-ID
           - X-Request-GUID
 
@@ -126,5 +128,7 @@ cache:
           - Content-Encoding
           - Connection
           - Strict-Transport-Security
+          - Vary
+          - Cache-Control
           - X-Request-ID
           - X-Request-GUID

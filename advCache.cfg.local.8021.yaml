@@ -10,8 +10,8 @@ cache:
     gomaxprocs: 12
 
   api:
-    name: "starTeam.advCache"
-    port: "8020"
+    name: "starTeam.advCache:8021"
+    port: "8021"
 
   upstream:
     # Allowed policies:
