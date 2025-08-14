@@ -99,16 +99,14 @@ cache:
           - Accept-Encoding
       cache_value:
         headers:
+          - Server
           - Content-Type
+          - Content-Length
           - Content-Encoding
-          - Cache-Control
-          - Vary
+          - Connection
           - Strict-Transport-Security
-          - Cache-Control
-          - X-Content-Digest
           - X-Request-ID
           - X-Request-GUID
-          - Age
 
     /api/v1/pagecontent:
       cache_key:
@@ -122,14 +120,11 @@ cache:
           - Accept-Encoding
       cache_value:
         headers:
+          - Server
           - Content-Type
-          - Content-Encoding
-          - Cache-Control
-          - Vary
-          - Strict-Transport-Security
           - Content-Length
-          - Cache-Control
-          - X-Content-Digest
+          - Content-Encoding
+          - Connection
+          - Strict-Transport-Security
           - X-Request-ID
           - X-Request-GUID
-          - Age

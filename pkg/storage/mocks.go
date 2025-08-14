@@ -2716,7 +2716,7 @@ func LoadMocks(ctx context.Context, config config.Config, storage Storage, num i
 		defer log.Info().Msg("[mocks] mocked data finished loading")
 
 		path := []byte("/api/v2/pagedata")
-		for entry := range streamEntryPointersConsecutive(ctx, config, path, num) {
+		for entry := range StreamEntryPointersConsecutive(ctx, config, path, num) {
 			storage.Set(entry)
 		}
 	}()
@@ -2778,7 +2778,7 @@ func GetSingleMock(i int, path []byte, cfg config.Config) *model.Entry {
 	return entry
 }
 
-func streamEntryPointersConsecutive(ctx context.Context, cfg config.Config, path []byte, num int) <-chan *model.Entry {
+func StreamEntryPointersConsecutive(ctx context.Context, cfg config.Config, path []byte, num int) <-chan *model.Entry {
 	outCh := make(chan *model.Entry, runtime.GOMAXPROCS(0)*4)
 	go func() {
 		defer close(outCh)
