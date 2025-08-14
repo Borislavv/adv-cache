@@ -1,0 +1,184 @@
+{
+  "version": "v1",
+  "datasources": {
+    "prom": {
+      "prometheus": {
+        "address": "http://localhost:8428"
+      }
+    }
+  },
+  "dashboard": {
+    "grid": { "fixedWidgets": false, "maxWidth": 100 },
+    "widgets": [
+      {
+        "title": "RPS",
+        "gridPos": { "w": 20 },
+        "singlestat": {
+          "unit": "reqps",
+          "decimals": 0,
+          "query": { "datasourceID": "prom", "expr": "adv_cache_rps OR rate(adv_cache_proxies[1m])" }
+        }
+      },
+      {
+        "title": "Error rate %",
+        "gridPos": { "w": 20 },
+        "singlestat": {
+          "unit": "percent",
+          "decimals": 2,
+          "query": { "datasourceID": "prom", "expr": "100 * ( rate(adv_cache_errors[1m]) / clamp_min(rate(adv_cache_proxies[1m]), 1e-9) )" }
+        }
+      },
+      {
+        "title": "Hit rate %",
+        "gridPos": { "w": 20 },
+        "singlestat": {
+          "unit": "percent",
+          "decimals": 2,
+          "query": { "datasourceID": "prom", "expr": "100 * ( rate(adv_cache_cache_hits[1m]) / clamp_min(rate(adv_cache_cache_hits[1m]) + rate(adv_cache_cache_misses[1m]), 1e-9) )" }
+        }
+      },
+      {
+        "title": "Cache length",
+        "gridPos": { "w": 20 },
+        "singlestat": {
+          "unit": "none",
+          "decimals": 0,
+          "query": { "datasourceID": "prom", "expr": "adv_cache_cache_length" }
+        }
+      },
+      {
+        "title": "Cache memory usage",
+        "gridPos": { "w": 20 },
+        "singlestat": {
+          "unit": "byte",
+          "decimals": 0,
+          "query": { "datasourceID": "prom", "expr": "adv_cache_cache_memory_usage" }
+        }
+      },
+      {
+        "title": "Requests per second",
+        "gridPos": { "w": 100 },
+        "graph": {
+          "visualization": {
+            "legend": { "rightSide": true },
+            "yAxis": { "unit": "reqps", "decimals": 0 }
+          },
+          "queries": [
+            { "datasourceID": "prom", "legend": "RPS", "expr": "adv_cache_rps OR rate(adv_cache_proxies[1m])" },
+            { "datasourceID": "prom", "legend": "errors/s", "expr": "rate(adv_cache_errors[1m])" }
+          ]
+        }
+      },
+      {
+        "title": "Cache hits & misses per second",
+        "gridPos": { "w": 50 },
+        "graph": {
+          "visualization": {
+            "legend": { "rightSide": true },
+            "yAxis": { "unit": "reqps", "decimals": 0 }
+          },
+          "queries": [
+            { "datasourceID": "prom", "legend": "hits/s", "expr": "rate(adv_cache_cache_hits[1m])" },
+            { "datasourceID": "prom", "legend": "misses/s", "expr": "rate(adv_cache_cache_misses[1m])" }
+          ]
+        }
+      },
+      {
+        "title": "Backend current RPS (by backend)",
+        "gridPos": { "w": 50 },
+        "graph": {
+          "visualization": {
+            "legend": { "rightSide": true },
+            "yAxis": { "unit": "reqps", "decimals": 0 }
+          },
+          "queries": [
+            { "datasourceID": "prom", "legend": "{{backend}}", "expr": "adv_backend_current_rps" }
+          ]
+        }
+      },
+      {
+        "title": "Backend error rate %",
+        "gridPos": { "w": 50 },
+        "graph": {
+          "visualization": {
+            "legend": { "rightSide": true },
+            "yAxis": { "unit": "percent", "decimals": 1 }
+          },
+          "queries": [
+            { "datasourceID": "prom", "legend": "{{backend}}", "expr": "100 * adv_backend_error_rate" }
+          ]
+        }
+      },
+      {
+        "title": "Backend states",
+        "gridPos": { "w": 100 },
+        "graph": {
+          "visualization": { "legend": { "rightSide": true } },
+          "queries": [
+            { "datasourceID": "prom", "legend": "healthy:{{backend}}", "expr": "adv_backend_is_healthy" },
+            { "datasourceID": "prom", "legend": "sick:{{backend}}",    "expr": "adv_backend_is_sick" },
+            { "datasourceID": "prom", "legend": "dead:{{backend}}",    "expr": "adv_backend_is_dead" },
+            { "datasourceID": "prom", "legend": "buried:{{backend}}",  "expr": "adv_backend_is_buried" }
+          ]
+        }
+      },
+      {
+        "title": "Backend throttling level",
+        "gridPos": { "w": 50 },
+        "graph": {
+          "visualization": {
+            "legend": { "rightSide": true },
+            "yAxis": { "unit": "none", "decimals": 2 }
+          },
+          "queries": [
+            { "datasourceID": "prom", "legend": "{{backend}}", "expr": "adv_backend_throttle_level" }
+          ]
+        }
+      },
+      {
+        "title": "Backend rate limit (per minute)",
+        "gridPos": { "w": 50 },
+        "graph": {
+          "visualization": {
+            "legend": { "rightSide": true },
+            "yAxis": { "unit": "short", "decimals": 2 }
+          },
+          "queries": [
+            { "datasourceID": "prom", "legend": "{{backend}}", "expr": "rate(adv_backend_rate_limit_total[1m])" }
+          ]
+        }
+      },
+      {
+        "title": "Probes success/fail per second",
+        "gridPos": { "w": 50 },
+        "graph": {
+          "visualization": {
+            "legend": { "rightSide": true },
+            "yAxis": { "unit": "short", "decimals": 0 }
+          },
+          "queries": [
+            { "datasourceID": "prom", "legend": "{{backend}} ok/s",   "expr": "rate(adv_backend_probes_success_total[1m])" },
+            { "datasourceID": "prom", "legend": "{{backend}} fail/s", "expr": "rate(adv_backend_probes_failed_total[1m])" }
+          ]
+        }
+      },
+      {
+        "title": "Backend transitions per minute",
+        "gridPos": { "w": 50 },
+        "graph": {
+          "visualization": {
+            "legend": { "rightSide": true },
+            "yAxis": { "unit": "short", "decimals": 3 }
+          },
+          "queries": [
+            { "datasourceID": "prom", "legend": "{{backend}} quarantined/s", "expr": "rate(adv_backend_quarantined_total[1m])" },
+            { "datasourceID": "prom", "legend": "{{backend}} cured/s",       "expr": "rate(adv_backend_cured_total[1m])" },
+            { "datasourceID": "prom", "legend": "{{backend}} killed/s",      "expr": "rate(adv_backend_killed_total[1m])" },
+            { "datasourceID": "prom", "legend": "{{backend}} resurrected/s", "expr": "rate(adv_backend_resurrected_total[1m])" },
+            { "datasourceID": "prom", "legend": "{{backend}} buried/s",      "expr": "rate(adv_backend_buried_total[1m])" }
+          ]
+        }
+      }
+    ]
+  }
+}
