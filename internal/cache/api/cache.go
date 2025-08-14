@@ -263,6 +263,7 @@ func (c *CacheProxyController) runLoggerMetricsWriter() {
 				c.metrics.SetCacheMemory(uint64(memUsage))
 				c.metrics.SetHits(uint64(hitsNumLoc))
 				c.metrics.SetMisses(uint64(missesNumLoc))
+				c.metrics.SetTotal(uint64(totalNumLoc))
 				c.metrics.SetErrors(uint64(errorsNumLoc))
 				c.metrics.SetProxiedNum(uint64(proxiedNumLoc))
 				c.metrics.SetRPS(float64(totalNumLoc))
