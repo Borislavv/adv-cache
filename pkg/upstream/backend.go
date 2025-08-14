@@ -190,8 +190,6 @@ func (b *BackendNode) IsHealthy() error {
 	resp := fasthttp.AcquireResponse()
 	defer fasthttp.ReleaseResponse(resp)
 
-	req.Header.SetBytesKV(hostK, hostV)
-
 	uri := req.URI()
 	uri.SetSchemeBytes(b.cfg.SchemeBytes)    // "http" / "https"
 	uri.SetHostBytes(b.cfg.HostBytes)        // backend.example.com
@@ -202,13 +200,7 @@ func (b *BackendNode) IsHealthy() error {
 		return err
 	}
 	if resp.StatusCode() != fasthttp.StatusOK {
-		fmt.Printf("status: %d, body: %s\n", resp.StatusCode(), string(resp.Body()))
 		return ErrNotHealthyStatusCode
 	}
 	return nil
 }
-
-var (
-	hostK = []byte("Host")
-	hostV = []byte("0.0.0.0")
-)
