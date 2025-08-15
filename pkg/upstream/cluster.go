@@ -85,19 +85,19 @@ func DumpRequestInfo(ctx *fasthttp.RequestCtx) {
 
 	// Стартовая строка запроса
 	fmt.Fprintf(&buf, "---- Incoming Request ----\n")
-	fmt.Fprintf(&buf, "Method: %s\n", ctx.Method())
-	fmt.Fprintf(&buf, "Path: %s\n", ctx.Path())
-	fmt.Fprintf(&buf, "QueryString: %s\n", ctx.URI().QueryString())
+	fmt.Fprintf(&buf, "Method: %s\n", string(ctx.Method()))
+	fmt.Fprintf(&buf, "Path: %s\n", string(ctx.Path()))
+	fmt.Fprintf(&buf, "QueryString: %s\n", string(ctx.URI().QueryString()))
 	fmt.Fprintf(&buf, "RemoteAddr: %s\n", ctx.RemoteAddr())
-	fmt.Fprintf(&buf, "Host: %s\n", ctx.Host())
-	fmt.Fprintf(&buf, "Content-Type: %s\n", ctx.Request.Header.ContentType())
+	fmt.Fprintf(&buf, "Host: %s\n", string(ctx.Host()))
+	fmt.Fprintf(&buf, "Content-Type: %s\n", string(ctx.Request.Header.ContentType()))
 	fmt.Fprintf(&buf, "Content-Length: %d\n", ctx.Request.Header.ContentLength())
 
 	// Query параметры по ключам
 	if ctx.QueryArgs().Len() > 0 {
 		fmt.Fprintf(&buf, "\nQuery params:\n")
 		ctx.QueryArgs().VisitAll(func(k, v []byte) {
-			fmt.Fprintf(&buf, "  %s = %s\n", k, v)
+			fmt.Fprintf(&buf, "  %s = %s\n", string(k), string(v))
 		})
 	}
 
@@ -105,7 +105,7 @@ func DumpRequestInfo(ctx *fasthttp.RequestCtx) {
 	if ctx.Request.Header.Len() > 0 {
 		fmt.Fprintf(&buf, "\nHeaders:\n")
 		ctx.Request.Header.VisitAll(func(k, v []byte) {
-			fmt.Fprintf(&buf, "  %s: %s\n", k, v)
+			fmt.Fprintf(&buf, "  %s: %s\n", string(k), string(v))
 		})
 	}
 
