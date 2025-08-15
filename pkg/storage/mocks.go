@@ -2,25 +2,23 @@ package storage
 
 import (
 	"context"
-	"fmt"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/ctime"
 	br "github.com/Borislavv/advanced-cache/pkg/encoding/brotli"
 	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/Borislavv/advanced-cache/pkg/pools"
 	"github.com/rs/zerolog/log"
-	"github.com/valyala/bytebufferpool"
 	"github.com/valyala/fasthttp"
 	"runtime"
 	"strconv"
 )
 
-var respTemplate = `{
+var respTemplate = []byte(`{
     "data": {
         "type": "seo/pagedata",
         "attributes": {
-            "title": "[%d] Treasure Tomb play online 👉 1xBet gambling games | 1xbet-ec.com",
-            "description": "[%d] Treasure Tomb play online - 1xBet 🕹️ Best online gambling games 🕹️ Fast payout guarantee ✔️ Play Treasure Tomb for real money with 1xbet-ec.com",
+            "title": "Treasure Tomb play online 👉 1xBet gambling games | 1xbet-ec.com",
+            "description": "Treasure Tomb play online - 1xBet 🕹️ Best online gambling games 🕹️ Fast payout guarantee ✔️ Play Treasure Tomb for real money with 1xbet-ec.com",
             "metaRobots": [
                 {
                     "name": "robots",
@@ -2706,9 +2704,9 @@ var respTemplate = `{
             "siteName": null
         }
     }
-}`
+}`)
 
-func LoadMocks(ctx context.Context, config config.Config, storage Storage, num int) {
+func LoadMocks(ctx context.Context, cfg config.Config, storage Storage, num int) {
 	go func() {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithCancel(ctx)
@@ -2718,27 +2716,24 @@ func LoadMocks(ctx context.Context, config config.Config, storage Storage, num i
 		defer log.Info().Msg("[mocks] mocked data finished loading")
 
 		path := []byte("/api/v2/pagedata")
-		for entry := range StreamEntryPointersConsecutive(ctx, config, path, num) {
-			storage.Set(entry)
+		for i := 0; i < num; i++ {
+			storage.Set(GetSingleMock(i, path, cfg))
 		}
 	}()
 }
 
 func GetSingleMock(i int, path []byte, cfg config.Config) *model.Entry {
-	query := bytebufferpool.Get()
-	defer bytebufferpool.Put(query)
-
-	query.Reset()
-	query.Write([]byte("project[id]=285"))
-	query.Write([]byte("&domain=1x001.com"))
-	query.Write([]byte("&language=en"))
-	query.Write([]byte("&choice[name]=betting"))
-	query.Write([]byte("&choice[choice][name]=betting_live"))
-	query.Write([]byte("&choice[choice][choice][name]=betting_live_null"))
-	query.Write([]byte("&choice[choice][choice][choice][name]=betting_live_null_" + strconv.Itoa(i)))
-	query.Write([]byte("&choice[choice][choice][choice][choice][name]betting_live_null_" + strconv.Itoa(i) + "_" + strconv.Itoa(i)))
-	query.Write([]byte("&choice[choice][choice][choice][choice][choice][name]betting_live_null_" + strconv.Itoa(i) + "_" + strconv.Itoa(i) + "_" + strconv.Itoa(i)))
-	query.Write([]byte("&choice[choice][choice][choice][choice][choice][choice]=null"))
+	query := make([]byte, 0, 405)
+	query = append(query, []byte("project[id]=285")...)
+	query = append(query, []byte("&domain=1x001.com")...)
+	query = append(query, []byte("&language=en")...)
+	query = append(query, []byte("&choice[name]=betting")...)
+	query = append(query, []byte("&choice[choice][name]=betting_live")...)
+	query = append(query, []byte("&choice[choice][choice][name]=betting_live_null")...)
+	query = append(query, []byte("&choice[choice][choice][choice][name]=betting_live_null_"+strconv.Itoa(i))...)
+	query = append(query, []byte("&choice[choice][choice][choice][choice][name]betting_live_null_"+strconv.Itoa(i)+"_"+strconv.Itoa(i))...)
+	query = append(query, []byte("&choice[choice][choice][choice][choice][choice][name]betting_live_null_"+strconv.Itoa(i)+"_"+strconv.Itoa(i)+"_"+strconv.Itoa(i))...)
+	query = append(query, []byte("&choice[choice][choice][choice][choice][choice][choice]=null")...)
 
 	queryHeaders := pools.SliceKeyValueBytesPool.Get().(*[][2][]byte)
 	*queryHeaders = (*queryHeaders)[:0]
@@ -2758,24 +2753,19 @@ func GetSingleMock(i int, path []byte, cfg config.Config) *model.Entry {
 	resp := fasthttp.AcquireResponse()
 
 	req.URI().SetPathBytes(path)
-
-	queryBytes := make([]byte, query.Len())
-	copy(queryBytes, query.Bytes())
-	req.URI().SetQueryStringBytes(queryBytes)
+	req.URI().SetQueryStringBytes(query)
 
 	for _, kv := range *queryHeaders {
 		req.Header.AddBytesKV(kv[0], kv[1])
 	}
-	*queryHeaders = (*queryHeaders)[:0]
 	pools.SliceKeyValueBytesPool.Put(queryHeaders)
 
 	for _, kv := range *responseHeaders {
 		resp.Header.AddBytesKV(kv[0], kv[1])
 	}
-	*responseHeaders = (*responseHeaders)[:0]
 	pools.SliceKeyValueBytesPool.Put(responseHeaders)
 
-	resp.SetStatusCode(200)
+	resp.SetStatusCode(fasthttp.StatusOK)
 	resp.SetBody(copiedBodyBytes(i))
 	resp.Header.SetLastModified(ctime.Now())
 
@@ -2806,7 +2796,7 @@ func StreamEntryPointersConsecutive(ctx context.Context, cfg config.Config, path
 
 // copiedBodyBytes returns a random ASCII string of length between minStrLen and maxStrLen.
 func copiedBodyBytes(idx int) []byte {
-	encoded, err := br.Encode([]byte(fmt.Sprintf(respTemplate, idx, idx)))
+	encoded, err := br.Encode(respTemplate)
 	if err != nil {
 		panic(err)
 	}
