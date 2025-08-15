@@ -3,6 +3,7 @@ package upstream
 import (
 	"context"
 	"fmt"
+	"github.com/Borislavv/advanced-cache/pkg/ctime"
 	"github.com/Borislavv/advanced-cache/pkg/utils"
 	"github.com/rs/zerolog/log"
 	"time"
@@ -32,7 +33,7 @@ func (c *BackendCluster) monitor(ctx context.Context) {
 			go c.checkHealthyIdle()
 			go c.checkQuarantine()
 		case <-eachMinute:
-			go c.watchMinuteErrRateAndReset()
+			go c.writeMetricsAndWatchMinuteErrRateAndReset()
 			go c.checkDead()
 		}
 	}
@@ -101,7 +102,7 @@ func (c *BackendCluster) checkDead() {
 	c.mu.RUnlock()
 }
 
-func (c *BackendCluster) checkErrRate(reset bool, interval time.Duration) {
+func (c *BackendCluster) checkErrRate(reset bool, elapsed time.Duration) {
 	c.mu.RLock()
 	const numIdleReqs = 50 // for make decision
 	for _, slot := range c.all {
@@ -110,8 +111,8 @@ func (c *BackendCluster) checkErrRate(reset bool, interval time.Duration) {
 				slot.Lock()
 				defer slot.Unlock()
 
-				// print backends state before reset and possible moves
-				c.showBackendState(slot, interval)
+				// print backends state and metrics before reset and possible moves
+				c.writeMetrics(slot, elapsed)
 
 				if reset {
 					defer func() {
@@ -156,39 +157,24 @@ func (c *BackendCluster) checkErrRate(reset bool, interval time.Duration) {
 	c.mu.RUnlock()
 }
 
-func (c *BackendCluster) watchMinuteErrRateAndReset() {
-	const (
-		itersBy5Sec     = 12
-		fiveSecInterval = time.Second * 5
-	)
+func (c *BackendCluster) writeMetricsAndWatchMinuteErrRateAndReset() {
+	each5sec := time.NewTicker(time.Second * 5)
+	defer each5sec.Stop()
 
-	i := itersBy5Sec
+	f := ctime.Now()
 	for {
 		select {
 		case <-c.ctx.Done():
 			return
-		case <-time.After(fiveSecInterval):
-			i = i - 1
-			elapsed := time.Duration(itersBy5Sec-i) * fiveSecInterval
-			c.checkErrRate(i <= 0, elapsed)
-			if i <= 0 {
+		case <-each5sec.C:
+			elapsed := ctime.Since(f)
+			reset := elapsed >= time.Minute
+			c.checkErrRate(reset, elapsed)
+			if reset {
 				return
 			}
 		}
 	}
-}
-
-func (c *BackendCluster) showBackendState(slot *backendSlot, interval time.Duration) {
-	var (
-		total  = slot.hotPathCounters.total.Load()
-		errors = slot.hotPathCounters.errors.Load()
-	)
-
-	log.Info().Msgf(
-		"[upstream][%s] %s={probes: {succes=%d, error=%d}, rate: {err=%.f%%, total=%d, errors=%d, limit=%dreqs/s, RPS=%.f}}",
-		slot.state.String(), slot.upstream.backend.id, slot.counters.sucProbes, slot.counters.errProbes,
-		safeDivide(float64(errors), float64(total))*100, total, errors, slot.jitter.limit, float64(total)/interval.Seconds(),
-	)
 }
 
 func (c *BackendCluster) showHealthinessState() {

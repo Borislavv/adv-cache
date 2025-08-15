@@ -83,8 +83,9 @@ type backendSlot struct {
 	counters        *counters
 	jitter          *jitter
 	timestamp       *timestamp
-	upstream
-	downstream
+	metrics         *backendMetrics
+	/** immutable */ upstream
+	/** immutable */ downstream
 }
 
 // newBackendSlot - makes new backends slot for cluster
@@ -97,6 +98,7 @@ func newBackendSlot(ctx context.Context, cfg *config.Backend, outRate chan<- *ba
 		hotPathCounters: &hpCounters{total: atomic.Int64{}, errors: atomic.Int64{}},
 		upstream:        upstream{cfg: cfg, backend: NewBackend(cfg)},
 		jitter:          &jitter{originRate: cfg.Rate},
+		metrics:         newBackendMetrics(cfg.ID),
 	}
 
 	go slot.renewRateProvider(cfg.Rate)
@@ -220,6 +222,8 @@ func (s *backendSlot) cure(why string, lock bool) bool {
 	s.timestamp.sickedAt = time.Time{}
 	s.timestamp.killedAt = time.Time{}
 
+	s.metrics.cure()
+
 	return true
 }
 
@@ -242,6 +246,8 @@ func (s *backendSlot) quarantine(why string, lock bool) bool {
 	s.timestamp.sickedAt = ctime.Now()
 	s.timestamp.killedAt = time.Time{}
 
+	s.metrics.quarantine()
+
 	return true
 }
 
@@ -261,6 +267,8 @@ func (s *backendSlot) kill(why string, lock bool) bool {
 	log.Info().Msgf("[upstream] backend '%s' was killed (sick -> dead) due to %s", s.backend.Name(), why)
 
 	s.timestamp.killedAt = ctime.Now()
+
+	s.metrics.kill()
 
 	return true
 }
@@ -285,6 +293,8 @@ func (s *backendSlot) resurrect(why string, lock bool) bool {
 	s.timestamp.killedAt = time.Time{}
 
 	log.Info().Msgf("[upstream] backend '%s' was resurrected (dead -> sick) due to %s, quarantining now...", s.backend.Name(), why)
+
+	s.metrics.resurrect()
 
 	return true
 }
@@ -319,6 +329,8 @@ func (s *backendSlot) throttle(why string, newThrottles ...int64) {
 		s.hotPathCounters.errors.Store(0)
 
 		go s.renewRateProvider(rt)
+
+		s.metrics.throttle(float64(throttlesNum))
 	}
 }
 
@@ -344,6 +356,8 @@ func (s *backendSlot) unthrottle(why string) {
 		s.hotPathCounters.errors.Store(0)
 
 		go s.renewRateProvider(int(rt))
+
+		s.metrics.unthrottle(float64(s.counters.throttles))
 	}
 }
 
@@ -353,7 +367,8 @@ func (s *backendSlot) errRate() float64 {
 	if total == 0 {
 		return 0
 	}
-	return float64(errors) / float64(total)
+	rt := float64(errors) / float64(total)
+	return rt
 }
 
 func (c *BackendCluster) bury(slot *backendSlot, reason string, lock bool) {
@@ -361,6 +376,8 @@ func (c *BackendCluster) bury(slot *backendSlot, reason string, lock bool) {
 	delete(c.all, slot.backend.ID())
 	slot.closeRateProvider(lock)
 	c.mu.Unlock()
+
+	slot.metrics.Buried.Add(1)
 
 	log.Info().Msgf("[upstream] backend '%s' was buried due to %s (not accessable any more)", slot.backend.Name(), reason)
 }

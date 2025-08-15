@@ -24,5 +24,6 @@ func Start(resolution time.Duration) func() {
 	}()
 	return func() { close(done) }
 }
-func Now() time.Time  { return time.Unix(0, nowUnix.Load()) }
-func UnixNano() int64 { return nowUnix.Load() }
+func Now() time.Time                  { return time.Unix(0, nowUnix.Load()) }
+func UnixNano() int64                 { return nowUnix.Load() }
+func Since(t time.Time) time.Duration { return Now().Sub(t) }

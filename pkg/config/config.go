@@ -264,10 +264,10 @@ type Rule struct {
 }
 
 type RuleKey struct {
-	Query      []string            `yaml:"query"` // Параметры, которые будут участвовать в ключе кэширования
-	QueryBytes [][]byte            // Virtual field
-	Headers    []string            `yaml:"headers"` // Хедеры, которые будут участвовать в ключе кэширования
-	HeadersMap map[string]struct{} // Virtual field
+	Query      []string          `yaml:"query"` // Параметры, которые будут участвовать в ключе кэширования
+	QueryBytes [][]byte          // Virtual field
+	Headers    []string          `yaml:"headers"` // Хедеры, которые будут участвовать в ключе кэширования
+	HeadersMap map[string][]byte // Virtual field
 }
 
 type RuleValue struct {
@@ -311,9 +311,9 @@ func LoadConfig(path string) (*Cache, error) {
 		}
 
 		// Request headers
-		keyHeadersMap := make(map[string]struct{}, len(rule.CacheKey.Headers))
+		keyHeadersMap := make(map[string][]byte, len(rule.CacheKey.Headers))
 		for _, header := range rule.CacheKey.Headers {
-			keyHeadersMap[header] = struct{}{}
+			keyHeadersMap[header] = []byte(header)
 		}
 		rule.CacheKey.HeadersMap = keyHeadersMap
 
