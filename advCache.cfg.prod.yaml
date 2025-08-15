@@ -1,0 +1,134 @@
+cache:
+  env: "dev"
+  enabled: true
+
+  logs:
+    level: "info"
+    stats: true # Should log metrics in /std/out?
+
+  runtime:
+    gomaxprocs: 0
+
+  api:
+    name: "starTeam.advCache"
+    port: "8020"
+
+  upstream:
+    # Allowed policies:
+    #  1. 'await' - awaits available slot and performs request.
+    #     This policy is friendly for cases when all backends are dead, will return ErrNoHealthyBackends error.
+    #  2. 'deny'  - will immediately discard request by returning ErrNoAvailableBackends error.
+    #     Best performance, lowest memory and CPU usage due to we do not stack goroutines in the Scheduler (moreover each routine it is at least allocation).
+    policy: "await" # allowed: "await", "deny"
+    # Cluster or backend (cluster has more priority if defined both)
+    #    backend:
+    #      id: "seoLux"
+    #      enabled: true
+    #      host: "localhost:8020"
+    #      scheme: "http"
+    #      rate: 10000
+    #      timeout: "5s"
+    #      max_timeout: "3m"
+    #      use_max_timeout_header: "X-Google-Bot"
+    #      healthcheck: "/k8s/probe"
+    cluster:
+      backends:
+        - id: "seoAmsWeb"
+          enabled: true
+          host: "seo-master-seo:8080"
+          scheme: "http"
+          rate: 500
+          timeout: "5s"
+          max_timeout: "1m"
+          use_max_timeout_header: "X-Google-Bot"
+          healthcheck: "/healthcheck"
+
+  data:
+    dump:
+      enabled: false
+      dump_dir: "public/dump"
+      dump_name: "cache.dump"
+      crc32_control_sum: true
+      max_versions: 3
+      gzip: false
+    mock:
+      enabled: false
+      length: 1000000
+
+  storage:
+    size: 8589934592 # 8GB
+
+  eviction:
+    enabled: true
+    threshold: 0.95   # Trigger eviction when cache memory usage exceeds 90% of its configured limit.
+
+  refresh:
+    enabled: true     # Should this be run?
+    ttl: "24h"        # Will be used be default with 200 status code.
+    rate: 8           # Rate limiting reqs to backend per second.
+    scan_rate: 10000  # Rate limiting of num scans items per second.
+    beta: 0.4         # Controls randomness in refresh timing to avoid thundering herd (from 0 to 1).
+    coefficient: 0.5  # Starts attempts to renew data after TTL*coefficient=50% (12h if whole TTL is 24h)
+
+  forceGC:
+    enabled: true
+    interval: "10s"
+
+  metrics:
+    enabled: true
+
+  k8s:
+    probe:
+      timeout: "5s"
+
+  rules:
+    /api/v2/pagedata:
+      refresh:
+        enabled: true     # Enabled refresh of this path.
+        ttl: "12h"         # Will be used be default with 200 status code.
+        beta: 0.4         # Controls randomness in refresh timing to avoid thundering herd (from 0 to 1).
+        coefficient: 0.5  # Starts attempts to renew data after TTL*coefficient=50% (12h if whole TTL is 24h)
+      cache_key:
+        query: # Match query parameters by prefix.
+          - project[id]
+          - domain
+          - language
+          - choice
+          - timezone
+        headers:
+          - Accept-Encoding
+      cache_value:
+        headers:
+          - Server
+          - Content-Type
+          - Content-Length
+          - Content-Encoding
+          - Connection
+          - Strict-Transport-Security
+          - Vary
+          - Cache-Control
+          - X-Request-ID
+          - X-Request-GUID
+
+    /api/v1/pagecontent:
+      cache_key:
+        query: # Match query parameters by prefix.
+          - project[id]
+          - domain
+          - language
+          - choice
+          - timezone
+        headers:
+          - Accept-Encoding
+      cache_value:
+        headers:
+          - Server
+          - Content-Type
+          - Content-Length
+          - Content-Encoding
+          - Connection
+          - Strict-Transport-Security
+          - Vary
+          - Cache-Control
+          - X-Request-ID
+          - X-Request-GUID

@@ -10,6 +10,7 @@ type Meter interface {
 	SetHits(value uint64)
 	SetMisses(value uint64)
 	SetErrors(value uint64)
+	SetTotal(value uint64)
 	SetPanics(value uint64)
 	SetProxiedNum(value uint64)
 	SetRPS(value float64)
@@ -39,6 +40,10 @@ func (m *Metrics) SetRPS(value float64) {
 
 func (m *Metrics) SetCacheMemory(bytes uint64) {
 	metrics.GetOrCreateCounter(keyword.MapMemoryUsageMetricName).Set(bytes)
+}
+
+func (m *Metrics) SetTotal(value uint64) {
+	metrics.GetOrCreateCounter(keyword.Total).Set(value)
 }
 
 func (m *Metrics) SetErrors(value uint64) {

@@ -3,12 +3,13 @@ package storage
 import (
 	"context"
 	"fmt"
-	"github.com/Borislavv/advanced-cache/pkg/mock"
-	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
-	"github.com/Borislavv/advanced-cache/pkg/upstream"
+	"github.com/Borislavv/advanced-cache/pkg/model"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Borislavv/advanced-cache/pkg/storage/lru"
+	"github.com/Borislavv/advanced-cache/pkg/upstream"
 
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/rs/zerolog"
@@ -29,18 +30,6 @@ func init() {
 	cfg = &config.Cache{
 		Cache: &config.CacheBox{
 			Enabled: true,
-			LifeTime: config.BOTs{
-				Timeout:                    time.Millisecond * 100,
-				EscapeRequestTimeoutHeader: "X-Target-Bot",
-			},
-			Upstream: &config.Upstream{
-				FromUrl: []byte("https://google.com"),
-				Rate:    1000,
-				Timeout: time.Second * 5,
-			},
-			Preallocate: config.Preallocation{
-				PerShard: 8,
-			},
 			Eviction: &config.Eviction{
 				Enabled:   true,
 				Threshold: 0.9,
@@ -50,7 +39,6 @@ func init() {
 				Beta: 0.4,
 			},
 			Storage: &config.Storage{
-				Type: "malloc",
 				Size: 1024 * 500000, // 5 MB
 			},
 			Rules: map[string]*config.Rule{
@@ -90,11 +78,11 @@ func BenchmarkReadFromStorage1000TimesPerIter(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	backend := upstream.NewBackend(ctx, cfg)
+	backend := upstream.NewBackend(&config.Backend{})
 	db := lru.NewStorage(ctx, cfg, backend)
 
-	entries := mock.GenerateEntryPointersConsecutive(cfg, backend, path, maxEntriesNum)
-	for _, entry := range entries {
+	entries := make([]*model.Entry, 0, maxEntriesNum)
+	for entry := range StreamEntryPointersConsecutive(ctx, cfg, path, maxEntriesNum) {
 		db.Set(entry)
 	}
 	length := len(entries)
@@ -122,10 +110,13 @@ func BenchmarkWriteIntoStorage1000TimesPerIter(b *testing.B) {
 	ctx, cancel := context.WithCancel(b.Context())
 	defer cancel()
 
-	backend := upstream.NewBackend(ctx, cfg)
+	backend := upstream.NewBackend(&config.Backend{})
 	db := lru.NewStorage(ctx, cfg, backend)
 
-	entries := mock.GenerateEntryPointersConsecutive(cfg, backend, path, maxEntriesNum)
+	entries := make([]*model.Entry, 0, maxEntriesNum)
+	for entry := range StreamEntryPointersConsecutive(ctx, cfg, path, maxEntriesNum) {
+		db.Set(entry)
+	}
 	length := len(entries)
 
 	b.ResetTimer()
@@ -145,11 +136,10 @@ func BenchmarkGetAllocs(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	backend := upstream.NewBackend(ctx, cfg)
+	backend := upstream.NewBackend(&config.Backend{})
 	db := lru.NewStorage(ctx, cfg, backend)
 
-	entry := mock.GenerateRandomEntryPointer(cfg, backend, path)
-	db.Set(entry)
+	entry := GetSingleMock(256, path, cfg)
 
 	b.StartTimer()
 	allocs := testing.AllocsPerRun(maxRetriesNum, func() {
@@ -163,10 +153,10 @@ func BenchmarkSetAllocs(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	backend := upstream.NewBackend(ctx, cfg)
+	backend := upstream.NewBackend(&config.Backend{})
 	db := lru.NewStorage(ctx, cfg, backend)
 
-	entry := mock.GenerateRandomEntryPointer(cfg, backend, path)
+	entry := GetSingleMock(256, path, cfg)
 
 	b.StartTimer()
 	allocs := testing.AllocsPerRun(maxRetriesNum, func() {
