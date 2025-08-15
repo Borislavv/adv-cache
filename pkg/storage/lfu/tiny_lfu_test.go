@@ -33,8 +33,8 @@ func TestTinyLFUConcurrentUsage(t *testing.T) {
 			newEntry := &model.Entry{}
 			evictEntry := &model.Entry{}
 			for j := 0; j < 1_000_000; j++ {
-				newEntry.SetMapKey(uint64(rand.Int63()))
-				evictEntry.SetMapKey(uint64(rand.Int63()))
+				newEntry.SetMapKeyForTests(uint64(rand.Int63()))
+				evictEntry.SetMapKeyForTests(uint64(rand.Int63()))
 				tlfu.Admit(newEntry, evictEntry)
 			}
 		}(i)

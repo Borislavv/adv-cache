@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/ctime"
-	"github.com/Borislavv/advanced-cache/pkg/encoding/brotli"
 	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/rs/zerolog/log"
 	"github.com/valyala/fasthttp"
@@ -2767,7 +2766,7 @@ func GetSingleMock(i int, path []byte, cfg config.Config) *model.Entry {
 	resp.SetBody(copiedBodyBytes(i))
 	resp.Header.SetLastModified(ctime.Now())
 
-	entry, err := model.NewMockEntry(cfg, req, resp)
+	entry, err := model.NewEntryWithPayload(cfg, req, resp)
 	if err != nil {
 		panic(err)
 	}
@@ -2836,7 +2835,7 @@ func StreamEntryPointersConsecutive(ctx context.Context, cfg config.Config, path
 				resp.SetBody(copiedBodyBytes(i))
 				resp.Header.SetLastModified(ctime.Now())
 
-				entry, err := model.NewMockEntry(cfg, req, resp)
+				entry, err := model.NewEntryWithPayload(cfg, req, resp)
 				if err != nil {
 					panic(err)
 				}

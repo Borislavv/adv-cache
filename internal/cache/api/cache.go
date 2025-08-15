@@ -99,7 +99,7 @@ func (c *CacheProxyController) Index(ctx *fasthttp.RequestCtx) {
 
 func (c *CacheProxyController) handleTroughCache(ctx *fasthttp.RequestCtx) error {
 	// make a lightweight requestedEntry Entry (contains only key, shardKey and fingerprint)
-	requestedEntry, err := model.NewEntryFastHttp(c.cfg, ctx)
+	requestedEntry, err := model.NewEntry(c.cfg, ctx)
 	if err != nil {
 		// retry though proxy if cache path was not found
 		return errNeedRetryThroughProxy
@@ -136,7 +136,7 @@ func (c *CacheProxyController) handleTroughCache(ctx *fasthttp.RequestCtx) error
 			entry = requestedEntry
 		}
 		// write fetched response and return it
-		responder.WriteFromResponse(ctx, resp, entry.UpdateAt())
+		responder.WriteFromResponse(ctx, resp, entry.UpdatedAt())
 	}
 
 	return nil

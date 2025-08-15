@@ -16,7 +16,7 @@ func WriteFromEntry(ctx *fasthttp.RequestCtx, entry *model.Entry) error {
 	if err != nil {
 		return err
 	}
-	write(ctx, resp, entry.UpdateAt())
+	write(ctx, resp, entry.UpdatedAt())
 	return nil
 }
 
