@@ -85,8 +85,6 @@ func (c *BackendCluster) fetch(slot *backendSlot, rule *config.Rule, inCtx *fast
 	outReq, outResp, releaser, err = slot.backend.Fetch(rule, inCtx, inReq)
 	if err != nil || outResp.StatusCode() >= fasthttp.StatusInternalServerError {
 		slot.hotPathCounters.errors.Add(1)
-	} else if outResp.StatusCode() >= fasthttp.StatusUnprocessableEntity {
-		DumpRequestInfo(inCtx)
 	}
 	return
 }
