@@ -1,12 +1,14 @@
 package upstream
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/rs/zerolog/log"
 	"github.com/valyala/fasthttp"
+	"os"
 	"sync"
 	"sync/atomic"
 )
@@ -78,6 +80,41 @@ func (c *BackendCluster) Fetch(rule *config.Rule, inCtx *fasthttp.RequestCtx, in
 	}
 }
 
+func DumpRequestInfo(ctx *fasthttp.RequestCtx) {
+	var buf bytes.Buffer
+
+	// Стартовая строка запроса
+	fmt.Fprintf(&buf, "---- Incoming Request ----\n")
+	fmt.Fprintf(&buf, "Method: %s\n", ctx.Method())
+	fmt.Fprintf(&buf, "Path: %s\n", ctx.Path())
+	fmt.Fprintf(&buf, "QueryString: %s\n", ctx.URI().QueryString())
+	fmt.Fprintf(&buf, "RemoteAddr: %s\n", ctx.RemoteAddr())
+	fmt.Fprintf(&buf, "Host: %s\n", ctx.Host())
+	fmt.Fprintf(&buf, "Content-Type: %s\n", ctx.Request.Header.ContentType())
+	fmt.Fprintf(&buf, "Content-Length: %d\n", ctx.Request.Header.ContentLength())
+
+	// Query параметры по ключам
+	if ctx.QueryArgs().Len() > 0 {
+		fmt.Fprintf(&buf, "\nQuery params:\n")
+		ctx.QueryArgs().VisitAll(func(k, v []byte) {
+			fmt.Fprintf(&buf, "  %s = %s\n", k, v)
+		})
+	}
+
+	// Заголовки
+	if ctx.Request.Header.Len() > 0 {
+		fmt.Fprintf(&buf, "\nHeaders:\n")
+		ctx.Request.Header.VisitAll(func(k, v []byte) {
+			fmt.Fprintf(&buf, "  %s: %s\n", k, v)
+		})
+	}
+
+	fmt.Fprintf(&buf, "--------------------------\n")
+
+	// Вывод одним куском (меньше системных вызовов)
+	os.Stdout.Write(buf.Bytes())
+}
+
 func (c *BackendCluster) fetch(slot *backendSlot, rule *config.Rule, inCtx *fasthttp.RequestCtx, inReq *fasthttp.Request) (
 	outReq *fasthttp.Request, outResp *fasthttp.Response, releaser func(*fasthttp.Request, *fasthttp.Response), err error,
 ) {
@@ -85,6 +122,8 @@ func (c *BackendCluster) fetch(slot *backendSlot, rule *config.Rule, inCtx *fast
 	outReq, outResp, releaser, err = slot.backend.Fetch(rule, inCtx, inReq)
 	if err != nil || outResp.StatusCode() >= fasthttp.StatusInternalServerError {
 		slot.hotPathCounters.errors.Add(1)
+	} else if outResp.StatusCode() >= fasthttp.StatusUnprocessableEntity {
+		DumpRequestInfo(inCtx)
 	}
 	return
 }
