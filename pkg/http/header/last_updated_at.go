@@ -7,7 +7,7 @@ import (
 )
 
 var (
-	lastRevalidatedStrKey   = "Last-Revalidated"
+	lastRevalidatedStrKey   = "Last-Updated-At"
 	lastRevalidatedBytesKey = []byte(lastRevalidatedStrKey)
 )
 
@@ -25,7 +25,7 @@ var (
 	}
 )
 
-func SetLastRevalidatedValueFastHttp(r *fasthttp.RequestCtx, v int64) {
+func SetLastUpdatedAtValueFastHttp(r *fasthttp.RequestCtx, v int64) {
 	if v == 0 {
 		return
 	}

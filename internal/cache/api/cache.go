@@ -6,7 +6,6 @@ import (
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/ctime"
 	"github.com/Borislavv/advanced-cache/pkg/http/responder"
-	"github.com/Borislavv/advanced-cache/pkg/http/template"
 	"github.com/Borislavv/advanced-cache/pkg/model"
 	"github.com/Borislavv/advanced-cache/pkg/prometheus/metrics"
 	"github.com/Borislavv/advanced-cache/pkg/storage"
@@ -113,7 +112,7 @@ func (c *CacheProxyController) handleTroughCache(ctx *fasthttp.RequestCtx) error
 	if entry, found = c.cache.Get(requestedEntry); found {
 		hits.Add(1)
 		// write found response and return it
-		if err = responder.WriteFromEntry(ctx, entry); err != nil {
+		if err = responder.FromEntry(ctx, entry); err != nil {
 			c.logError(err)
 			// retry though proxy if payload unpack has errors
 			return errNeedRetryThroughProxy
@@ -136,7 +135,7 @@ func (c *CacheProxyController) handleTroughCache(ctx *fasthttp.RequestCtx) error
 			entry = requestedEntry
 		}
 		// write fetched response and return it
-		responder.WriteFromResponse(ctx, resp, entry.UpdatedAt())
+		responder.FromResponse(ctx, resp, entry.RefreshedAt())
 	}
 
 	return nil
@@ -151,7 +150,7 @@ func (c *CacheProxyController) handleTroughProxy(ctx *fasthttp.RequestCtx) error
 		return err
 	}
 	// write fetched response and return it
-	responder.WriteFromResponse(ctx, resp, 0)
+	responder.FromResponse(ctx, resp, 0)
 	return nil
 }
 
@@ -160,7 +159,7 @@ func (c *CacheProxyController) respondServiceIsUnavailable(ctx *fasthttp.Request
 	c.logError(err)
 	ctx.Response.Header.SetContentTypeBytes(contentType)
 	ctx.SetStatusCode(fasthttp.StatusServiceUnavailable)
-	if _, err = ctx.Write(template.RespondUnavailable(err)); err != nil {
+	if _, err = ctx.Write(responder.Unavailable(err)); err != nil {
 		c.logError(err)
 	}
 }

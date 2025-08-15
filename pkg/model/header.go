@@ -1,12 +1,13 @@
 package model
 
 import (
+	"github.com/Borislavv/advanced-cache/pkg/pools"
 	"github.com/Borislavv/advanced-cache/pkg/sort"
 	"github.com/valyala/fasthttp"
 )
 
 func (e *Entry) getFilteredAndSortedKeyHeadersCtxFasthttp(ctx *fasthttp.RequestCtx) (kvPairs *[][2][]byte, releaseFn func(*[][2][]byte)) {
-	out := kvPool.Get().(*[][2][]byte)
+	out := pools.SliceKeyValueBytesPool.Get().(*[][2][]byte)
 	*out = (*out)[:0]
 
 	for key, keyBytes := range e.rule.Load().CacheKey.HeadersMap {
@@ -22,7 +23,7 @@ func (e *Entry) getFilteredAndSortedKeyHeadersCtxFasthttp(ctx *fasthttp.RequestC
 }
 
 func (e *Entry) getFilteredAndSortedKeyHeadersFasthttp(r *fasthttp.Request) (kvPairs *[][2][]byte, releaseFn func(*[][2][]byte)) {
-	out := kvPool.Get().(*[][2][]byte)
+	out := pools.SliceKeyValueBytesPool.Get().(*[][2][]byte)
 	*out = (*out)[:0]
 
 	for key, keyBytes := range e.rule.Load().CacheKey.HeadersMap {

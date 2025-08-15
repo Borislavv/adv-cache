@@ -24,7 +24,7 @@ type CacheItem interface {
 	LruListElement() *list.Element[*Entry]
 	SetLruListElement(el *list.Element[*Entry])
 	ToBytes() (data []byte, releaseFn func())
-	UpdatedAt() int64
+	RefreshedAt() int64
 	Weight() int64
 }
 
@@ -35,14 +35,14 @@ type Entry struct {
 	rule        *atomic.Pointer[config.Rule]
 	payload     *atomic.Pointer[[]byte]
 	lruListElem *atomic.Pointer[list.Element[*Entry]]
-	updatedAt   int64 // atomic: unix nano
+	refreshedAt int64 // atomic: unix nano
 }
 
 func (e *Entry) Init() *Entry {
 	e.rule = &atomic.Pointer[config.Rule]{}
 	e.payload = &atomic.Pointer[[]byte]{}
 	e.lruListElem = &atomic.Pointer[list.Element[*Entry]]{}
-	atomic.StoreInt64(&e.updatedAt, ctime.UnixNano())
+	atomic.StoreInt64(&e.refreshedAt, ctime.UnixNano())
 	return e
 }
 
@@ -102,6 +102,6 @@ func newEntryFromField(
 	entry.fingerprint = fingerprint
 	entry.rule.Store(rule)
 	entry.payload.Store(&payload)
-	entry.updatedAt = updatedAt
+	entry.refreshedAt = updatedAt
 	return entry
 }

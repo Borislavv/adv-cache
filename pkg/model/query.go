@@ -2,28 +2,22 @@ package model
 
 import (
 	"bytes"
+	"github.com/Borislavv/advanced-cache/pkg/pools"
 	"github.com/Borislavv/advanced-cache/pkg/sort"
 	"github.com/valyala/fasthttp"
-	"sync"
 )
 
 var (
-	kvPool = sync.Pool{
-		New: func() interface{} {
-			sl := make([][2][]byte, 0, 48)
-			return &sl
-		},
-	}
 	kvPoolReleaser = func(queries *[][2][]byte) {
 		*queries = (*queries)[:0]
-		kvPool.Put(queries)
+		pools.SliceKeyValueBytesPool.Put(queries)
 	}
 )
 
 func (e *Entry) parseFilterAndSortQuery(b []byte) (queries *[][2][]byte, releaseFn func(*[][2][]byte)) {
 	b = bytes.TrimLeft(b, "?")
 
-	out := kvPool.Get().(*[][2][]byte)
+	out := pools.SliceKeyValueBytesPool.Get().(*[][2][]byte)
 	*out = (*out)[:0]
 
 	type state struct {
@@ -129,7 +123,7 @@ func (e *Entry) parseFilterAndSortQuery(b []byte) (queries *[][2][]byte, release
 }
 
 func (e *Entry) getFilteredAndSortedKeyQueriesFastHttp(r *fasthttp.RequestCtx) (kvPairs *[][2][]byte, releaseFn func(*[][2][]byte)) {
-	out := kvPool.Get().(*[][2][]byte)
+	out := pools.SliceKeyValueBytesPool.Get().(*[][2][]byte)
 	*out = (*out)[:0]
 
 	allowedKeys := e.rule.Load().CacheKey.QueryBytes

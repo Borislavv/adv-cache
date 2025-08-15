@@ -151,7 +151,8 @@ func (b *BackendNode) filterHeaders(rule *config.Rule, resp *fasthttp.Response) 
 	if rule != nil {
 		allowedMap := rule.CacheValue.HeadersMap
 		if len(allowedMap) > 0 {
-			var kvBuf = pools.KeyValueSlicePool.Get().(*[][2][]byte)
+			var kvBuf = pools.SliceKeyValueBytesPool.Get().(*[][2][]byte)
+			*kvBuf = (*kvBuf)[:0]
 
 			resp.Header.All()(func(k, v []byte) bool {
 				if _, ok := allowedMap[unsafe.String(unsafe.SliceData(k), len(k))]; ok {
@@ -166,7 +167,7 @@ func (b *BackendNode) filterHeaders(rule *config.Rule, resp *fasthttp.Response) 
 			}
 
 			*kvBuf = (*kvBuf)[:0]
-			pools.KeyValueSlicePool.Put(kvBuf)
+			pools.SliceKeyValueBytesPool.Put(kvBuf)
 		}
 	}
 }

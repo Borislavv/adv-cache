@@ -111,12 +111,14 @@ func (crw *CaptureResponseWriter) ExtractPayload() (
 
 var headersToPairsReleaser = func(pairs *[][2][]byte) {
 	*pairs = (*pairs)[:0]
-	pools.KeyValueSlicePool.Put(pairs)
+	pools.SliceKeyValueBytesPool.Put(pairs)
 }
 
 // Helper to convert http.Header to [][2][]byte for storage payload
 func (crw *CaptureResponseWriter) headerToPairs(h http.Header) (headers *[][2][]byte, releaserFn func(*[][2][]byte)) {
-	headers = pools.KeyValueSlicePool.Get().(*[][2][]byte)
+	headers = pools.SliceKeyValueBytesPool.Get().(*[][2][]byte)
+	*headers = (*headers)[:0]
+
 	for k, vv := range h {
 		for _, v := range vv {
 			*headers = append(*headers, [2][]byte{unsafe.Slice(unsafe.StringData(k), len(k)), unsafe.Slice(unsafe.StringData(v), len(v))})

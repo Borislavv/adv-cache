@@ -37,8 +37,8 @@ func (e *Entry) ToBytes() (data []byte, releaseFn func()) {
 	// Fingerprint
 	buf.Write(e.fingerprint[:])
 
-	// UpdatedAt
-	binary.LittleEndian.PutUint64(scratch8[:], uint64(e.UpdatedAt()))
+	// RefreshedAt
+	binary.LittleEndian.PutUint64(scratch8[:], uint64(e.RefreshedAt()))
 	buf.Write(scratch8[:])
 
 	// Payload
@@ -80,7 +80,7 @@ func EntryFromBytes(data []byte, cfg config.Config) (*Entry, error) {
 	copy(fp[:], data[offset:offset+16])
 	offset += 16
 
-	// UpdatedAt
+	// RefreshedAt
 	updatedAt := int64(binary.LittleEndian.Uint64(data[offset:]))
 	offset += 8
 

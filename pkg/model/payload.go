@@ -229,7 +229,7 @@ func (e *Entry) DumpPayload() {
 	fmt.Printf("\n========== DUMP PAYLOAD ==========\n")
 	fmt.Printf("RuleKey:          %d\n", e.key)
 	fmt.Printf("Shard:        %d\n", e.shard)
-	fmt.Printf("UpdatedAt:	 %s\n", time.Unix(0, e.UpdatedAt()).Format(time.RFC3339Nano))
+	fmt.Printf("RefreshedAt:	 %s\n", time.Unix(0, e.RefreshedAt()).Format(time.RFC3339Nano))
 	fmt.Printf("----------------------------------\n")
 
 	fmt.Printf("Path:   	   %q\n", string(req.URI().Path()))

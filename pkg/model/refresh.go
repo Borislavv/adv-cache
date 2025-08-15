@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 )
 
-func (e *Entry) UpdatedAt() int64 { return atomic.LoadInt64(&e.updatedAt) }
-func (e *Entry) touch()           { atomic.StoreInt64(&e.updatedAt, ctime.UnixNano()) }
+func (e *Entry) RefreshedAt() int64 { return atomic.LoadInt64(&e.refreshedAt) }
+func (e *Entry) touch()             { atomic.StoreInt64(&e.refreshedAt, ctime.UnixNano()) }
 
 // ShouldBeRefreshed implements probabilistic refresh logic ("beta" algorithm).
 // Returns true if the entry is stale and, with a probability proportional to its staleness, should be refreshed now.
@@ -41,7 +41,7 @@ func (e *Entry) ShouldBeRefreshed(cfg config.Config) bool {
 	}
 
 	// время, прошедшее с последнего обновления
-	elapsed := ctime.UnixNano() - atomic.LoadInt64(&e.updatedAt)
+	elapsed := ctime.UnixNano() - atomic.LoadInt64(&e.refreshedAt)
 	minStale := int64(float64(ttl) * coefficient)
 
 	if minStale > elapsed {
