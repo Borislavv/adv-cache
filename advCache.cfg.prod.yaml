@@ -37,7 +37,7 @@ cache:
           enabled: true
           host: "seo-master-seo:8080"
           scheme: "http"
-          rate: 500
+          rate: 250
           timeout: "5s"
           max_timeout: "1m"
           use_max_timeout_header: "X-Google-Bot"
