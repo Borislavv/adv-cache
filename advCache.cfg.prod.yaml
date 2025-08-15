@@ -52,7 +52,7 @@ cache:
       max_versions: 3
       gzip: false
     mock:
-      enabled: false
+      enabled: true
       length: 1000000
 
   storage:
