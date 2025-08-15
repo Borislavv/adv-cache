@@ -56,11 +56,11 @@ cache:
       length: 1000000
 
   storage:
-    size: 8589934592 # 8GB
+    size: 10737418240 # 10GB
 
   eviction:
     enabled: true
-    threshold: 0.95   # Trigger eviction when cache memory usage exceeds 90% of its configured limit.
+    threshold: 0.85   # Trigger eviction when cache memory usage exceeds 85% of its configured limit.
 
   refresh:
     enabled: true     # Should this be run?
@@ -84,10 +84,6 @@ cache:
   rules:
     /api/v2/pagedata:
       refresh:
-        enabled: true     # Enabled refresh of this path.
-        ttl: "12h"         # Will be used be default with 200 status code.
-        beta: 0.4         # Controls randomness in refresh timing to avoid thundering herd (from 0 to 1).
-        coefficient: 0.5  # Starts attempts to renew data after TTL*coefficient=50% (12h if whole TTL is 24h)
       cache_key:
         query: # Match query parameters by prefix.
           - project[id]
@@ -111,6 +107,10 @@ cache:
           - X-Request-GUID
 
     /api/v1/pagecontent:
+      enabled: true     # Enabled refresh of this path.
+      ttl: "36h"        # Will be used be default with 200 status code.
+      beta: 0.4         # Controls randomness in refresh timing to avoid thundering herd (from 0 to 1).
+      coefficient: 0.7  # Starts attempts to renew data after TTL*coefficient=50% (12h if whole TTL is 24h)
       cache_key:
         query: # Match query parameters by prefix.
           - project[id]

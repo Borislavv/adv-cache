@@ -321,12 +321,12 @@ func (c *CacheProxyController) runLoggerMetricsWriter() {
 
 					if c.cfg.IsEnabled() {
 						logEvent.Msgf(
-							"[%s][5s] served %d requests (rps: %.f, avg.dur.: %s hits: %d, misses: %d, errered: %d)",
+							"[%s][5s] served %d requests (rps: %.f, avg.dur.: %s, hits: %d, misses: %d, errered: %d)",
 							target, totalNum, rps, dur.String(), hitsNum, missesNum, errorsNum,
 						)
 					} else {
 						logEvent.Msgf(
-							"[%s][5s] served %d requests (rps: %.f, avg.dur.: %s total: %d, proxied: %d, errered: %d)",
+							"[%s][5s] served %d requests (rps: %.f, avg.dur.: %s, total: %d, proxied: %d, errered: %d)",
 							target, totalNum, rps, dur.String(), totalNum, proxiedNum, errorsNum,
 						)
 					}
@@ -416,6 +416,7 @@ func logLong(label string, c counters, cfg config.Config) {
 			Str("avgDuration", avgDur.String())
 	}
 
-	logEvent.Msgf("[cache][%s] total=%d hits=%d misses=%d errered=%d proxied=%d avgRPS=%.2f avgDur=%s",
+	// [%s][5s] served %d requests (rps: %.f, avg.dur.: %s total: %d, proxied: %d, errered: %d)
+	logEvent.Msgf("[controller-summary][%s] total: %d, hits: %d, misses: %d, errered: %d, proxied: %d, avgRPS: %.2f, avg.dur.: %s",
 		label, c.total, c.hits, c.misses, c.errors, c.proxied, avgRPS, avgDur.String())
 }
