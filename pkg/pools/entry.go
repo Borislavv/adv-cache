@@ -1,11 +1,15 @@
 package pools
 
-import (
-	"sync"
-)
+import "sync"
 
 var (
-	KeyValueSlicePool = sync.Pool{
+	SliceBytesPool = sync.Pool{
+		New: func() interface{} {
+			kv := make([][2][]byte, 0, 32)
+			return &kv
+		},
+	}
+	SliceKeyValueBytesPool = sync.Pool{
 		New: func() interface{} {
 			kv := make([][2][]byte, 0, 32)
 			return &kv

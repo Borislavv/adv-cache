@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"github.com/Borislavv/advanced-cache/pkg/config"
 	"github.com/Borislavv/advanced-cache/pkg/ctime"
-	"github.com/Borislavv/advanced-cache/pkg/encoding/brotli"
+	br "github.com/Borislavv/advanced-cache/pkg/encoding/brotli"
 	"github.com/Borislavv/advanced-cache/pkg/model"
+	"github.com/Borislavv/advanced-cache/pkg/pools"
 	"github.com/rs/zerolog/log"
+	"github.com/valyala/bytebufferpool"
 	"github.com/valyala/fasthttp"
 	"runtime"
 	"strconv"
@@ -2723,58 +2725,67 @@ func LoadMocks(ctx context.Context, config config.Config, storage Storage, num i
 }
 
 func GetSingleMock(i int, path []byte, cfg config.Config) *model.Entry {
-	query := make([]byte, 0, 512)
-	query = append(query, []byte("project[id]=285")...)
-	query = append(query, []byte("&domain=1x001.com")...)
-	query = append(query, []byte("&language=en")...)
-	query = append(query, []byte("&choice[name]=betting")...)
-	query = append(query, []byte("&choice[choice][name]=betting_live")...)
-	query = append(query, []byte("&choice[choice][choice][name]=betting_live_null")...)
-	query = append(query, []byte("&choice[choice][choice][choice][name]=betting_live_null_"+strconv.Itoa(i))...)
-	query = append(query, []byte("&choice[choice][choice][choice][choice][name]betting_live_null_"+strconv.Itoa(i)+"_"+strconv.Itoa(i))...)
-	query = append(query, []byte("&choice[choice][choice][choice][choice][choice][name]betting_live_null_"+strconv.Itoa(i)+"_"+strconv.Itoa(i)+"_"+strconv.Itoa(i))...)
-	query = append(query, []byte("&choice[choice][choice][choice][choice][choice][choice]=null")...)
+	query := bytebufferpool.Get()
+	defer bytebufferpool.Put(query)
 
-	queryHeaders := [][2][]byte{
-		{[]byte("Host"), []byte("0.0.0.0:8020")},
-		{[]byte("Accept-Encoding"), []byte("gzip, deflate, br")},
-		{[]byte("Accept-Language"), []byte("en-US,en;q=0.9")},
-		{[]byte("Content-Type"), []byte("application/json")},
-	}
+	query.Reset()
+	query.Write([]byte("project[id]=285"))
+	query.Write([]byte("&domain=1x001.com"))
+	query.Write([]byte("&language=en"))
+	query.Write([]byte("&choice[name]=betting"))
+	query.Write([]byte("&choice[choice][name]=betting_live"))
+	query.Write([]byte("&choice[choice][choice][name]=betting_live_null"))
+	query.Write([]byte("&choice[choice][choice][choice][name]=betting_live_null_" + strconv.Itoa(i)))
+	query.Write([]byte("&choice[choice][choice][choice][choice][name]betting_live_null_" + strconv.Itoa(i) + "_" + strconv.Itoa(i)))
+	query.Write([]byte("&choice[choice][choice][choice][choice][choice][name]betting_live_null_" + strconv.Itoa(i) + "_" + strconv.Itoa(i) + "_" + strconv.Itoa(i)))
+	query.Write([]byte("&choice[choice][choice][choice][choice][choice][choice]=null"))
 
-	responseHeaders := [][2][]byte{
-		{[]byte("Content-Type"), []byte("application/json")},
-		{[]byte("Vary"), []byte("Accept-Encoding, Accept-Language")},
-		{[]byte("Cache-Control"), []byte("no-cache")},
-		{[]byte("Control-Transport"), []byte("tls")},
-	}
+	queryHeaders := pools.SliceKeyValueBytesPool.Get().(*[][2][]byte)
+	*queryHeaders = (*queryHeaders)[:0]
+	*queryHeaders = append(*queryHeaders, [2][]byte{[]byte("Host"), []byte("0.0.0.0:8020")})
+	*queryHeaders = append(*queryHeaders, [2][]byte{[]byte("Accept-Encoding"), []byte("gzip, deflate, br")})
+	*queryHeaders = append(*queryHeaders, [2][]byte{[]byte("Accept-Language"), []byte("en-US,en;q=0.9")})
+	*queryHeaders = append(*queryHeaders, [2][]byte{[]byte("Content-Type"), []byte("application/json")})
+	*queryHeaders = append(*queryHeaders, [2][]byte{[]byte("Content-Encoding"), []byte("br")})
+	*queryHeaders = append(*queryHeaders, [2][]byte{[]byte("Cache-Control"), []byte("max-age=2400, must-revalidate, public, s-maxage=3600, stale-if-error=86400, stale-while-revalidate=300")})
+
+	responseHeaders := pools.SliceKeyValueBytesPool.Get().(*[][2][]byte)
+	*responseHeaders = (*responseHeaders)[:0]
+	*responseHeaders = append(*responseHeaders, [2][]byte{[]byte("Content-Type"), []byte("application/json")})
+	*responseHeaders = append(*responseHeaders, [2][]byte{[]byte("Vary"), []byte("Accept-Encoding, Accept-Language")})
 
 	req := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()
 
 	req.URI().SetPathBytes(path)
-	req.URI().SetQueryStringBytes(query)
 
-	for _, kv := range queryHeaders {
+	queryBytes := make([]byte, query.Len())
+	copy(queryBytes, query.Bytes())
+	req.URI().SetQueryStringBytes(queryBytes)
+
+	for _, kv := range *queryHeaders {
 		req.Header.AddBytesKV(kv[0], kv[1])
 	}
+	*queryHeaders = (*queryHeaders)[:0]
+	pools.SliceKeyValueBytesPool.Put(queryHeaders)
 
-	for _, kv := range responseHeaders {
+	for _, kv := range *responseHeaders {
 		resp.Header.AddBytesKV(kv[0], kv[1])
 	}
+	*responseHeaders = (*responseHeaders)[:0]
+	pools.SliceKeyValueBytesPool.Put(responseHeaders)
 
 	resp.SetStatusCode(200)
 	resp.SetBody(copiedBodyBytes(i))
 	resp.Header.SetLastModified(ctime.Now())
 
-	entry, err := model.NewMockEntry(cfg, req, resp)
+	entry, err := model.NewEntryWithPayload(cfg, req, resp)
 	if err != nil {
 		panic(err)
 	}
 
 	fasthttp.ReleaseRequest(req)
 	fasthttp.ReleaseResponse(resp)
-
 	return entry
 }
 
@@ -2782,70 +2793,11 @@ func StreamEntryPointersConsecutive(ctx context.Context, cfg config.Config, path
 	outCh := make(chan *model.Entry, runtime.GOMAXPROCS(0)*4)
 	go func() {
 		defer close(outCh)
-
-		i := 1
-		for {
+		for i := 0; i < num; i++ {
 			select {
 			case <-ctx.Done():
 				return
-			default:
-				if i > num {
-					return
-				}
-				query := make([]byte, 0, 512)
-				query = append(query, []byte("project[id]=285")...)
-				query = append(query, []byte("&domain=1x001.com")...)
-				query = append(query, []byte("&language=en")...)
-				query = append(query, []byte("&choice[name]=betting")...)
-				query = append(query, []byte("&choice[choice][name]=betting_live")...)
-				query = append(query, []byte("&choice[choice][choice][name]=betting_live_null")...)
-				query = append(query, []byte("&choice[choice][choice][choice][name]=betting_live_null_"+strconv.Itoa(i))...)
-				query = append(query, []byte("&choice[choice][choice][choice][choice][name]betting_live_null_"+strconv.Itoa(i)+"_"+strconv.Itoa(i))...)
-				query = append(query, []byte("&choice[choice][choice][choice][choice][choice][name]betting_live_null_"+strconv.Itoa(i)+"_"+strconv.Itoa(i)+"_"+strconv.Itoa(i))...)
-				query = append(query, []byte("&choice[choice][choice][choice][choice][choice][choice]=null")...)
-
-				queryHeaders := [][2][]byte{
-					{[]byte("Host"), []byte("0.0.0.0:8020")},
-					{[]byte("Accept-Encoding"), []byte("gzip, deflate, br")},
-					{[]byte("Accept-Language"), []byte("en-US,en;q=0.9")},
-					{[]byte("Content-Type"), []byte("application/json")},
-					{[]byte("Content-Encoding"), []byte("br")},
-					{[]byte("Cache-Control"), []byte("max-age=2400, must-revalidate, public, s-maxage=3600, stale-if-error=86400, stale-while-revalidate=300")},
-				}
-
-				responseHeaders := [][2][]byte{
-					{[]byte("Content-Type"), []byte("application/json")},
-					{[]byte("Vary"), []byte("Accept-Encoding, Accept-Language")},
-				}
-
-				req := fasthttp.AcquireRequest()
-				resp := fasthttp.AcquireResponse()
-
-				req.URI().SetPathBytes(path)
-				req.URI().SetQueryStringBytes(query)
-
-				for _, kv := range queryHeaders {
-					req.Header.AddBytesKV(kv[0], kv[1])
-				}
-
-				for _, kv := range responseHeaders {
-					resp.Header.AddBytesKV(kv[0], kv[1])
-				}
-
-				resp.SetStatusCode(200)
-				resp.SetBody(copiedBodyBytes(i))
-				resp.Header.SetLastModified(ctime.Now())
-
-				entry, err := model.NewMockEntry(cfg, req, resp)
-				if err != nil {
-					panic(err)
-				}
-
-				fasthttp.ReleaseRequest(req)
-				fasthttp.ReleaseResponse(resp)
-
-				outCh <- entry
-				i++
+			case outCh <- GetSingleMock(i, path, cfg):
 			}
 		}
 	}()
@@ -2854,7 +2806,7 @@ func StreamEntryPointersConsecutive(ctx context.Context, cfg config.Config, path
 
 // copiedBodyBytes returns a random ASCII string of length between minStrLen and maxStrLen.
 func copiedBodyBytes(idx int) []byte {
-	encoded, err := brotli.Encode([]byte(fmt.Sprintf(respTemplate, idx, idx)))
+	encoded, err := br.Encode([]byte(fmt.Sprintf(respTemplate, idx, idx)))
 	if err != nil {
 		panic(err)
 	}
