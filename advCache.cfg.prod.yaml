@@ -40,7 +40,7 @@ cache:
           rate: 250
           timeout: "5s"
           max_timeout: "1m"
-          use_max_timeout_header: "X-Google-Bot"
+          use_max_timeout_header: ""
           healthcheck: "/healthcheck"
 
   data:
