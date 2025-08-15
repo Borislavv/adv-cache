@@ -1,44 +1,45 @@
-package gzip
+package gz
 
 import (
 	"bytes"
-	"compress/gzip"
+	cgzip "compress/gzip"
 	"io"
 	"sync"
 	"time"
 )
 
-const defaultLevel = gzip.BestSpeed
+const defaultLevel = cgzip.BestSpeed
 
 var writerPool = sync.Pool{
 	New: func() any {
-		w, _ := gzip.NewWriterLevel(io.Discard, defaultLevel)
+		w, _ := cgzip.NewWriterLevel(io.Discard, defaultLevel)
 		return w
 	},
 }
 
 var bufferPool = sync.Pool{
-	New: func() any {
-		return new(bytes.Buffer)
-	},
+	New: func() any { return new(bytes.Buffer) },
 }
 
-// normalizeHeader resets gzip header to a deterministic state.
-func normalizeHeader(gw *gzip.Writer) {
-	gw.Header = gzip.Header{}
-	gw.Header.ModTime = time.Unix(0, 0)
+// normalizeHeader resets gzip header to a deterministic state to avoid leaking
+// Name/Comment/Extra/ModTime across pool uses and to make output stable.
+func normalizeHeader(gw *cgzip.Writer) {
+	gw.Header = cgzip.Header{
+		ModTime: time.Time{}, // zero time (00:00:00 UTC, year 1)
+		OS:      255,         // unknown; avoids platform-dependent byte
+	}
 }
 
 // AcquireWriter returns a pooled *gzip.Writer reset to write into w.
-func AcquireWriter(w io.Writer) *gzip.Writer {
-	gw := writerPool.Get().(*gzip.Writer)
+func AcquireWriter(w io.Writer) *cgzip.Writer {
+	gw := writerPool.Get().(*cgzip.Writer)
 	gw.Reset(w)
 	normalizeHeader(gw)
 	return gw
 }
 
-// ReleaseWriter closes the writer (flushing final block) and returns it to the pool.
-func ReleaseWriter(gw *gzip.Writer) error {
+// ReleaseWriter closes the writer (flushes) and returns it to the pool.
+func ReleaseWriter(gw *cgzip.Writer) error {
 	err := gw.Close()
 	writerPool.Put(gw)
 	return err
@@ -52,9 +53,7 @@ func AcquireBuffer() *bytes.Buffer {
 }
 
 // ReleaseBuffer returns the buffer to the pool.
-func ReleaseBuffer(buf *bytes.Buffer) {
-	bufferPool.Put(buf)
-}
+func ReleaseBuffer(buf *bytes.Buffer) { bufferPool.Put(buf) }
 
 // EncodeToWriter compresses p and writes the result to w using a pooled writer.
 func EncodeToWriter(w io.Writer, p []byte) error {
@@ -68,37 +67,33 @@ func EncodeToWriter(w io.Writer, p []byte) error {
 }
 
 // EncodeToBuffer compresses p and returns a pooled buffer holding the result.
-// The caller must call ReleaseBuffer on the returned buffer when done.
 func EncodeToBuffer(p []byte) (*bytes.Buffer, error) {
 	buf := AcquireBuffer()
 	gw := AcquireWriter(buf)
 
-	_, err := gw.Write(p)
-	if err != nil {
+	if _, err := gw.Write(p); err != nil {
 		_ = ReleaseWriter(gw)
 		ReleaseBuffer(buf)
 		return nil, err
 	}
-	if err = ReleaseWriter(gw); err != nil {
+	if err := ReleaseWriter(gw); err != nil {
 		ReleaseBuffer(buf)
 		return nil, err
 	}
 	return buf, nil
 }
 
-// Encode compresses p and returns a standalone []byte.
-// This is convenient but performs one allocation to detach from the pooled buffer.
+// Encode compresses p and returns a detached []byte.
 func Encode(p []byte) ([]byte, error) {
 	buf := AcquireBuffer()
 	gw := AcquireWriter(buf)
 
-	_, err := gw.Write(p)
-	if err != nil {
+	if _, err := gw.Write(p); err != nil {
 		_ = ReleaseWriter(gw)
 		ReleaseBuffer(buf)
 		return nil, err
 	}
-	if err = ReleaseWriter(gw); err != nil {
+	if err := ReleaseWriter(gw); err != nil {
 		ReleaseBuffer(buf)
 		return nil, err
 	}

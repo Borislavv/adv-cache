@@ -1,37 +1,35 @@
-package brotli
+package br
 
 import (
 	"bytes"
 	"io"
 	"sync"
 
-	"github.com/andybalholm/brotli"
+	abrotli "github.com/andybalholm/brotli"
 )
 
 const defaultQuality = 1
 
 var writerPool = sync.Pool{
 	New: func() any {
-		// Writer is created once with defaultQuality; quality remains unchanged between uses.
-		return brotli.NewWriterLevel(io.Discard, defaultQuality)
+		// Quality is fixed at creation time and persists across Reset.
+		return abrotli.NewWriterLevel(io.Discard, defaultQuality)
 	},
 }
 
 var bufferPool = sync.Pool{
-	New: func() any {
-		return new(bytes.Buffer)
-	},
+	New: func() any { return new(bytes.Buffer) },
 }
 
 // AcquireWriter returns a pooled *brotli.Writer reset to write into w.
-func AcquireWriter(w io.Writer) *brotli.Writer {
-	bw := writerPool.Get().(*brotli.Writer)
+func AcquireWriter(w io.Writer) *abrotli.Writer {
+	bw := writerPool.Get().(*abrotli.Writer)
 	bw.Reset(w)
 	return bw
 }
 
-// ReleaseWriter closes the writer (flushing final block) and returns it to the pool.
-func ReleaseWriter(bw *brotli.Writer) error {
+// ReleaseWriter closes the writer (flushes) and returns it to the pool.
+func ReleaseWriter(bw *abrotli.Writer) error {
 	err := bw.Close()
 	writerPool.Put(bw)
 	return err
@@ -45,55 +43,47 @@ func AcquireBuffer() *bytes.Buffer {
 }
 
 // ReleaseBuffer returns the buffer to the pool.
-func ReleaseBuffer(buf *bytes.Buffer) {
-	bufferPool.Put(buf)
-}
+func ReleaseBuffer(buf *bytes.Buffer) { bufferPool.Put(buf) }
 
 // EncodeToWriter compresses p and writes the result to w using a pooled writer.
-// This path avoids allocations in hot code paths.
 func EncodeToWriter(w io.Writer, p []byte) error {
 	bw := AcquireWriter(w)
 	_, err := bw.Write(p)
 	if err != nil {
-		_ = ReleaseWriter(bw)
+		_ = ReleaseWriter(bw) // ensure pooled even on error
 		return err
 	}
 	return ReleaseWriter(bw)
 }
 
 // EncodeToBuffer compresses p and returns a pooled buffer holding the result.
-// The caller must call ReleaseBuffer on the returned buffer when done.
-// No copy is made; safest for performance-critical paths where the caller controls lifetimes.
 func EncodeToBuffer(p []byte) (*bytes.Buffer, error) {
 	buf := AcquireBuffer()
 	bw := AcquireWriter(buf)
 
-	_, err := bw.Write(p)
-	if err != nil {
+	if _, err := bw.Write(p); err != nil {
 		_ = ReleaseWriter(bw)
 		ReleaseBuffer(buf)
 		return nil, err
 	}
-	if err = ReleaseWriter(bw); err != nil {
+	if err := ReleaseWriter(bw); err != nil {
 		ReleaseBuffer(buf)
 		return nil, err
 	}
 	return buf, nil
 }
 
-// Encode compresses p and returns a standalone []byte.
-// This is convenient but performs one allocation to detach from the pooled buffer.
+// Encode compresses p and returns a detached []byte.
 func Encode(p []byte) ([]byte, error) {
 	buf := AcquireBuffer()
 	bw := AcquireWriter(buf)
 
-	_, err := bw.Write(p)
-	if err != nil {
+	if _, err := bw.Write(p); err != nil {
 		_ = ReleaseWriter(bw)
 		ReleaseBuffer(buf)
 		return nil, err
 	}
-	if err = ReleaseWriter(bw); err != nil {
+	if err := ReleaseWriter(bw); err != nil {
 		ReleaseBuffer(buf)
 		return nil, err
 	}
