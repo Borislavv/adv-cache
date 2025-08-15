@@ -16,6 +16,7 @@ type Meter interface {
 	SetRPS(value float64)
 	SetCacheLength(count uint64)
 	SetCacheMemory(bytes uint64)
+	SetAvgResponseTime(avg float64)
 }
 
 // Metrics implements Meter using VictoriaMetrics metrics.
@@ -60,4 +61,8 @@ func (m *Metrics) SetProxiedNum(value uint64) {
 
 func (m *Metrics) SetCacheLength(count uint64) {
 	metrics.GetOrCreateCounter(keyword.MapLength).Set(count)
+}
+
+func (m *Metrics) SetAvgResponseTime(avgDuration float64) {
+	metrics.GetOrCreateGauge(keyword.AvgDuration, nil).Set(avgDuration)
 }
