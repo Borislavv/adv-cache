@@ -37,7 +37,7 @@ cache:
           enabled: true
           host: "seo-master-seo:8080"
           scheme: "http"
-          rate: 250
+          rate: 2500
           timeout: "5s"
           max_timeout: "1m"
           use_max_timeout_header: ""
@@ -65,7 +65,7 @@ cache:
   refresh:
     enabled: true     # Should this be run?
     ttl: "24h"        # Will be used be default with 200 status code.
-    rate: 8           # Rate limiting reqs to backend per second.
+    rate: 500         # Rate limiting reqs to backend per second.
     scan_rate: 10000  # Rate limiting of num scans items per second.
     beta: 0.4         # Controls randomness in refresh timing to avoid thundering herd (from 0 to 1).
     coefficient: 0.5  # Starts attempts to renew data after TTL*coefficient=50% (12h if whole TTL is 24h)
